@@ -551,6 +551,7 @@ fn native_options(fullscreen: bool, mini: Option<MiniWindow>) -> eframe::NativeO
             }
         }
         None => viewport
+            .with_decorations(!cfg!(target_os = "windows"))
             .with_inner_size([1240.0, 800.0])
             .with_min_inner_size([760.0, 520.0])
             .with_fullscreen(fullscreen),

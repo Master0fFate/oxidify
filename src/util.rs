@@ -97,65 +97,110 @@ pub fn open_spotify_url(uri: &str) -> Option<String> {
     Some(format!("https://open.spotify.com/{kind}/{id}"))
 }
 
-/// The application icon, drawn at runtime: a green disc with a play mark.
-/// Shared by the window icon and the tray pixmap.
-/// The menu-bar shape for macOS: the circle with the play triangle punched
-/// out. macOS template images use only the alpha channel and paint the
-/// shape themselves, black in a light menu bar and white in a dark one.
+/// The application icon, shared by the native window and tray.
+///
+/// macOS template images use only the alpha channel. For that surface we
+/// keep the crystal ring and oxygen dot, while the OS supplies black or white.
 pub fn tray_template_rgba(size: usize) -> Vec<u8> {
-    let mut rgba = app_icon_rgba(size);
-    for pixel in rgba.as_chunks_mut::<4>().0 {
-        // The triangle is the dark colour; make it a hole instead.
-        if pixel[1] < 128 {
-            pixel[3] = 0;
+    render_app_icon(size, false)
+}
+
+/// Rasterises the same light-blue crystal mark as `packaging/icons/oxidify.svg`.
+/// Four-by-four sampling keeps the taskbar and tray versions clean at 16px.
+pub fn app_icon_rgba(size: usize) -> Vec<u8> {
+    render_app_icon(size, true)
+}
+
+fn render_app_icon(size: usize, include_field: bool) -> Vec<u8> {
+    const FIELD: [u8; 3] = [0x91, 0xc4, 0xff];
+    const INK: [u8; 3] = [0x0d, 0x3a, 0x73];
+    const SAMPLES: usize = 4;
+    if size == 0 {
+        return Vec::new();
+    }
+    let mut rgba = vec![0u8; size * size * 4];
+    let sample_count = (SAMPLES * SAMPLES) as f32;
+    for y in 0..size {
+        for x in 0..size {
+            let mut field_hits = 0usize;
+            let mut ink_hits = 0usize;
+            for sy in 0..SAMPLES {
+                for sx in 0..SAMPLES {
+                    let px = (x as f32 + (sx as f32 + 0.5) / SAMPLES as f32) * 128.0 / size as f32;
+                    let py = (y as f32 + (sy as f32 + 0.5) / SAMPLES as f32) * 128.0 / size as f32;
+                    if rounded_square_contains(px, py) {
+                        field_hits += 1;
+                    }
+                    if crystal_contains(px, py) {
+                        ink_hits += 1;
+                    }
+                }
+            }
+            let coverage = if include_field { field_hits } else { ink_hits };
+            if coverage == 0 {
+                continue;
+            }
+            let index = (y * size + x) * 4;
+            if include_field {
+                let ink_fraction = ink_hits as f32 / field_hits.max(1) as f32;
+                for channel in 0..3 {
+                    rgba[index + channel] = (FIELD[channel] as f32 * (1.0 - ink_fraction)
+                        + INK[channel] as f32 * ink_fraction)
+                        .round() as u8;
+                }
+            } else {
+                rgba[index..index + 3].fill(0);
+            }
+            rgba[index + 3] = (coverage as f32 / sample_count * 255.0).round() as u8;
         }
-        pixel[0] = 0;
-        pixel[1] = 0;
-        pixel[2] = 0;
     }
     rgba
 }
 
-/// The mark rasterised to pixels for the window icon and the trays,
-/// where no egui painter exists. This is deliberately the one separate
-/// implementation of the logo; on-screen drawing goes through
-/// `theme::logo` and `theme::play_glyph_offset` instead.
-pub fn app_icon_rgba(size: usize) -> Vec<u8> {
-    let mut rgba = vec![0u8; size * size * 4];
-    let center = size as f32 / 2.0;
-    let radius = center - 2.0;
-    let scale = size as f32 / 128.0;
-    let triangle = [
-        (center - 12.0 * scale, center - 22.0 * scale),
-        (center - 12.0 * scale, center + 22.0 * scale),
-        (center + 26.0 * scale, center),
-    ];
-    let sign = |a: (f32, f32), b: (f32, f32), c: (f32, f32)| {
-        (a.0 - c.0) * (b.1 - c.1) - (b.0 - c.0) * (a.1 - c.1)
-    };
-    for y in 0..size {
-        for x in 0..size {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let distance = ((px - center).powi(2) + (py - center).powi(2)).sqrt();
-            let coverage = (radius - distance + 0.5).clamp(0.0, 1.0);
-            if coverage <= 0.0 {
-                continue;
-            }
-            let d1 = sign((px, py), triangle[0], triangle[1]);
-            let d2 = sign((px, py), triangle[1], triangle[2]);
-            let d3 = sign((px, py), triangle[2], triangle[0]);
-            let negative = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
-            let positive = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
-            let inside = !(negative && positive);
-            let (r, g, b) = if inside { (10, 20, 14) } else { (30, 215, 96) };
-            let index = (y * size + x) * 4;
-            rgba[index] = r;
-            rgba[index + 1] = g;
-            rgba[index + 2] = b;
-            rgba[index + 3] = (coverage * 255.0) as u8;
-        }
+fn rounded_square_contains(x: f32, y: f32) -> bool {
+    const SIZE: f32 = 128.0;
+    const RADIUS: f32 = 28.0;
+    if !(0.0..SIZE).contains(&x) || !(0.0..SIZE).contains(&y) {
+        return false;
     }
-    rgba
+    let nearest_x = x.clamp(RADIUS, SIZE - RADIUS);
+    let nearest_y = y.clamp(RADIUS, SIZE - RADIUS);
+    (x - nearest_x).powi(2) + (y - nearest_y).powi(2) <= RADIUS.powi(2)
+}
+
+fn crystal_contains(x: f32, y: f32) -> bool {
+    const OUTER_RADIUS: f32 = 42.0;
+    const STROKE: f32 = 9.0;
+    const DOT_RADIUS: f32 = 8.0;
+    let apothem = OUTER_RADIUS * 0.866_025_4;
+    let inner_radius = OUTER_RADIUS * (apothem - STROKE / 2.0) / apothem;
+    let outer = crystal_points(OUTER_RADIUS);
+    let inner = crystal_points(inner_radius);
+    let ring = point_in_polygon((x, y), &outer) && !point_in_polygon((x, y), &inner);
+    let dot = (x - 64.0).powi(2) + (y - 64.0).powi(2) <= DOT_RADIUS.powi(2);
+    ring || dot
+}
+
+fn crystal_points(radius: f32) -> [(f32, f32); 6] {
+    std::array::from_fn(|step| {
+        let angle = std::f32::consts::TAU * step as f32 / 6.0 - std::f32::consts::FRAC_PI_2;
+        (64.0 + angle.cos() * radius, 64.0 + angle.sin() * radius)
+    })
+}
+
+fn point_in_polygon(point: (f32, f32), polygon: &[(f32, f32); 6]) -> bool {
+    let mut inside = false;
+    let mut previous = polygon.len() - 1;
+    for current in 0..polygon.len() {
+        let (xi, yi) = polygon[current];
+        let (xj, yj) = polygon[previous];
+        if (yi > point.1) != (yj > point.1) && point.0 < (xj - xi) * (point.1 - yi) / (yj - yi) + xi
+        {
+            inside = !inside;
+        }
+        previous = current;
+    }
+    inside
 }
 
 pub fn greeting() -> &'static str {
@@ -230,5 +275,40 @@ mod tests {
             "Hi there & you"
         );
         assert_eq!(strip_html("ONE&#x2F;TWO&#x2F;THREE"), "ONE/TWO/THREE");
+    }
+
+    #[test]
+    fn app_icon_is_the_blue_crystal_mark() {
+        let rgba = app_icon_rgba(128);
+        assert_eq!(rgba.len(), 128 * 128 * 4);
+        let (pixels, remainder) = rgba.as_chunks::<4>();
+        assert!(remainder.is_empty());
+        assert!(
+            pixels
+                .iter()
+                .any(|pixel| pixel == &[0x91, 0xc4, 0xff, 0xff])
+        );
+        assert!(
+            pixels
+                .iter()
+                .any(|pixel| pixel == &[0x0d, 0x3a, 0x73, 0xff])
+        );
+        assert!(pixels.iter().any(|pixel| pixel[3] == 0));
+        assert!(
+            pixels
+                .iter()
+                .filter(|pixel| pixel[3] > 0)
+                .all(|pixel| pixel[2] > pixel[1])
+        );
+    }
+
+    #[test]
+    fn tray_template_keeps_only_alpha() {
+        let rgba = tray_template_rgba(32);
+        assert_eq!(rgba.len(), 32 * 32 * 4);
+        let (pixels, remainder) = rgba.as_chunks::<4>();
+        assert!(remainder.is_empty());
+        assert!(pixels.iter().any(|pixel| pixel[3] > 0));
+        assert!(pixels.iter().all(|pixel| pixel[..3] == [0, 0, 0]));
     }
 }
