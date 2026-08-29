@@ -494,14 +494,14 @@ fn write_sidecar(path: &Path, sidecar: &Sidecar) -> Result<(), String> {
     })
 }
 
-fn replace_or_fallback(tmp: &Path, dest: &Path, expected_hash: &str) -> Result<PathBuf, String> {
+fn replace_or_fallback(tmp: &Path, dest: &Path, _expected_hash: &str) -> Result<PathBuf, String> {
     if dest.exists() {
         #[cfg(windows)]
         {
             match fs::remove_file(dest) {
                 Ok(()) => {}
                 Err(error) if is_in_use(&error) => {
-                    if file_matches(dest, expected_hash, file_len(dest)) {
+                    if file_matches(dest, _expected_hash, file_len(dest)) {
                         let _ = fs::remove_file(tmp);
                         return Ok(dest.to_path_buf());
                     }
@@ -509,7 +509,7 @@ fn replace_or_fallback(tmp: &Path, dest: &Path, expected_hash: &str) -> Result<P
                     match fs::rename(tmp, &fallback) {
                         Ok(()) => return Ok(fallback),
                         Err(rename_error) if is_in_use(&rename_error) => {
-                            if file_matches(&fallback, expected_hash, file_len(&fallback)) {
+                            if file_matches(&fallback, _expected_hash, file_len(&fallback)) {
                                 let _ = fs::remove_file(tmp);
                                 return Ok(fallback);
                             }

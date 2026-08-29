@@ -302,15 +302,17 @@ mod tests {
     }
 
     #[test]
-    fn a_script_the_face_lacks_comes_from_a_borrowed_face() {
+    fn a_script_the_face_lacks_comes_from_a_borrowed_face_when_available() {
         let mut text = PixelText::default();
-        let question = text.rasterise("?").size[0];
-        let kanji = text.rasterise("\u{591c}").size[0];
-        if text.faces().len() > 1 {
-            // A CJK glyph is square, so far wider than a question mark.
-            assert!(kanji > question, "the kanji drew as a question mark");
-        } else {
-            assert_eq!(kanji, question);
+        let faces = text.faces();
+        let question = PixelText::glyph_for(faces, '?').expect("primary face has a question mark");
+        let kanji = PixelText::glyph_for(faces, '\u{591c}').expect("missing glyph has a fallback");
+        let supporting_face = faces
+            .iter()
+            .position(|face| face.font.charmap().map('\u{591c}').is_some());
+        match supporting_face {
+            Some(index) => assert_eq!(kanji.0, index),
+            None => assert_eq!(kanji, question),
         }
     }
 

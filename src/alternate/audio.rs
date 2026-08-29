@@ -24,7 +24,7 @@ pub enum OutputStatus {
     DeviceLost,
 }
 
-pub trait AudioOutput: Send {
+pub trait AudioOutput {
     fn play_bytes(&mut self, bytes: Vec<u8>, start_ms: u32) -> Result<PlayInfo>;
     fn play_pcm(&mut self, source: PcmSource, decode: DecodeHandle) -> Result<PlayInfo>;
     fn pause(&mut self);
@@ -110,7 +110,7 @@ impl AudioOutput for NullOutput {
     }
 }
 
-pub struct RodioOutput {
+pub struct DirectRodioOutput {
     stream: rodio::OutputStream,
     sink: rodio::Sink,
     decode: Option<DecodeHandle>,
@@ -118,7 +118,7 @@ pub struct RodioOutput {
     volume: f32,
 }
 
-impl RodioOutput {
+impl DirectRodioOutput {
     pub fn open() -> Result<Self> {
         let lost = Arc::new(AtomicBool::new(false));
         let (stream, sink) = Self::open_pair(Arc::clone(&lost))?;
@@ -148,7 +148,7 @@ impl RodioOutput {
     }
 }
 
-impl AudioOutput for RodioOutput {
+impl AudioOutput for DirectRodioOutput {
     fn play_bytes(&mut self, bytes: Vec<u8>, start_ms: u32) -> Result<PlayInfo> {
         self.sink.stop();
         if let Some(decode) = self.decode.take() {
@@ -269,11 +269,201 @@ impl AudioOutput for RodioOutput {
     }
 }
 
-impl Drop for RodioOutput {
+impl Drop for DirectRodioOutput {
     fn drop(&mut self) {
         self.sink.stop();
         if let Some(decode) = self.decode.take() {
             decode.stop();
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub type RodioOutput = DirectRodioOutput;
+
+// CoreAudio streams are deliberately !Send in cpal. Keep the real stream on
+// the thread that opened it and expose a Send command proxy to the async
+// alternate engine instead of lying to the type system.
+#[cfg(target_os = "macos")]
+pub struct RodioOutput {
+    tx: std::sync::mpsc::Sender<MacCommand>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "macos")]
+enum MacCommand {
+    PlayBytes(
+        Vec<u8>,
+        u32,
+        std::sync::mpsc::SyncSender<std::result::Result<PlayInfo, String>>,
+    ),
+    PlayPcm(
+        PcmSource,
+        DecodeHandle,
+        std::sync::mpsc::SyncSender<std::result::Result<PlayInfo, String>>,
+    ),
+    Pause,
+    Resume,
+    Stop,
+    Seek(
+        u32,
+        std::sync::mpsc::SyncSender<std::result::Result<(), String>>,
+    ),
+    SetVolume(f32),
+    Status(std::sync::mpsc::SyncSender<OutputStatus>),
+    Recover(std::sync::mpsc::SyncSender<std::result::Result<(), String>>),
+    Shutdown,
+}
+
+#[cfg(target_os = "macos")]
+impl RodioOutput {
+    pub fn open() -> Result<Self> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let join = std::thread::Builder::new()
+            .name("oxidify-coreaudio".into())
+            .spawn(move || match DirectRodioOutput::open() {
+                Ok(mut output) => {
+                    let _ = ready_tx.send(Ok(()));
+                    while let Ok(command) = rx.recv() {
+                        match command {
+                            MacCommand::PlayBytes(bytes, start_ms, reply) => {
+                                let result = output
+                                    .play_bytes(bytes, start_ms)
+                                    .map_err(|error| error.to_string());
+                                let _ = reply.send(result);
+                            }
+                            MacCommand::PlayPcm(source, decode, reply) => {
+                                let result = output
+                                    .play_pcm(source, decode)
+                                    .map_err(|error| error.to_string());
+                                let _ = reply.send(result);
+                            }
+                            MacCommand::Pause => output.pause(),
+                            MacCommand::Resume => output.resume(),
+                            MacCommand::Stop => output.stop(),
+                            MacCommand::Seek(ms, reply) => {
+                                let result = output.seek(ms).map_err(|error| error.to_string());
+                                let _ = reply.send(result);
+                            }
+                            MacCommand::SetVolume(volume) => output.set_volume(volume),
+                            MacCommand::Status(reply) => {
+                                let _ = reply.send(output.status());
+                            }
+                            MacCommand::Recover(reply) => {
+                                let _ = reply.send(output.recover());
+                            }
+                            MacCommand::Shutdown => break,
+                        }
+                    }
+                    output.stop();
+                }
+                Err(error) => {
+                    let _ = ready_tx.send(Err(error.to_string()));
+                }
+            })
+            .map_err(|error| anyhow!("couldn't start CoreAudio thread: {error}"))?;
+        match ready_rx.recv() {
+            Ok(Ok(())) => Ok(Self {
+                tx,
+                join: Some(join),
+            }),
+            Ok(Err(error)) => {
+                let _ = join.join();
+                Err(anyhow!(error))
+            }
+            Err(error) => {
+                let _ = join.join();
+                Err(anyhow!("CoreAudio thread stopped during startup: {error}"))
+            }
+        }
+    }
+
+    fn play_request(
+        &self,
+        command: impl FnOnce(
+            std::sync::mpsc::SyncSender<std::result::Result<PlayInfo, String>>,
+        ) -> MacCommand,
+    ) -> Result<PlayInfo> {
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        self.tx
+            .send(command(reply))
+            .map_err(|_| anyhow!("CoreAudio thread stopped"))?;
+        result
+            .recv()
+            .map_err(|_| anyhow!("CoreAudio thread stopped"))?
+            .map_err(anyhow::Error::msg)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl AudioOutput for RodioOutput {
+    fn play_bytes(&mut self, bytes: Vec<u8>, start_ms: u32) -> Result<PlayInfo> {
+        self.play_request(|reply| MacCommand::PlayBytes(bytes, start_ms, reply))
+    }
+
+    fn play_pcm(&mut self, source: PcmSource, decode: DecodeHandle) -> Result<PlayInfo> {
+        self.play_request(|reply| MacCommand::PlayPcm(source, decode, reply))
+    }
+
+    fn pause(&mut self) {
+        let _ = self.tx.send(MacCommand::Pause);
+    }
+
+    fn resume(&mut self) {
+        let _ = self.tx.send(MacCommand::Resume);
+    }
+
+    fn stop(&mut self) {
+        let _ = self.tx.send(MacCommand::Stop);
+    }
+
+    fn seek(&mut self, ms: u32) -> Result<()> {
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        self.tx
+            .send(MacCommand::Seek(ms, reply))
+            .map_err(|_| anyhow!("CoreAudio thread stopped"))?;
+        result
+            .recv()
+            .map_err(|_| anyhow!("CoreAudio thread stopped"))?
+            .map_err(anyhow::Error::msg)
+    }
+
+    fn set_volume(&mut self, volume: f32) {
+        let _ = self.tx.send(MacCommand::SetVolume(volume));
+    }
+
+    fn is_finished(&self) -> bool {
+        matches!(self.status(), OutputStatus::Ended)
+    }
+
+    fn status(&self) -> OutputStatus {
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        if self.tx.send(MacCommand::Status(reply)).is_err() {
+            return OutputStatus::Failed("CoreAudio thread stopped".into());
+        }
+        result
+            .recv()
+            .unwrap_or_else(|_| OutputStatus::Failed("CoreAudio thread stopped".into()))
+    }
+
+    fn recover(&mut self) -> std::result::Result<(), String> {
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        self.tx
+            .send(MacCommand::Recover(reply))
+            .map_err(|_| "CoreAudio thread stopped".to_string())?;
+        result
+            .recv()
+            .map_err(|_| "CoreAudio thread stopped".to_string())?
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for RodioOutput {
+    fn drop(&mut self) {
+        let _ = self.tx.send(MacCommand::Shutdown);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
         }
     }
 }

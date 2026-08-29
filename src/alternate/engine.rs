@@ -119,7 +119,7 @@ pub fn spawn(
     api: Arc<ApiClient>,
     http: reqwest::Client,
     notify: Notify,
-    output: Option<Box<dyn AudioOutput>>,
+    output: Option<Box<dyn AudioOutput + Send>>,
     ytdlp_dir: PathBuf,
 ) -> Result<AlternateHandle, String> {
     config.validate()?;
@@ -136,7 +136,7 @@ fn spawn_inner(
     api: Arc<ApiClient>,
     http: reqwest::Client,
     notify: Notify,
-    output: Box<dyn AudioOutput>,
+    output: Box<dyn AudioOutput + Send>,
     lookup: Arc<dyn MediaLookup>,
 ) -> AlternateHandle {
     let media_http = reqwest::Client::builder()
@@ -168,7 +168,7 @@ struct Engine {
     api: Arc<ApiClient>,
     media_http: reqwest::Client,
     notify: Notify,
-    output: Box<dyn AudioOutput>,
+    output: Box<dyn AudioOutput + Send>,
     lookup: Arc<dyn MediaLookup>,
     tx: mpsc::UnboundedSender<Internal>,
     cancel_rx: watch::Receiver<bool>,
@@ -191,7 +191,7 @@ async fn run(
     api: Arc<ApiClient>,
     media_http: reqwest::Client,
     notify: Notify,
-    output: Box<dyn AudioOutput>,
+    output: Box<dyn AudioOutput + Send>,
     lookup: Arc<dyn MediaLookup>,
     tx: mpsc::UnboundedSender<Internal>,
     mut commands: mpsc::UnboundedReceiver<Internal>,

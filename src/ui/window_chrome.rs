@@ -2,7 +2,7 @@
 
 use egui::{
     Color32, CornerRadius, CursorIcon, Frame, Id, Margin, Order, PointerButton, Pos2, Rect,
-    ResizeDirection, Sense, Stroke, Vec2, ViewportCommand, pos2, vec2,
+    ResizeDirection, Sense, Stroke, ViewportCommand, pos2, vec2,
 };
 
 use crate::app::App;
@@ -10,8 +10,8 @@ use crate::theme::{self, Icon, Palette};
 
 const TITLE_HEIGHT: f32 = 40.0;
 const CONTROL_WIDTH: f32 = 46.0;
+/// The width of every resize hit target, border and corner alike.
 const RESIZE_EDGE: f32 = 5.0;
-const RESIZE_CORNER: f32 = 10.0;
 const FIELD: Color32 = Color32::from_rgb(0x91, 0xc4, 0xff);
 const INK: Color32 = Color32::from_rgb(0x0d, 0x3a, 0x73);
 
@@ -108,6 +108,9 @@ fn chrome_button(
             Sense::click(),
         )
         .on_hover_text(label);
+    // The label doubles as the widget's accessible name; the drawing
+    // itself is glyphs, which a screen reader cannot read.
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     if response.hovered() {
         let fill = if destructive {
             Color32::from_rgb(0xc4, 0x2b, 0x3b)
@@ -141,7 +144,14 @@ fn paint_mark(painter: &egui::Painter, rect: Rect) {
 
 fn resize_handles(ctx: &egui::Context) {
     let viewport = ctx.viewport_rect();
-    for (index, (rect, direction)) in resize_regions(viewport).into_iter().enumerate() {
+    // The caption buttons keep their clicks: the bands stop at their
+    // strip, and the corner that would sit on it is theirs, the way
+    // native Windows gives the close button the top-right corner.
+    let controls = Rect::from_min_size(
+        pos2(viewport.right() - CONTROL_WIDTH * 3.0, viewport.top()),
+        vec2(CONTROL_WIDTH * 3.0, TITLE_HEIGHT),
+    );
+    for (index, (rect, direction)) in resize_regions(viewport, controls).into_iter().enumerate() {
         // One tiny foreground area per edge keeps the window resizable without
         // putting an invisible full-window interaction layer over the app.
         egui::Area::new(Id::new(("oxidify-window-resize", index)))
@@ -161,56 +171,68 @@ fn resize_handles(ctx: &egui::Context) {
     }
 }
 
-fn resize_regions(rect: Rect) -> [(Rect, ResizeDirection); 8] {
-    let top_left = Rect::from_min_size(rect.min, Vec2::splat(RESIZE_CORNER));
-    let top_right = Rect::from_min_size(
-        pos2(rect.right() - RESIZE_CORNER, rect.top()),
-        Vec2::splat(RESIZE_CORNER),
-    );
-    let bottom_left = Rect::from_min_size(
-        pos2(rect.left(), rect.bottom() - RESIZE_CORNER),
-        Vec2::splat(RESIZE_CORNER),
-    );
-    let bottom_right = Rect::from_min_size(
-        pos2(rect.right() - RESIZE_CORNER, rect.bottom() - RESIZE_CORNER),
-        Vec2::splat(RESIZE_CORNER),
-    );
-    let horizontal = (rect.width() - RESIZE_CORNER * 2.0).max(0.0);
-    let vertical = (rect.height() - RESIZE_CORNER * 2.0).max(0.0);
-    [
-        (top_left, ResizeDirection::NorthWest),
-        (top_right, ResizeDirection::NorthEast),
-        (bottom_left, ResizeDirection::SouthWest),
-        (bottom_right, ResizeDirection::SouthEast),
+/// The resize hit targets: a 5px frame of edge bands and corner squares
+/// covering every [`ResizeDirection`]. `reserved` is the caption-button
+/// strip: the top band ends at its left edge, the right band starts below
+/// it, and the corner square that would land on it is left out entirely so
+/// the buttons answer their own clicks.
+fn resize_regions(window: Rect, reserved: Rect) -> Vec<(Rect, ResizeDirection)> {
+    let edge = RESIZE_EDGE;
+    let min = window.min;
+    let max = window.max;
+    // An empty reservation leaves the frame whole.
+    let keep_left = if reserved.is_positive() {
+        reserved.min.x
+    } else {
+        f32::INFINITY
+    };
+    let keep_below = if reserved.is_positive() {
+        reserved.max.y
+    } else {
+        f32::NEG_INFINITY
+    };
+    let mut regions = vec![
         (
-            Rect::from_min_size(
-                pos2(rect.left() + RESIZE_CORNER, rect.top()),
-                vec2(horizontal, RESIZE_EDGE),
+            Rect::from_min_max(min, pos2(min.x + edge, min.y + edge)),
+            ResizeDirection::NorthWest,
+        ),
+        (
+            Rect::from_min_max(pos2(min.x, max.y - edge), pos2(min.x + edge, max.y)),
+            ResizeDirection::SouthWest,
+        ),
+        (
+            Rect::from_min_max(pos2(max.x - edge, max.y - edge), max),
+            ResizeDirection::SouthEast,
+        ),
+        (
+            Rect::from_min_max(
+                pos2(min.x + edge, min.y),
+                pos2(keep_left.min(max.x - edge), min.y + edge),
             ),
             ResizeDirection::North,
         ),
         (
-            Rect::from_min_size(
-                pos2(rect.left() + RESIZE_CORNER, rect.bottom() - RESIZE_EDGE),
-                vec2(horizontal, RESIZE_EDGE),
-            ),
+            Rect::from_min_max(pos2(min.x + edge, max.y - edge), pos2(max.x - edge, max.y)),
             ResizeDirection::South,
         ),
         (
-            Rect::from_min_size(
-                pos2(rect.left(), rect.top() + RESIZE_CORNER),
-                vec2(RESIZE_EDGE, vertical),
-            ),
+            Rect::from_min_max(pos2(min.x, min.y + edge), pos2(min.x + edge, max.y - edge)),
             ResizeDirection::West,
         ),
         (
-            Rect::from_min_size(
-                pos2(rect.right() - RESIZE_EDGE, rect.top() + RESIZE_CORNER),
-                vec2(RESIZE_EDGE, vertical),
+            Rect::from_min_max(
+                pos2(max.x - edge, keep_below.max(min.y + edge)),
+                pos2(max.x, max.y - edge),
             ),
             ResizeDirection::East,
         ),
-    ]
+    ];
+    let north_east = Rect::from_min_max(pos2(max.x - edge, min.y), pos2(max.x, min.y + edge));
+    if !reserved.intersects(north_east) {
+        regions.push((north_east, ResizeDirection::NorthEast));
+    }
+    regions.retain(|(rect, _)| rect.is_positive());
+    regions
 }
 
 fn cursor_for(direction: ResizeDirection) -> CursorIcon {
@@ -226,6 +248,22 @@ fn cursor_for(direction: ResizeDirection) -> CursorIcon {
 mod tests {
     use super::*;
 
+    /// The direction a point grabs, read straight off the hit targets.
+    fn direction_at(point: Pos2, regions: &[(Rect, ResizeDirection)]) -> Option<ResizeDirection> {
+        regions
+            .iter()
+            .find(|(rect, _)| rect.contains(point))
+            .map(|(_, direction)| *direction)
+    }
+
+    /// Where the caption buttons sit in a window.
+    fn controls(window: Rect) -> Rect {
+        Rect::from_min_size(
+            pos2(window.right() - CONTROL_WIDTH * 3.0, window.top()),
+            vec2(CONTROL_WIDTH * 3.0, TITLE_HEIGHT),
+        )
+    }
+
     #[test]
     fn titlebar_controls_keep_windows_order_and_size() {
         let title = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, TITLE_HEIGHT));
@@ -233,17 +271,68 @@ mod tests {
         let maximize = control_rect(title, 1);
         let close = control_rect(title, 2);
         assert_eq!(minimize.width(), CONTROL_WIDTH);
+        assert_eq!(minimize.height(), TITLE_HEIGHT);
         assert_eq!(maximize.left(), minimize.right());
         assert_eq!(close.left(), maximize.right());
         assert_eq!(close.right(), title.right());
+        assert_eq!(close.top(), title.top());
     }
 
     #[test]
-    fn resize_regions_cover_each_direction_without_owning_the_interior() {
-        let viewport = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
-        let regions = resize_regions(viewport);
-        assert_eq!(regions.len(), 8);
-        for (_, direction) in regions {
+    fn resize_directions_at_corners_edges_and_interior() {
+        let window = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let regions = resize_regions(window, controls(window));
+        let grab = |x: f32, y: f32| direction_at(pos2(x, y), &regions);
+        // Corners pick the diagonals they sit on.
+        assert_eq!(grab(2.0, 2.0), Some(ResizeDirection::NorthWest));
+        assert_eq!(grab(2.0, 598.0), Some(ResizeDirection::SouthWest));
+        assert_eq!(grab(798.0, 598.0), Some(ResizeDirection::SouthEast));
+        // Edge midpoints pick their own side.
+        assert_eq!(grab(400.0, 2.0), Some(ResizeDirection::North));
+        assert_eq!(grab(400.0, 598.0), Some(ResizeDirection::South));
+        assert_eq!(grab(2.0, 300.0), Some(ResizeDirection::West));
+        assert_eq!(grab(798.0, 300.0), Some(ResizeDirection::East));
+        // Past the frame, the window belongs to the app.
+        assert_eq!(grab(400.0, 300.0), None);
+        assert_eq!(grab(6.0, 6.0), None);
+        assert_eq!(grab(794.0, 300.0), None);
+    }
+
+    #[test]
+    fn resize_never_takes_the_caption_buttons() {
+        let window = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let reserved = controls(window);
+        let regions = resize_regions(window, reserved);
+        for (rect, _) in &regions {
+            assert!(
+                !rect.intersect(reserved).is_positive(),
+                "{rect:?} covers the buttons"
+            );
+        }
+        // No resize answers inside the button strip, corner and edges
+        // included, so the controls answer their own clicks.
+        for point in [
+            pos2(799.0, 1.0),
+            pos2(799.0, 20.0),
+            pos2(700.0, 2.0),
+            pos2(700.0, 39.0),
+        ] {
+            assert_eq!(direction_at(point, &regions), None, "at {point:?}");
+        }
+    }
+
+    #[test]
+    fn every_direction_has_its_cursor() {
+        for direction in [
+            ResizeDirection::North,
+            ResizeDirection::South,
+            ResizeDirection::East,
+            ResizeDirection::West,
+            ResizeDirection::NorthEast,
+            ResizeDirection::SouthEast,
+            ResizeDirection::NorthWest,
+            ResizeDirection::SouthWest,
+        ] {
             assert_eq!(
                 cursor_for(direction),
                 match direction {
@@ -256,10 +345,14 @@ mod tests {
                 }
             );
         }
-        assert!(
-            resize_regions(viewport)
-                .iter()
-                .all(|(region, _)| !region.contains(viewport.center()))
+        // With nothing reserved, all eight directions get a target, the
+        // north-east corner included.
+        let window = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let regions = resize_regions(window, Rect::NOTHING);
+        assert_eq!(regions.len(), 8);
+        assert_eq!(
+            direction_at(pos2(798.0, 2.0), &regions),
+            Some(ResizeDirection::NorthEast)
         );
     }
 }
