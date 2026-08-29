@@ -20,17 +20,17 @@ use crate::model::*;
 fn image(seed: u32) -> Vec<Image> {
     vec![
         Image {
-            url: format!("https://picsum.photos/seed/fastpotify{seed}/640/640"),
+            url: format!("https://picsum.photos/seed/oxidify{seed}/640/640"),
             width: Some(640),
             height: Some(640),
         },
         Image {
-            url: format!("https://picsum.photos/seed/fastpotify{seed}/300/300"),
+            url: format!("https://picsum.photos/seed/oxidify{seed}/300/300"),
             width: Some(300),
             height: Some(300),
         },
         Image {
-            url: format!("https://picsum.photos/seed/fastpotify{seed}/64/64"),
+            url: format!("https://picsum.photos/seed/oxidify{seed}/64/64"),
             width: Some(64),
             height: Some(64),
         },
@@ -288,14 +288,22 @@ pub fn populate(app: &mut App) {
                         1 + index % 27
                     )),
                     is_local: false,
-                    added_by: None,
+                    // A second pair of hands, so the page reads as made
+                    // together: the Added By column and the byline show.
+                    added_by: Some(crate::api::models::UserRef {
+                        id: Some(if index % 3 == 1 { "kasia" } else { "sam" }.into()),
+                    }),
                     item: Some(PlayableItem::Track(track.clone())),
                     track: None,
                 })
                 .collect(),
         ),
     );
+    playlist_page.contributors.insert("kasia".into());
+    playlist_page.contributors.insert("sam".into());
     app.playlist_pages.insert("pl1".into(), playlist_page);
+    app.user_names.insert("kasia".into(), Some("Kasia".into()));
+    app.user_names.insert("sam".into(), Some("Sam".into()));
     let mut discover_page = PlaylistPage {
         playlist: Loadable::Loaded(playlists[0].clone()),
         ..PlaylistPage::default()
@@ -464,7 +472,7 @@ pub fn populate(app: &mut App) {
     app.devices = vec![
         Device {
             id: Some("local-demo".into()),
-            name: "Fastpotify".into(),
+            name: "Oxidify".into(),
             is_active: false,
             is_restricted: false,
             volume_percent: Some(70),
@@ -525,6 +533,7 @@ pub fn populate(app: &mut App) {
 
 /// Words to go with the sample track, timed so that the one being sung
 /// sits mid-panel at the demo's playback position.
+#[cfg(feature = "demo")]
 fn sample_lyrics() -> crate::lyrics::Lyrics {
     let lines = [
         (40_000, "Streetlights blinking down the river road"),
@@ -558,6 +567,9 @@ fn sample_lyrics() -> crate::lyrics::Lyrics {
 /// Applies `--demo-page` and `--demo-show`.
 #[cfg(feature = "demo")]
 pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
+    // Whatever the settings on this machine say, a shot is of the big
+    // window unless the mini player is asked for.
+    app.settings.winamp_window = false;
     if let Some(page) = page.and_then(Page::decode) {
         app.open(page);
     }
@@ -576,6 +588,34 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
             "light" => {
                 app.settings.theme = crate::settings::ThemeChoice::Light;
                 app.actions.push(Action::SettingsChanged);
+            }
+            "focus" => app.settings.sidebar_visible = false,
+            // The built-in skin, whatever the settings say, so shots are
+            // the same everywhere and never show someone else's art.
+            "winamp" => {
+                app.settings.winamp_window = true;
+                app.settings.skin = None;
+            }
+            "playlist" => app.settings.playlist_open = true,
+            "shade" => app.settings.winamp_shaded = true,
+            "playlist-shade" => app.settings.playlist_shaded = true,
+            "eq" => {
+                app.settings.eq_open = true;
+                app.settings.eq_on = true;
+                app.settings.eq_bands_db = crate::eq::PRESETS[13].bands_db;
+            }
+            "pins" => {
+                app.settings.pinned_contexts =
+                    vec!["spotify:playlist:pl2".into(), "spotify:playlist:pl4".into()];
+            }
+            "sorted" => {
+                app.table_sorts.insert(
+                    Page::Playlist("pl1".into()),
+                    crate::model::TableSort {
+                        column: crate::model::SortColumn::Added,
+                        ascending: false,
+                    },
+                );
             }
             "lyrics" => {
                 app.lyrics_uri = app.now_playing().map(|now| now.uri);
@@ -625,6 +665,13 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                         }
                     }
                 }
+                if let Loadable::Loaded(queue) = &mut app.queue {
+                    for (item, names) in queue.queue.iter_mut().zip(titles) {
+                        if let PlayableItem::Track(track) = item {
+                            rename(track, names);
+                        }
+                    }
+                }
                 if let Some(remote) = &mut app.remote
                     && let Some(PlayableItem::Track(track)) = &mut remote.state.item
                 {
@@ -663,11 +710,16 @@ mod tests {
     use crate::settings::Settings;
 
     fn frame(ctx: &egui::Context, app: &mut App) {
+        frame_events(ctx, app, Vec::new());
+    }
+
+    fn frame_events(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(1280.0, 800.0),
             )),
+            events,
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
@@ -679,8 +731,7 @@ mod tests {
     /// Every page, panel, and dialog lays out without panicking.
     #[test]
     fn every_surface_renders_headless() {
-        let root =
-            std::env::temp_dir().join(format!("fastpotify-render-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("oxidify-render-test-{}", std::process::id()));
         let dirs = AppDirs {
             config: root.join("config"),
             state: root.join("state"),
@@ -725,6 +776,9 @@ mod tests {
             }
             assert_eq!(app.page(), &page);
         }
+        app.settings.sidebar_visible = false;
+        frame(&ctx, &mut app);
+        app.settings.sidebar_visible = true;
         app.show_queue_panel = true;
         app.show_devices = true;
         frame(&ctx, &mut app);
@@ -759,5 +813,370 @@ mod tests {
         assert!(!app.palette.dark);
         app.backend.shutdown();
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A drag in flight renders, and releasing it over an owned playlist
+    /// row lands in the same add-to-playlist plumbing the row menu uses.
+    #[test]
+    fn dropping_a_song_on_a_sidebar_playlist_adds_it() {
+        let root = std::env::temp_dir().join(format!("oxidify-drag-test-{}", std::process::id()));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let ctx = egui::Context::default();
+        let waker = crate::backend::Waker::default();
+        waker.attach(&ctx);
+        let mut app = App::new(
+            &waker,
+            dirs,
+            Settings::default(),
+            AppOptions {
+                media_controls: false,
+                tray: false,
+            },
+        );
+        app.attach(&ctx);
+        populate(&mut app);
+        app.open(Page::Playlist("pl1".into()));
+        for _ in 0..3 {
+            frame(&ctx, &mut app);
+        }
+
+        // Sweep a held track down the sidebar; somewhere along the sweep
+        // the pointer crosses an owned playlist row, and releasing there
+        // must mark the playlist edit busy through the existing plumbing.
+        // Where exactly the rows sit depends on the loaded fonts, so the
+        // sweep does not hardcode a row position.
+        let mut dropped = false;
+        for step in 0..40 {
+            let pos = egui::pos2(120.0, 120.0 + step as f32 * 15.0);
+            egui::DragAndDrop::set_payload(
+                &ctx,
+                DragTrack {
+                    uri: "spotify:track:trk0".into(),
+                    title: "Fragments".into(),
+                    image: None,
+                    from: None,
+                },
+            );
+            frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(pos)]);
+            frame_events(
+                &ctx,
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            assert!(!egui::DragAndDrop::has_any_payload(&ctx));
+            if app.playlist_busy {
+                dropped = true;
+                break;
+            }
+        }
+        assert!(dropped, "no sweep position landed on an owned playlist row");
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Pins are pins: dropping a pinned row at the top of the block
+    /// reorders the pins themselves, and the rest of the shelf stays in
+    /// its automatic order.
+    #[test]
+    fn dragging_within_the_pinned_block_reorders_it() {
+        let root =
+            std::env::temp_dir().join(format!("oxidify-reorder-test-{}", std::process::id()));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let ctx = egui::Context::default();
+        let waker = crate::backend::Waker::default();
+        waker.attach(&ctx);
+        let mut app = App::new(
+            &waker,
+            dirs,
+            Settings::default(),
+            AppOptions {
+                media_controls: false,
+                tray: false,
+            },
+        );
+        app.attach(&ctx);
+        populate(&mut app);
+        app.settings.pinned_contexts =
+            vec!["spotify:playlist:pl2".into(), "spotify:playlist:pl4".into()];
+        for _ in 0..3 {
+            frame(&ctx, &mut app);
+        }
+
+        // Sweep from the top: the first slot inside the list drops the
+        // dragged row right under Liked Songs. Where the list begins
+        // depends on the loaded fonts, so the sweep does not hardcode it.
+        let mut dropped = false;
+        for step in 0..40 {
+            let pos = egui::pos2(120.0, 100.0 + step as f32 * 10.0);
+            egui::DragAndDrop::set_payload(
+                &ctx,
+                DragEntry {
+                    uri: "spotify:playlist:pl4".into(),
+                    title: "Release Radar".into(),
+                    image: None,
+                },
+            );
+            frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(pos)]);
+            frame_events(
+                &ctx,
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            egui::DragAndDrop::clear_payload(&ctx);
+            if app.settings.pinned_contexts.first().map(String::as_str)
+                == Some("spotify:playlist:pl4")
+            {
+                dropped = true;
+                break;
+            }
+        }
+        assert!(dropped, "no sweep position landed in the pinned block");
+        assert_eq!(
+            app.settings.pinned_contexts,
+            vec![
+                "spotify:playlist:pl4".to_string(),
+                "spotify:playlist:pl2".to_string(),
+            ],
+        );
+        assert!(app.settings.sidebar_order.is_empty());
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A drop between two unpinned playlists creates the custom order too:
+    /// nothing was pinned, so the snapshot is simply the shelf as shown
+    /// with the moved row in its new place.
+    #[test]
+    fn dropping_between_unpinned_playlists_creates_the_custom_order() {
+        let root =
+            std::env::temp_dir().join(format!("oxidify-unpinned-test-{}", std::process::id()));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let ctx = egui::Context::default();
+        let waker = crate::backend::Waker::default();
+        waker.attach(&ctx);
+        let mut app = App::new(
+            &waker,
+            dirs,
+            Settings::default(),
+            AppOptions {
+                media_controls: false,
+                tray: false,
+            },
+        );
+        app.attach(&ctx);
+        populate(&mut app);
+        assert!(app.settings.pinned_contexts.is_empty());
+        assert!(app.settings.sidebar_order.is_empty());
+        for _ in 0..3 {
+            frame(&ctx, &mut app);
+        }
+
+        // Sweep from the top; the first slot inside the list is the one
+        // right under Liked Songs, between what were the first two
+        // unpinned playlists.
+        let mut dropped = false;
+        for step in 0..40 {
+            let pos = egui::pos2(120.0, 100.0 + step as f32 * 10.0);
+            egui::DragAndDrop::set_payload(
+                &ctx,
+                DragEntry {
+                    uri: "spotify:playlist:pl4".into(),
+                    title: "Release Radar".into(),
+                    image: None,
+                },
+            );
+            frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(pos)]);
+            frame_events(
+                &ctx,
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            egui::DragAndDrop::clear_payload(&ctx);
+            if !app.settings.sidebar_order.is_empty() {
+                dropped = true;
+                break;
+            }
+        }
+        assert!(dropped, "no sweep position landed below Liked Songs");
+        let expected: Vec<String> = std::iter::once(4)
+            .chain((0..PLAYLISTS.len()).filter(|index| *index != 4))
+            .map(|index| format!("spotify:playlist:pl{index}"))
+            .collect();
+        assert_eq!(app.settings.sidebar_order, expected);
+        assert!(app.settings.pinned_contexts.is_empty());
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Dragging a row within an owned playlist's table moves it through
+    /// the same MoveInPlaylist action the menu's move items use: the slot
+    /// is Spotify's insert-before, which the handler mirrors locally
+    /// before asking the server.
+    #[test]
+    fn dragging_a_row_within_a_playlist_reorders_it() {
+        let root = std::env::temp_dir().join(format!("oxidify-move-test-{}", std::process::id()));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let ctx = egui::Context::default();
+        let waker = crate::backend::Waker::default();
+        waker.attach(&ctx);
+        let mut app = App::new(
+            &waker,
+            dirs,
+            Settings::default(),
+            AppOptions {
+                media_controls: false,
+                tray: false,
+            },
+        );
+        app.attach(&ctx);
+        populate(&mut app);
+        app.open(Page::Playlist("pl1".into()));
+        for _ in 0..3 {
+            frame(&ctx, &mut app);
+        }
+        let order = |app: &App| -> Vec<String> {
+            app.playlist_pages["pl1"]
+                .items
+                .items
+                .iter()
+                .filter_map(|item| item.playable().map(|playable| playable.uri().to_string()))
+                .collect()
+        };
+        let original = order(&app);
+        let from = 5usize;
+        let held = |from: usize, uri: &str| DragTrack {
+            uri: uri.to_string(),
+            title: "Closer".into(),
+            image: None,
+            from: Some(("pl1".into(), from as u32)),
+        };
+
+        // Sweep the held row down the page; above the table nothing
+        // bites, and the first slot inside it lands the row above its old
+        // place. Where the table begins depends on the loaded fonts, so
+        // the sweep does not hardcode it.
+        let mut landed = None;
+        for step in 0..45 {
+            let pos = egui::pos2(700.0, 120.0 + step as f32 * 15.0);
+            egui::DragAndDrop::set_payload(&ctx, held(from, &original[from]));
+            frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(pos)]);
+            frame_events(
+                &ctx,
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            egui::DragAndDrop::clear_payload(&ctx);
+            if app.playlist_busy {
+                landed = Some(pos);
+                break;
+            }
+        }
+        let landed = landed.expect("no sweep position landed inside the table");
+        let drop_at = |ctx: &egui::Context, app: &mut App, payload: DragTrack| {
+            egui::DragAndDrop::set_payload(ctx, payload);
+            frame_events(ctx, app, vec![egui::Event::PointerMoved(landed)]);
+            frame_events(
+                ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos: landed,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            egui::DragAndDrop::clear_payload(ctx);
+        };
+        // The handler mirrored the move locally: the dragged row moved
+        // up, everything else kept its order.
+        let now = order(&app);
+        let to = now
+            .iter()
+            .position(|uri| *uri == original[from])
+            .expect("the dragged row vanished");
+        assert!(to < from, "the row should have moved up, not to {to}");
+        let mut expected = original.clone();
+        let moved = expected.remove(from);
+        expected.insert(to, moved);
+        assert_eq!(now, expected);
+
+        // Dropping the row on the same slot again moves nothing: the slot
+        // is insert-before, so a row's own edges are a no-op. A slot sent
+        // one row out would move it here.
+        app.playlist_busy = false;
+        drop_at(&ctx, &mut app, held(to, &expected[to]));
+        assert!(!app.playlist_busy, "a row dropped on its own slot moved");
+        assert_eq!(order(&app), expected);
+
+        // A sorted view refuses the move: positions on screen no longer
+        // match the server's.
+        app.table_sorts.insert(
+            Page::Playlist("pl1".into()),
+            TableSort {
+                column: SortColumn::Title,
+                ascending: true,
+            },
+        );
+        frame(&ctx, &mut app);
+        drop_at(&ctx, &mut app, held(to, &expected[to]));
+        assert!(!app.playlist_busy, "a sorted view accepted a move");
+        assert_eq!(order(&app), expected);
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The custom order is a setting like any other: it survives the trip
+    /// through the settings file, and older files without it stay in the
+    /// automatic order.
+    #[test]
+    fn custom_sidebar_order_round_trips_through_settings() {
+        let settings = Settings {
+            sidebar_order: vec![
+                "spotify:playlist:pl4".to_string(),
+                "spotify:playlist:pl0".to_string(),
+            ],
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.sidebar_order, settings.sidebar_order);
+        let older: Settings = serde_json::from_str("{}").unwrap();
+        assert!(older.sidebar_order.is_empty());
     }
 }

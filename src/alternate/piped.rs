@@ -23,7 +23,7 @@ impl PipedClient {
             anyhow::bail!("Piped API base URL must use http or https");
         }
         let http = reqwest::Client::builder()
-            .user_agent(concat!("fastpotify/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("oxidify/", env!("CARGO_PKG_VERSION")))
             .timeout(SEARCH_TIMEOUT)
             .connect_timeout(Duration::from_secs(8))
             .redirect(reqwest::redirect::Policy::limited(4))

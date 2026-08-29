@@ -123,6 +123,13 @@ impl<T> Loadable<T> {
             Err(error) => Loadable::Failed(error.to_string()),
         }
     }
+
+    /// Keeps an already loaded value when a refresh fails.
+    pub fn refresh<E: std::fmt::Display>(&mut self, result: Result<T, E>) {
+        if result.is_ok() || self.get().is_none() {
+            *self = Self::from_result(result);
+        }
+    }
 }
 
 /// An offset-paginated list that loads on demand as the user scrolls.
@@ -169,11 +176,10 @@ impl<T> PagedList<T> {
         if (offset as usize) < self.items.len() {
             self.items.truncate(offset as usize);
         }
-        let received = page.items.len() as u32;
+        let next_offset = page.next_offset();
         self.items.extend(page.items);
         self.total = Some(page.total);
-        let more = page.next.is_some() && received > 0;
-        self.next_offset = more.then_some(offset + received);
+        self.next_offset = next_offset;
         self.loading = false;
         self.error = None;
         self.loaded_once = true;
@@ -246,6 +252,9 @@ pub struct HomeData {
     pub top_songs_complete: bool,
     pub recommendations: Loadable<Vec<Track>>,
     pub discover: HashMap<String, Loadable<Vec<Playlist>>>,
+    pub discover_pending: HashMap<String, Loadable<Vec<Playlist>>>,
+    pub generation: u64,
+    pub top_songs_generation: u64,
     pub requested: bool,
     pub loaded_at: Option<Instant>,
 }
@@ -301,6 +310,7 @@ pub struct SearchState {
 
 #[derive(Default)]
 pub struct PlaylistPage {
+    pub generation: u64,
     pub playlist: Loadable<Playlist>,
     pub items: PagedList<PlaylistItem>,
     pub filter: String,
@@ -370,19 +380,21 @@ pub struct ShowPage {
 }
 
 /// A table's sort, chosen by clicking a column heading.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TableSort {
     pub column: SortColumn,
     pub ascending: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SortColumn {
     Title,
     Album,
     Added,
     Duration,
     AddedBy,
+    /// The list's own order, for playing it reversed from the # heading.
+    Index,
 }
 
 /// One of the things a track row can be part of, for playback context and
@@ -397,6 +409,34 @@ pub enum RowContext {
     },
     /// A loose list of tracks, played as a queue of URIs.
     Uris(Vec<String>),
+    /// A sorted or filtered view of a context: plays exactly the list on
+    /// screen, while the context stays what the interface calls playing.
+    View {
+        uris: Vec<String>,
+        context_uri: String,
+    },
+}
+
+/// The track in hand while a row is dragged, until a sidebar row takes it.
+#[derive(Clone, Debug)]
+pub struct DragTrack {
+    pub uri: String,
+    pub title: String,
+    /// Small cover art for the chip that rides the pointer.
+    pub image: Option<String>,
+    /// Where the drag began when it began on an editable playlist: that
+    /// playlist's id and the row's real index, so the same table can move
+    /// the row instead of copying it. The sidebar ignores this.
+    pub from: Option<(String, u32)>,
+}
+
+/// A sidebar row in hand while it is dragged to a new place in the
+/// pinned block.
+#[derive(Clone, Debug)]
+pub struct DragEntry {
+    pub uri: String,
+    pub title: String,
+    pub image: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -527,8 +567,9 @@ pub enum Action {
     SignIn,
     CancelSignIn,
     SignOut,
-    /// Sign in again with the Web API application named in Settings.
-    SwitchWebApp,
+    /// Add, replace, or remove the optional personal Web API app.
+    ConfigurePersonalWebApp,
+    ToggleSidebar,
     ToggleQueuePanel,
     ToggleLyricsPanel,
     ToggleDevicesPopup,
@@ -538,5 +579,36 @@ pub enum Action {
     ShowWindow,
     HideWindow,
     ClearArtCache,
+    /// Open or close the Winamp window.
+    ToggleWinampWindow,
+    /// Wear a skin from the skins folder, or the built-in one for `None`.
+    SetSkin(Option<String>),
+    /// Copy a skin file into the skins folder and wear it.
+    InstallSkin(std::path::PathBuf),
+    /// Screen pixels per skin pixel in the Winamp window.
+    SetSkinScale(u8),
+    ToggleWinampOnTop,
+    OpenSkinsFolder,
+    /// Bars, then the scope, then nothing, in the mini player's display.
+    CycleVisualiser,
+    /// Open or close the playlist window under the mini player.
+    ToggleWinampPlaylist,
+    /// The playlist window's height, in skin pixels.
+    SetPlaylistHeight(u32),
+    /// Open or close the equalizer window under the mini player.
+    ToggleWinampEq,
+    /// Switch the equalizer's effect on the sound on or off.
+    ToggleEq,
+    SetEqBand(usize, f32),
+    SetEqPreamp(f32),
+    /// One of Winamp's presets, by its place in the list.
+    ApplyEqPreset(usize),
+    /// The balance, -1 all left to 1 all right.
+    SetBalance(f32),
+    ToggleMono,
+    /// Roll the playlist window up to its title bar, or down again.
+    ToggleWinampPlaylistShade,
+    /// Roll the main window up to its title bar, or down again.
+    ToggleWinampShade,
     Quit,
 }

@@ -1,45 +1,54 @@
 ---
 title: Settings & Files
-description: Where Fastpotify keeps configuration, credentials, and caches, and what is safe to delete.
+description: Where Oxidify keeps configuration, credentials, and caches, and what is safe to delete.
 nav_order: 0
 ---
 
 ## Where things live
 
-Fastpotify follows each platform's conventions. On Linux:
+Oxidify follows each platform's conventions. On Linux:
 
 | What | Where | Safe to delete? |
 | --- | --- | --- |
-| Settings | `~/.config/fastpotify/settings.json` | Yes, you lose preferences |
-| Web API sign-in | `~/.local/state/fastpotify/web_api_token.json` | Yes, you sign in again |
-| Playback credential | `~/.local/state/fastpotify/credentials/` | Yes, you approve playback again |
-| Last session | `~/.local/state/fastpotify/session.json` | Yes |
-| Audio cache | `~/.cache/fastpotify/audio/` | Always |
-| Artwork cache | `~/.cache/fastpotify/art/` | Always |
-| Lyrics cache | `~/.cache/fastpotify/lyrics/` | Always |
-| Last run's log | `~/.local/state/fastpotify/fastpotify.log` | Always |
-| Crash log | `~/.local/state/fastpotify/panic.log` | Always |
-| Bundled yt-dlp | `~/.local/state/fastpotify/bin/` | Yes; the app extracts it again |
+| Settings | `~/.config/oxidify/settings.json` | Yes, you lose preferences |
+| Winamp skins | `~/.config/oxidify/skins/` | Yes, you add them again |
+| Shared Web API sign-in | `~/.local/state/oxidify/shared_web_api_token.json` | Yes, you sign in again |
+| Personal Web API sign-in | `~/.local/state/oxidify/personal_web_api_token.json` | Yes, personal acceleration is removed |
+| Playback credential | `~/.local/state/oxidify/credentials/` | Yes, you approve playback again |
+| Last session | `~/.local/state/oxidify/session.json` | Yes |
+| Audio cache | `~/.cache/oxidify/audio/` | Always |
+| Artwork cache | `~/.cache/oxidify/art/` | Always |
+| Lyrics cache | `~/.cache/oxidify/lyrics/` | Always |
+| Account-scoped playlist cache | `~/.cache/oxidify/playlists/<account-id>/` | Always |
+| Last run's log | `~/.local/state/oxidify/oxidify.log` | Always |
+| Crash log | `~/.local/state/oxidify/panic.log` | Always |
+| Bundled yt-dlp | `~/.local/state/oxidify/bin/` | Yes; the app extracts it again |
 
 Clearing caches never signs you out; credentials live in *state*, not
-*cache*, precisely so cleanup tools cannot log you out. Both credential
-files are written with owner-only permissions. Signing out from Settings
-deletes both.
+*cache*. Web API token files are written with owner-only permissions.
+Signing out from Settings deletes both Web API grants and the separate
+playback credential.
 
 On macOS, settings, state, and the logs are in
-`~/Library/Application Support/me.paolino.fastpotify` and the caches in
-`~/Library/Caches/me.paolino.fastpotify`. On Windows, settings are in
-`%APPDATA%\paolino\fastpotify\config`, state and the logs in
-`%LOCALAPPDATA%\paolino\fastpotify\data`, and the caches in
-`%LOCALAPPDATA%\paolino\fastpotify\cache`.
+`~/Library/Application Support/me.master0ffate.oxidify` and the caches in
+`~/Library/Caches/me.master0ffate.oxidify`. On Windows, settings are in
+`%APPDATA%\master0ffate\oxidify\config`, state and the logs in
+`%LOCALAPPDATA%\master0ffate\oxidify\data`, and the caches in
+`%LOCALAPPDATA%\master0ffate\oxidify\cache`.
+
+Fastpotify, the project Oxidify is derived from, kept its files in
+`fastpotify` directories next to these. The first run after switching
+imports settings, sign-ins, skins, and playback credentials from there,
+once; the old directories are left untouched.
 
 ## settings.json
 
-One readable JSON file, written atomically. The interesting fields:
+Settings are stored in one readable JSON file and written atomically. Its
+main fields are:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `device_name` | `Fastpotify` | Name on Spotify Connect |
+| `device_name` | `Oxidify` | Name on Spotify Connect |
 | `bitrate` | `320` | 96, 160, or 320 kbps |
 | `normalisation` | `false` | Volume normalisation |
 | `autoplay` | `true` | Keep playing similar music at the end |
@@ -48,9 +57,24 @@ One readable JSON file, written atomically. The interesting fields:
 | `audio_cache_mb` | `1024` | On-disk audio cache budget |
 | `theme` | `dark` | `dark`, `light`, or `system` |
 | `accent_from_art` | `true` | Tint pages with album art |
+| `winamp_window` | `false` | The window is the Winamp mini player |
+| `skin` | none | A file or folder name in the skins folder; the built-in skin when absent |
+| `skin_scale` | by display | Screen pixels per skin pixel, 1 to 4 |
+| `winamp_on_top` | `false` | Keep the mini player above other windows |
+| `vis` | `bars` | The mini player's visualiser: `bars`, `scope`, or `off` |
+| `playlist_open` | `false` | The playlist window is open under the mini player |
+| `playlist_height` | `174` | The playlist window's height in skin pixels |
+| `eq_open` | `false` | The equalizer window is open under the mini player |
+| `eq_on` | `false` | The equalizer shapes local playback |
+| `eq_preamp_db` | `0` | The preamp, in decibels, never above zero |
+| `eq_bands_db` | ten zeros | The bands from 60 Hz to 16 kHz, in decibels, -12 to 12 |
+| `balance` | `0` | Left to right, -1 to 1, for local playback |
+| `mono` | `false` | Play both channels the same |
+| `playlist_shaded` | `false` | The playlist window is rolled up to its title bar |
+| `winamp_shaded` | `false` | The main window is rolled up to its title bar |
 | `keep_playing_in_background` | `true` | Close to tray |
 | `check_for_updates` | `true` | Ask GitHub once a day for a newer release |
-| `web_client_id` | none | Your own Spotify app id, if you set one |
+| `web_client_id` | none | Optional personal Spotify app id used alongside shared coverage |
 | `playback_backend` | `spotify` | `spotify` (Connect / librespot) or `alternate` |
 | `piped_api_base` | empty | Piped-compatible API base URL you run or choose |
 | `ytdlp_path` | empty | Optional user yt-dlp; used only if strictly newer than the official pin |
@@ -60,16 +84,16 @@ One readable JSON file, written atomically. The interesting fields:
 ## Command line
 
 ```
-fastpotify [OPTIONS]
+oxidify [OPTIONS]
 
   --device-name <NAME>  Spotify Connect name for this session
   -v, --verbose         More logs from librespot and the API client
 ```
 
-`fastpotify.log` in the state directory is what to attach to a bug report:
-it holds the last run's output, the same lines `fastpotify -v` prints, so a
-run with `-v` says the most. If the app vanished, `panic.log` next to it
-says where it died; attach that too.
+`oxidify.log` in the state directory is what to attach to a bug report:
+it contains the last run's output, including the additional lines printed by
+`oxidify -v`. If the app crashed, attach `panic.log` from the same directory
+as well.
 
 ## Demo mode
 
@@ -79,7 +103,8 @@ interface work. Demo mode never writes settings.
 
 `--demo-page` opens a page, such as `home`, `playlist:pl1`, or `artist:art0`,
 and `--demo-show` adds surfaces on top of it: a comma separated list of
-`queue`, `devices`, `shortcuts`, `create`, and `light`.
+`queue`, `devices`, `shortcuts`, `create`, `light`, `focus`, `winamp`,
+`playlist`, and `eq`.
 
 `--demo-shot <PATH>` writes the window to a PNG and exits, which is how the
 screenshots in these pages are made:

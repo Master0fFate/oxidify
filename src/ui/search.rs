@@ -243,20 +243,50 @@ fn top_result(
             pos2(rect.right() - 20.0, rect.bottom()),
         );
         let painter = ui.painter().with_clip_rect(text_clip);
-        painter.text(
-            pos2(text_clip.left(), text_clip.top() + 16.0),
-            egui::Align2::LEFT_CENTER,
-            title,
-            theme::bold(26.0),
-            palette.text,
-        );
-        painter.text(
-            pos2(text_clip.left(), text_clip.top() + 46.0),
-            egui::Align2::LEFT_CENTER,
-            subtitle,
-            theme::regular(13.5),
-            palette.secondary,
-        );
+        {
+            let display = crate::bidi::display_text(title);
+            let is_rtl = crate::bidi::is_rtl(title);
+            let (pos, anchor) = if is_rtl {
+                (
+                    pos2(text_clip.right(), text_clip.top() + 16.0),
+                    egui::Align2::RIGHT_CENTER,
+                )
+            } else {
+                (
+                    pos2(text_clip.left(), text_clip.top() + 16.0),
+                    egui::Align2::LEFT_CENTER,
+                )
+            };
+            painter.text(
+                pos,
+                anchor,
+                display.into_owned(),
+                theme::bold(26.0),
+                palette.text,
+            );
+        }
+        {
+            let display = crate::bidi::display_text(subtitle);
+            let is_rtl = crate::bidi::is_rtl(subtitle);
+            let (pos, anchor) = if is_rtl {
+                (
+                    pos2(text_clip.right(), text_clip.top() + 46.0),
+                    egui::Align2::RIGHT_CENTER,
+                )
+            } else {
+                (
+                    pos2(text_clip.left(), text_clip.top() + 46.0),
+                    egui::Align2::LEFT_CENTER,
+                )
+            };
+            painter.text(
+                pos,
+                anchor,
+                display.into_owned(),
+                theme::regular(13.5),
+                palette.secondary,
+            );
+        }
         if hovered && let Some(uri) = &play_uri {
             let button = Rect::from_center_size(
                 pos2(rect.right() - 44.0, rect.bottom() - 44.0),
@@ -335,6 +365,7 @@ fn songs(app: &mut App, ui: &mut egui::Ui, results: &SearchResults, limit: usize
                 added_by: None,
                 show_added_by: false,
                 compact: limit != usize::MAX,
+                shift: 0.0,
             },
         );
     }

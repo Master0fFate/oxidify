@@ -105,7 +105,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui,
             &palette,
             "Make it even faster",
-            "Spotify limits each app, and everyone shares this one. An app of your own has its own limit, but opens only playlists you own. Paste its Client ID here.",
+            "Add your own Spotify Development Mode app as optional acceleration. Oxidify keeps the shared app for catalog coverage and external playlists.",
             |ui| {
                 let response = Frame::new()
                     .fill(palette.surface)
@@ -136,51 +136,59 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             |ui| {
                 if theme::pill_button(ui, &palette, "Show me how", false).clicked() {
                     app.actions.push(Action::OpenUrl(
-                        "https://fastpotify.rocks/make-it-even-faster/".into(),
+                        "https://github.com/Master0fFate/oxidify#personal-web-api-app-optional"
+                            .into(),
                     ));
                 }
             },
         );
-        // Whether the app named above is the one signed in with. Switching
-        // means one more trip through the browser, so it is a button, not a
-        // side effect of typing.
         let wanted = app
             .settings
             .web_client_id
             .as_deref()
             .map(str::trim)
             .filter(|id| !id.is_empty())
-            .unwrap_or(crate::auth::DEFAULT_WEB_CLIENT_ID)
-            .to_string();
-        let own = wanted != crate::auth::DEFAULT_WEB_CLIENT_ID;
-        let in_use = app.web_app.as_deref() == Some(wanted.as_str());
-        if in_use && own {
+            .map(str::to_string);
+        let in_use = wanted
+            .as_deref()
+            .is_some_and(|wanted| app.web_app.as_deref() == Some(wanted));
+        if in_use {
             widgets::setting_row(
                 ui,
                 &palette,
-                "Your app is in use",
-                "Requests go through your own limit.",
+                "Personal acceleration is ready",
+                "Supported requests use your app. Shared catalog coverage stays available.",
                 |ui| {
-                    theme::text(ui, "In use", theme::medium(13.0), palette.accent);
+                    if theme::pill_button(ui, &palette, "Remove", false).clicked() {
+                        app.settings.web_client_id = None;
+                        app.actions.push(Action::ConfigurePersonalWebApp);
+                    }
                 },
             );
-        } else if !in_use && app.web_app.is_some() {
-            let (title, detail) = if own {
-                (
-                    "Ready to switch to your app",
-                    "Fastpotify signs in again with it; your browser opens once.",
-                )
-            } else {
-                (
-                    "Back to the shared app?",
-                    "Fastpotify signs in again with it; your browser opens once.",
-                )
-            };
-            widgets::setting_row(ui, &palette, title, detail, |ui| {
-                if theme::pill_button(ui, &palette, "Switch now", true).clicked() {
-                    app.actions.push(Action::SwitchWebApp);
-                }
-            });
+        } else if wanted.is_some() {
+            widgets::setting_row(
+                ui,
+                &palette,
+                "Authorize your personal app",
+                "Spotify opens once to verify that both sessions belong to this account.",
+                |ui| {
+                    if theme::pill_button(ui, &palette, "Authorize", true).clicked() {
+                        app.actions.push(Action::ConfigurePersonalWebApp);
+                    }
+                },
+            );
+        } else if app.web_app.is_some() {
+            widgets::setting_row(
+                ui,
+                &palette,
+                "Remove personal app",
+                "Shared access remains signed in.",
+                |ui| {
+                    if theme::pill_button(ui, &palette, "Remove", false).clicked() {
+                        app.actions.push(Action::ConfigurePersonalWebApp);
+                    }
+                },
+            );
         }
     });
 
@@ -343,9 +351,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 "yt-dlp path",
                 ytdlp_error.as_deref().unwrap_or(
                     if crate::alternate::has_bundled_ytdlp() {
-                        "Optional. Fastpotify extracts an official pinned yt-dlp locally and never downloads it at runtime. A strictly newer installed yt-dlp (this path or PATH) wins. Spotify tokens are never sent to it."
+                        "Optional. Oxidify extracts an official pinned yt-dlp locally and never downloads it at runtime. A strictly newer installed yt-dlp (this path or PATH) wins. Spotify tokens are never sent to it."
                     } else {
-                        "Optional. Blank uses yt-dlp on PATH. This build has no bundled yt-dlp. Fastpotify never downloads yt-dlp at runtime and never sends Spotify tokens to it."
+                        "Optional. Blank uses yt-dlp on PATH. This build has no bundled yt-dlp. Oxidify never downloads yt-dlp at runtime and never sends Spotify tokens to it."
                     },
                 ),
                 |ui| {
@@ -431,8 +439,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        for (kbps, label) in [(320u16, "Very high"), (160, "High"), (96, "Normal")]
-                        {
+                        for (kbps, label) in [
+                            (320u16, "Very high · 320 kbps"),
+                            (160, "High · 160 kbps"),
+                            (96, "Normal · 96 kbps"),
+                        ] {
                             if theme::soft_button(
                                 ui,
                                 &palette,
@@ -492,7 +503,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui,
             &palette,
             "Keep music playing when the window closes",
-            "Fastpotify hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
+            "Oxidify hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
             |ui| {
                 if widgets::switch(ui, &palette, &mut app.settings.keep_playing_in_background)
                     .changed()
@@ -632,6 +643,190 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             },
         );
+        widgets::setting_row(
+            ui,
+            &palette,
+            "Interface zoom",
+            "Ctrl+Plus and Ctrl+Minus work anywhere; Ctrl+0 resets.",
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let mut zoom = app.settings.zoom;
+                    if theme::soft_button(ui, &palette, None, "-", false).clicked() {
+                        zoom = (zoom - 0.1).max(0.5);
+                    }
+                    theme::text(
+                        ui,
+                        format!("{:.0}%", zoom * 100.0),
+                        theme::medium(13.5),
+                        palette.text,
+                    );
+                    if theme::soft_button(ui, &palette, None, "+", false).clicked() {
+                        zoom = (zoom + 0.1).min(2.5);
+                    }
+                    if (zoom - app.settings.zoom).abs() > 0.001 {
+                        app.settings.zoom = zoom;
+                        ui.ctx().set_zoom_factor(zoom);
+                        app.mark_settings_dirty();
+                    }
+                });
+            },
+        );
+    });
+
+    section(ui, &palette, "Winamp skins", |ui| {
+        widgets::setting_row(
+            ui,
+            &palette,
+            "Mini player",
+            "Oxidify becomes a small player that wears classic Winamp skins (.wsz files); the logo in the skin, or Ctrl+M, brings this window back. Drop a skin on either window to add it.",
+            |ui| {
+                if theme::pill_button(ui, &palette, "Switch to it", true).clicked() {
+                    app.actions.push(Action::ToggleWinampWindow);
+                }
+            },
+        );
+        let folder = app.dirs.skins_dir();
+        app.winamp.refresh_choices(&folder);
+        widgets::setting_row(
+            ui,
+            &palette,
+            "Skin",
+            &format!(
+                "Skins in {} are listed here. Thousands more are at the Winamp Skin Museum.",
+                folder.display()
+            ),
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    if theme::soft_button(ui, &palette, Some(Icon::Globe), "Skin Museum", false)
+                        .clicked()
+                    {
+                        app.actions
+                            .push(Action::OpenUrl("https://skins.webamp.org/".into()));
+                    }
+                    if theme::soft_button(
+                        ui,
+                        &palette,
+                        Some(Icon::ExternalLink),
+                        "Open folder",
+                        false,
+                    )
+                    .clicked()
+                    {
+                        app.actions.push(Action::OpenSkinsFolder);
+                    }
+                });
+            },
+        );
+        let choices = app.winamp.choices.clone();
+        let mut options: Vec<(usize, &str)> = vec![(0, "Oxidify")];
+        options.extend(
+            choices
+                .iter()
+                .enumerate()
+                .map(|(index, choice)| (index + 1, choice.label())),
+        );
+        let current = app
+            .settings
+            .skin
+            .as_deref()
+            .and_then(|name| choices.iter().position(|choice| choice.name == name))
+            .map_or(0, |index| index + 1);
+        if let Some(picked) = widgets::chips(ui, &palette, &options, current)
+            && picked != current
+        {
+            let name = picked
+                .checked_sub(1)
+                .map(|index| choices[index].name.clone());
+            app.actions.push(Action::SetSkin(name));
+        }
+        ui.add_space(4.0);
+        widgets::setting_row(
+            ui,
+            &palette,
+            "Size",
+            "Screen pixels per skin pixel, always a whole number so the pixels stay crisp.",
+            |ui| {
+                let scale =
+                    crate::winamp::WinampState::scale(&app.settings, ui.ctx().pixels_per_point());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    for candidate in 1..=crate::winamp::MAX_SCALE {
+                        let label = format!("{candidate}x");
+                        if theme::soft_button(ui, &palette, None, &label, candidate == scale)
+                            .clicked()
+                            && candidate != scale
+                        {
+                            app.actions.push(Action::SetSkinScale(candidate as u8));
+                        }
+                    }
+                });
+            },
+        );
+        widgets::setting_row(
+            ui,
+            &palette,
+            "Always on top",
+            "Keep the Winamp window above everything else.",
+            |ui| {
+                let mut on_top = app.settings.winamp_on_top;
+                if widgets::switch(ui, &palette, &mut on_top).changed() {
+                    app.actions.push(Action::ToggleWinampOnTop);
+                }
+            },
+        );
+    });
+
+    section(ui, &palette, "Equalizer", |ui| {
+        widgets::setting_row(
+            ui,
+            &palette,
+            "Equalizer",
+            "Ten bands over the music played on this computer. Speakers and phones across the room play what Spotify sends them.",
+            |ui| {
+                let mut on = app.settings.eq_on;
+                if widgets::switch(ui, &palette, &mut on).changed() {
+                    app.actions.push(Action::ToggleEq);
+                }
+            },
+        );
+        let names: Vec<(usize, &str)> = crate::eq::PRESETS
+            .iter()
+            .enumerate()
+            .map(|(index, preset)| (index, preset.name))
+            .collect();
+        let current = crate::eq::PRESETS
+            .iter()
+            .position(|preset| preset.bands_db == app.settings.eq_bands_db)
+            .unwrap_or(usize::MAX);
+        if let Some(picked) = widgets::chips(ui, &palette, &names, current) {
+            app.actions.push(Action::ApplyEqPreset(picked));
+        }
+        ui.add_space(10.0);
+        eq_curve(ui, &palette, &crate::app::eq_settings(&app.settings));
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let on = app.settings.eq_on;
+            let mut preamp = app.settings.eq_preamp_db;
+            if eq_slider(ui, &palette, "Pre", &mut preamp, 0.0, on) {
+                app.actions.push(Action::SetEqPreamp(preamp));
+            }
+            for (band, hz) in crate::eq::BANDS.iter().enumerate() {
+                let mut gain = app.settings.eq_bands_db[band];
+                if eq_slider(
+                    ui,
+                    &palette,
+                    &hertz(*hz),
+                    &mut gain,
+                    crate::eq::RANGE_DB,
+                    on,
+                ) {
+                    app.actions.push(Action::SetEqBand(band, gain));
+                }
+            }
+        });
     });
 
     section(ui, &palette, "Storage", |ui| {
@@ -670,19 +865,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     section(ui, &palette, "About", |ui| {
         ui.horizontal(|ui| {
             let (logo, _) = ui.allocate_exact_size(Vec2::splat(40.0), egui::Sense::hover());
-            ui.painter()
-                .circle_filled(logo.center(), 20.0, palette.accent);
-            let icon_rect = egui::Rect::from_center_size(
-                logo.center() + Vec2::new(2.0, 0.0),
-                Vec2::splat(18.0),
-            );
-            Icon::PlayFilled
-                .image(palette.on_accent, 18.0)
-                .paint_at(ui, icon_rect);
+            theme::logo(ui, logo.center(), 40.0, palette.accent, palette.on_accent);
             ui.vertical(|ui| {
                 theme::text(
                     ui,
-                    format!("Fastpotify {}", env!("CARGO_PKG_VERSION")),
+                    format!("Oxidify {}", env!("CARGO_PKG_VERSION")),
                     theme::semibold(15.0),
                     palette.text,
                 );
@@ -714,5 +901,129 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ui.data_mut(|data| data.insert_temp(dirty_id, playback_dirty));
     if changed {
         app.actions.push(Action::SettingsChanged);
+    }
+}
+
+/// A band's frequency the short way: 60, 170, 1K, 16K.
+fn hertz(hz: f32) -> String {
+    if hz >= 1000.0 {
+        format!("{}K", (hz / 1000.0).round() as u32)
+    } else {
+        format!("{}", hz.round() as u32)
+    }
+}
+
+/// One vertical slider in the app's own style: the track filled from
+/// 0 dB, the handle in the middle when flat, a double-click to put it
+/// back there. Returns whether it moved.
+fn eq_slider(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    label: &str,
+    value: &mut f32,
+    ceiling: f32,
+    on: bool,
+) -> bool {
+    use egui::{Rect, Stroke, pos2, vec2};
+    let range = crate::eq::RANGE_DB;
+    ui.vertical(|ui| {
+        let (rect, response) =
+            ui.allocate_exact_size(vec2(30.0, 118.0), egui::Sense::click_and_drag());
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let track = Rect::from_center_size(rect.center(), vec2(4.0, rect.height() - 20.0));
+        let y_of = |db: f32| track.bottom() - (db + range) / (2.0 * range) * track.height();
+        let mut changed = false;
+        if response.double_clicked() {
+            *value = 0.0;
+            changed = true;
+        } else if (response.dragged() || response.clicked())
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let db = (track.bottom() - pos.y) / track.height() * 2.0 * range - range;
+            let db = (db.clamp(-range, ceiling) * 10.0).round() / 10.0;
+            if db != *value {
+                *value = db;
+                changed = true;
+            }
+        }
+        if ui.is_rect_visible(rect) {
+            let painter = ui.painter();
+            painter.rect_filled(track, 2.0, palette.surface_active);
+            let fill = if on { palette.accent } else { palette.dim };
+            let (top, bottom) = (y_of(value.max(0.0)), y_of(value.min(0.0)));
+            painter.rect_filled(
+                Rect::from_min_max(pos2(track.left(), top), pos2(track.right(), bottom)),
+                2.0,
+                fill,
+            );
+            painter.hline(
+                (track.left() - 3.0)..=(track.right() + 3.0),
+                y_of(0.0),
+                Stroke::new(1.0, palette.dim),
+            );
+            let handle = pos2(track.center().x, y_of(*value));
+            painter.circle_filled(handle, 7.0, palette.text);
+            if response.hovered() || response.dragged() {
+                painter.text(
+                    pos2(track.center().x, rect.top() + 2.0),
+                    egui::Align2::CENTER_TOP,
+                    format!("{value:+.1}"),
+                    theme::regular(11.0),
+                    palette.secondary,
+                );
+            }
+        }
+        theme::text(ui, label, theme::regular(11.5), palette.secondary);
+        changed
+    })
+    .inner
+}
+
+/// The equalizer's response over the audible range, the bands marked on
+/// it: the shape says what a row of numbers cannot.
+fn eq_curve(ui: &mut egui::Ui, palette: &Palette, settings: &crate::eq::EqSettings) {
+    use egui::{Shape, Stroke, pos2, vec2};
+    let width = ui.available_width().min(720.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 120.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, theme::RADIUS as f32, palette.surface);
+    let plot = rect.shrink2(vec2(10.0, 12.0));
+    let (low, high) = (20f32.log10(), 20_000f32.log10());
+    let x_of = |hz: f32| plot.left() + (hz.log10() - low) / (high - low) * plot.width();
+    let y_of = |db: f32| {
+        plot.center().y
+            - db.clamp(-crate::eq::RANGE_DB, crate::eq::RANGE_DB) / crate::eq::RANGE_DB
+                * plot.height()
+                / 2.0
+    };
+    for db in [-12.0, -6.0, 0.0, 6.0, 12.0] {
+        let color = if db == 0.0 {
+            palette.dim
+        } else {
+            palette.outline
+        };
+        painter.hline(plot.x_range(), y_of(db), Stroke::new(1.0, color));
+    }
+    for hz in crate::eq::BANDS {
+        painter.vline(x_of(hz), plot.y_range(), Stroke::new(1.0, palette.outline));
+    }
+    let points: Vec<egui::Pos2> = (0..=240)
+        .map(|step| {
+            let t = step as f32 / 240.0;
+            let hz = 10f32.powf(low + t * (high - low));
+            pos2(
+                plot.left() + t * plot.width(),
+                y_of(settings.response_db(hz)),
+            )
+        })
+        .collect();
+    let color = if settings.on {
+        palette.accent
+    } else {
+        palette.dim
+    };
+    painter.add(Shape::line(points, Stroke::new(2.0, color)));
+    for (hz, db) in crate::eq::BANDS.iter().zip(settings.bands_db) {
+        painter.circle_filled(pos2(x_of(*hz), y_of(db + settings.preamp_db)), 3.0, color);
     }
 }

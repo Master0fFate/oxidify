@@ -1,20 +1,20 @@
 [package]
-name = "fastpotify"
-version = "0.2.0"
+name = "oxidify"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "A fast, lightweight, native Spotify client built with Rust and egui"
-repository = "https://github.com/crmne/fastpotify"
+description = "A fast, lightweight, native music player for your Spotify library, built with Rust and egui"
+repository = "https://github.com/Master0fFate/oxidify"
 keywords = ["spotify", "music", "egui", "librespot", "player"]
 categories = ["multimedia::audio"]
 
 [lib]
-name = "fastpotify"
+name = "oxidify"
 path = "src/lib.rs"
 
 [[bin]]
-name = "fastpotify"
+name = "oxidify"
 path = "src/main.rs"
 
 [dependencies]
@@ -38,14 +38,22 @@ egui_extras = { version = "0.36", features = ["image", "svg"] }
 # question.
 skrifa = "0.44"
 memmap2 = "0.9"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# bmp is for Winamp skins, whose bitmaps are BMP files.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp"] }
+# Inflating the zip a Winamp skin comes as (src/skin/zip.rs). Already
+# compiled for reqwest's gzip support, so this adds no code to the build.
+flate2 = "1"
+# Filling glyph outlines with no anti-aliasing for the Winamp playlist's
+# text (src/ui/winamp/pixel_text.rs). Already compiled for the SVG icons
+# through egui_extras and resvg, so this adds no code to the build.
+tiny-skia = "0.11"
 # Spotify playback and Connect. rustls everywhere so the client links one TLS
 # stack and builds without OpenSSL on every platform.
 #
 # librespot-core depends on hyper-proxy2 for HTTP proxy support, whose only
 # published release (0.1.0) pins rustls 0.22 and so drags in rustls-webpki
 # 0.102, which carries advisories against its CRL and name-constraint
-# handling. Fastpotify never configures a proxy (SessionConfig.proxy stays
+# handling. Oxidify never configures a proxy (SessionConfig.proxy stays
 # None), so that TLS client is compiled in but never used to verify anything.
 # Every connection this app actually makes (the Web API through reqwest, and
 # librespot's own sessions) goes through rustls 0.23 with a patched
@@ -62,7 +70,11 @@ librespot-protocol = { version = "0.8", default-features = false }
 rodio = { version = "0.21", default-features = false, features = ["playback", "wav", "symphonia-isomp4", "symphonia-aac", "symphonia-mp3"] }
 cpal = "0.16"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "http2", "blocking"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "process", "io-util", "fs"] }
+# `fs` is used by the playlist cache in `backend.rs` and by the bundled
+# yt-dlp flow in `src/alternate`. `process`/`io-util` drive yt-dlp. On Linux
+# the mpris-server dependency happens to turn `fs` on, which is why leaving
+# it out built there and nowhere else.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "fs", "process", "io-util"] }
 sha1 = "0.10"
 sha2 = "0.10"
 base64 = "0.22"
@@ -72,6 +84,7 @@ percent-encoding = "2"
 urlencoding = "2"
 jiff = "0.2"
 mdns-sd = "0.21"
+unicode-bidi = "0.3"
 hmac = "0.12"
 pbkdf2 = "0.12"
 aes = "0.8"
@@ -85,8 +98,8 @@ tray-icon = { version = "0.24", default-features = false }
 souvlaki = { version = "0.8", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# Serving AppKit while no window exists (the status item lives on the main
-# thread), and leaving the Dock while hidden.
+# Serving AppKit while no window exists: the status item and Dock reopen
+# callback live on the main thread.
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDate", "NSObjCRuntime", "NSRunLoop", "NSString"] }

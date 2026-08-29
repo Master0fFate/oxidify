@@ -57,12 +57,12 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="fastpotify-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="oxidify-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/fastpotify.exe" "dist/$name/"
+            cp "target/${{ matrix.target }}/release/oxidify.exe" "dist/$name/"
           else
-            cp "target/${{ matrix.target }}/release/fastpotify" "dist/$name/"
+            cp "target/${{ matrix.target }}/release/oxidify" "dist/$name/"
           fi
           cp README.md LICENSE third_party/yt-dlp/NOTICE "dist/$name/"
           if [ "${{ runner.os }}" = "Linux" ]; then
@@ -88,8 +88,8 @@ jobs:
           $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
           if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
           & $iscc "/DVersion=$version" "/DArch=$arch" `
-            "/DBinary=$PWD\target\${{ matrix.target }}\release\fastpotify.exe" `
-            "/DOutputDir=$PWD\dist" packaging\windows\fastpotify.iss
+            "/DBinary=$PWD\target\${{ matrix.target }}\release\oxidify.exe" `
+            "/DOutputDir=$PWD\dist" packaging\windows\oxidify.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - uses: actions/upload-artifact@v7
@@ -138,14 +138,14 @@ jobs:
         run: |
           mkdir -p universal
           lipo -create \
-            target/aarch64-apple-darwin/release/fastpotify \
-            target/x86_64-apple-darwin/release/fastpotify \
-            -output universal/fastpotify
+            target/aarch64-apple-darwin/release/oxidify \
+            target/x86_64-apple-darwin/release/oxidify \
+            -output universal/oxidify
 
       - name: App bundle
         run: |
           version="${GITHUB_REF_NAME#v}"
-          bash packaging/macos/bundle.sh universal/fastpotify Fastpotify.app "$version"
+          bash packaging/macos/bundle.sh universal/oxidify Oxidify.app "$version"
 
       - name: Import signing certificate
         if: env.APPLE_CERTIFICATE_P12 != ''
@@ -164,24 +164,24 @@ jobs:
         if: env.APPLE_CERTIFICATE_P12 != ''
         run: |
           codesign --force --deep --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" Fastpotify.app
+            --sign "$APPLE_SIGNING_IDENTITY" Oxidify.app
 
       - name: DMG
         run: |
-          name="fastpotify-${GITHUB_REF_NAME}-macos-universal"
+          name="oxidify-${GITHUB_REF_NAME}-macos-universal"
           stage="$RUNNER_TEMP/dmg"
           mkdir -p "$stage"
-          cp -R Fastpotify.app "$stage/"
+          cp -R Oxidify.app "$stage/"
           cp README.md LICENSE third_party/yt-dlp/NOTICE "$stage/"
           ln -s /Applications "$stage/Applications"
           mkdir -p dist
-          hdiutil create -volname Fastpotify -srcfolder "$stage" -ov \
+          hdiutil create -volname Oxidify -srcfolder "$stage" -ov \
             -format UDZO "dist/$name.dmg"
 
       - name: Notarize
         if: env.APPLE_CERTIFICATE_P12 != ''
         run: |
-          name="fastpotify-${GITHUB_REF_NAME}-macos-universal"
+          name="oxidify-${GITHUB_REF_NAME}-macos-universal"
           xcrun notarytool submit "dist/$name.dmg" --wait \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD"

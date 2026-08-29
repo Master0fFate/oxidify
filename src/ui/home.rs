@@ -102,10 +102,23 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
                         pos2(cover.right() + 12.0, rect.top()),
                         pos2(rect.right() - play_room, rect.bottom()),
                     );
+                    let display = crate::bidi::display_text(name);
+                    let is_rtl = crate::bidi::is_rtl(name);
+                    let (pos, anchor) = if is_rtl {
+                        (
+                            pos2(text_rect.right(), rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                        )
+                    } else {
+                        (
+                            pos2(text_rect.left(), rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                        )
+                    };
                     ui.painter().with_clip_rect(text_rect).text(
-                        pos2(text_rect.left(), rect.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        name,
+                        pos,
+                        anchor,
+                        display.into_owned(),
                         theme::bold(14.5),
                         palette.text,
                     );
@@ -152,6 +165,7 @@ fn made_for_you(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let mut playlists: Vec<Playlist> = Vec::new();
     let mut loading = false;
+    let mut failed = false;
     for term in DISCOVER_TERMS {
         match app.home.discover.get(*term) {
             Some(Loadable::Loaded(list)) => {
@@ -166,15 +180,18 @@ fn made_for_you(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             Some(Loadable::Loading) => loading = true,
+            Some(Loadable::Failed(_)) => failed = true,
             _ => {}
         }
     }
-    if playlists.is_empty() && !loading {
+    if playlists.is_empty() && !loading && !failed {
         return;
     }
     widgets::shelf(ui, &palette, "made-for-you", "Made for you", |ui| {
-        if playlists.is_empty() {
+        if playlists.is_empty() && loading {
             widgets::loading_row(ui, &palette);
+        } else if playlists.is_empty() && failed {
+            widgets::error_row(ui, app, "Couldn't load this shelf", Some(Page::Home));
         }
         for playlist in &playlists {
             let subtitle = playlist
@@ -209,15 +226,20 @@ fn made_for_you(app: &mut App, ui: &mut egui::Ui) {
 
 fn recently_played(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let history = match &app.home.recently_played {
-        Loadable::Loaded(history) => history.clone(),
+    let history = match app.home.recently_played.clone() {
+        Loadable::Loaded(history) => history,
         Loadable::Loading | Loadable::NotLoaded => {
             widgets::shelf(ui, &palette, "recent", "Recently played", |ui| {
                 widgets::loading_row(ui, &palette)
             });
             return;
         }
-        Loadable::Failed(_) => return,
+        Loadable::Failed(message) => {
+            widgets::shelf(ui, &palette, "recent", "Recently played", |ui| {
+                widgets::error_row(ui, app, &message, Some(Page::Home));
+            });
+            return;
+        }
     };
     let mut seen = std::collections::HashSet::new();
     let tracks: Vec<_> = history
@@ -266,15 +288,20 @@ fn recently_played(app: &mut App, ui: &mut egui::Ui) {
 
 fn top_artists(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let artists = match &app.home.top_artists {
-        Loadable::Loaded(artists) => artists.clone(),
+    let artists = match app.home.top_artists.clone() {
+        Loadable::Loaded(artists) => artists,
         Loadable::Loading | Loadable::NotLoaded => {
             widgets::shelf(ui, &palette, "top-artists", "Your top artists", |ui| {
                 widgets::loading_row(ui, &palette)
             });
             return;
         }
-        Loadable::Failed(_) => return,
+        Loadable::Failed(message) => {
+            widgets::shelf(ui, &palette, "top-artists", "Your top artists", |ui| {
+                widgets::error_row(ui, app, &message, Some(Page::Home));
+            });
+            return;
+        }
     };
     if artists.is_empty() {
         return;
@@ -329,7 +356,12 @@ fn track_list(
             ui.add_space(12.0);
             return;
         }
-        Loadable::Failed(_) => return,
+        Loadable::Failed(message) => {
+            theme::section_title(ui, &palette, title);
+            widgets::error_row(ui, app, &message, Some(title_page.unwrap_or(Page::Home)));
+            ui.add_space(12.0);
+            return;
+        }
     };
     if tracks.is_empty() {
         return;
@@ -360,6 +392,7 @@ fn track_list(
                 added_by: None,
                 show_added_by: false,
                 compact: false,
+                shift: 0.0,
             },
         );
     }

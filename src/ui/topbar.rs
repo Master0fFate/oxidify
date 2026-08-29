@@ -77,6 +77,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         |ui| {
             ui.add_space(super::widgets::PAGE_PADDING);
             ui.spacing_mut().item_spacing.x = 8.0;
+            if !app.settings.sidebar_visible {
+                if nav_button(ui, &palette, Icon::PanelLeft, true, "Show sidebar (Cmd+B)").clicked()
+                {
+                    app.actions.push(Action::ToggleSidebar);
+                }
+                ui.add_space(2.0);
+            }
+            if !app.settings.sidebar_visible
+                && nav_button(ui, &palette, Icon::House, true, "Home").clicked()
+            {
+                app.actions.push(Action::Open(Page::Home));
+            }
             if nav_button(ui, &palette, Icon::ChevronLeft, app.can_go_back(), "Back").clicked() {
                 app.actions.push(Action::Back);
             }
@@ -187,7 +199,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     .frame(super::widgets::menu_frame(&palette))
                     .align(egui::RectAlign::BOTTOM_END)
                     .show(|ui| {
-                        ui.set_min_width(200.0);
+                        ui.set_width(200.0);
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             ui.add_space(10.0);
@@ -238,6 +250,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 {
                     app.actions.push(Action::Open(Page::Settings));
                 }
+                if theme::icon_button(
+                    ui,
+                    Icon::Shrink,
+                    19.0,
+                    palette.secondary,
+                    palette.text,
+                    "Winamp mini player (Ctrl+M)",
+                )
+                .clicked()
+                {
+                    app.actions.push(Action::ToggleWinampWindow);
+                }
+                // A quiet spinner once the app has been talking to Spotify for a
+                // while, long enough that fast requests never flash it.
                 if spinner {
                     theme::spinner(ui, SPINNER_SIZE, palette.secondary)
                         .on_hover_text("Talking to Spotify…");
@@ -289,7 +315,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     if response
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .on_hover_text(format!(
-                            "Fastpotify {} is out. Opens the download page.",
+                            "Oxidify {} is out. Opens the download page.",
                             update.version
                         ))
                         .clicked()

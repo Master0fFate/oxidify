@@ -1,4 +1,4 @@
-# Official yt-dlp provenance for Fastpotify.
+# Official yt-dlp provenance for Oxidify.
 # Vendor scripts download only from this pinned GitHub release.
 # Runtime never downloads yt-dlp.
 tag=2026.08.19

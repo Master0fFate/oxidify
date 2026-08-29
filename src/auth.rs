@@ -1,12 +1,9 @@
 //! Spotify sign-in with the Authorization Code + PKCE flow.
 //!
-//! Two grants exist because Spotify treats them differently:
+//! Three independent grants may exist because Spotify treats them differently:
 //!
-//! - The **Web API grant** uses a registered application identity. Its
-//!   access token is what every `api.spotify.com` call carries, and its
-//!   refresh token is kept in the state directory so the browser is needed
-//!   once per machine. Tokens minted for Spotify's own desktop client are
-//!   throttled on the Web API, which is why this is a separate identity.
+//! - The shared and optional personal **Web API grants** use separate
+//!   registered application identities, token files, and request sessions.
 //! - The **playback grant** uses Spotify's desktop client identity, the one
 //!   librespot streams with. Its access token is exchanged once for a
 //!   reusable credential that librespot caches itself.
@@ -34,7 +31,7 @@ pub const PLAYBACK_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
 pub const PLAYBACK_REDIRECT_PORT: u16 = 8898;
 
 /// The public Web API application shared by spotify-player, ncspot, and
-/// Omarchy Spotify. A personal application id can replace it in Settings.
+/// Omarchy Spotify.
 pub const DEFAULT_WEB_CLIENT_ID: &str = "d420a117a32841c2b3474932e49fb54b";
 pub const WEB_REDIRECT_PORT: u16 = 8989;
 
@@ -93,16 +90,24 @@ impl Grant {
         }
     }
 
-    pub fn web_api(client_id: Option<&str>) -> Self {
+    pub fn shared_web_api() -> Self {
         Self {
-            client_id: client_id
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .unwrap_or(DEFAULT_WEB_CLIENT_ID)
-                .to_string(),
+            client_id: DEFAULT_WEB_CLIENT_ID.to_string(),
             redirect_port: WEB_REDIRECT_PORT,
             scopes: WEB_SCOPES,
         }
+    }
+
+    pub fn personal_web_api(client_id: &str) -> Result<Self> {
+        let client_id = client_id.trim();
+        if client_id.is_empty() {
+            bail!("a personal Spotify Client ID is required");
+        }
+        Ok(Self {
+            client_id: client_id.to_string(),
+            redirect_port: WEB_REDIRECT_PORT,
+            scopes: WEB_SCOPES,
+        })
     }
 
     pub fn redirect_uri(&self) -> String {
@@ -255,13 +260,14 @@ pub async fn exchange_code(
         ],
     )
     .await
+    .map_err(|error| anyhow!("{error}"))
 }
 
 pub async fn refresh(
     http: &reqwest::Client,
     client_id: &str,
     refresh_token: &str,
-) -> Result<TokenResponse> {
+) -> std::result::Result<TokenResponse, TokenEndpointError> {
     token_request(
         http,
         &[
@@ -273,16 +279,29 @@ pub async fn refresh(
     .await
 }
 
-async fn token_request(http: &reqwest::Client, form: &[(&str, &str)]) -> Result<TokenResponse> {
+#[derive(Debug, thiserror::Error)]
+pub enum TokenEndpointError {
+    /// Spotify refused the grant itself; only the browser can mint a new one.
+    #[error("Spotify rejected the token request ({status}): {detail}")]
+    Rejected { status: u16, detail: String },
+    /// The endpoint could not answer; the grant may still be valid.
+    #[error("token request failed: {0}")]
+    Unreachable(String),
+}
+
+async fn token_request(
+    http: &reqwest::Client,
+    form: &[(&str, &str)],
+) -> std::result::Result<TokenResponse, TokenEndpointError> {
     let response = http
         .post(TOKEN_URL)
         .form(form)
         .send()
         .await
-        .context("token request failed")?;
+        .map_err(|error| TokenEndpointError::Unreachable(error.to_string()))?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
-    if !status.is_success() {
+    if status.is_client_error() {
         let detail = serde_json::from_str::<serde_json::Value>(&text)
             .ok()
             .and_then(|value| {
@@ -292,9 +311,20 @@ async fn token_request(http: &reqwest::Client, form: &[(&str, &str)]) -> Result<
                     .map(str::to_string)
             })
             .unwrap_or_else(|| redact(&text));
-        bail!("Spotify rejected the token request ({status}): {detail}");
+        return Err(TokenEndpointError::Rejected {
+            status: status.as_u16(),
+            detail,
+        });
     }
-    serde_json::from_str(&text).context("unexpected token response")
+    if !status.is_success() {
+        return Err(TokenEndpointError::Unreachable(format!(
+            "Spotify answered {status}: {}",
+            redact(&text)
+        )));
+    }
+    serde_json::from_str(&text).map_err(|error| {
+        TokenEndpointError::Unreachable(format!("unexpected token response: {error}"))
+    })
 }
 
 fn redact(text: &str) -> String {
@@ -336,6 +366,10 @@ impl StoredToken {
         now_secs() + REFRESH_MARGIN.as_secs() >= self.expires_at
     }
 
+    pub fn expired(&self) -> bool {
+        now_secs() >= self.expires_at
+    }
+
     /// Whether the grant covers every scope in `scopes`. A grant cannot be
     /// widened by a refresh, only by the browser.
     pub fn has_scopes(&self, scopes: &[&str]) -> bool {
@@ -361,6 +395,26 @@ impl StoredToken {
 
     pub fn remove(path: &Path) {
         let _ = std::fs::remove_file(path);
+    }
+
+    pub fn migrate_legacy(legacy: &Path, shared: &Path, personal: &Path) -> Result<()> {
+        let Some(token) = Self::load(legacy) else {
+            return Ok(());
+        };
+        let target = if token.client_id == DEFAULT_WEB_CLIENT_ID {
+            shared
+        } else {
+            personal
+        };
+        if let Some(existing) = Self::load(target) {
+            if existing != token {
+                return Ok(());
+            }
+        } else {
+            token.save(target)?;
+        }
+        Self::remove(legacy);
+        Ok(())
     }
 }
 
@@ -399,10 +453,10 @@ main{{max-width:28rem;padding:2.5rem;border-radius:1.25rem;background:#181b20;bo
 
 fn success_page() -> String {
     page(
-        "Signed in to Fastpotify",
+        "Signed in to Oxidify",
         "You're signed in",
-        "You can close this tab and go back to Fastpotify.",
-        "#1ed760",
+        "You can close this tab and go back to Oxidify.",
+        "#4d9fff",
     )
 }
 
@@ -410,7 +464,7 @@ fn failure_page(reason: &str) -> String {
     page(
         "Sign-in failed",
         "Sign-in didn't complete",
-        &format!("{reason}. Return to Fastpotify and try again."),
+        &format!("{reason}. Return to Oxidify and try again."),
         "#f5717f",
     )
 }
@@ -421,7 +475,7 @@ mod tests {
 
     #[test]
     fn begin_produces_valid_pkce_material() {
-        let flow = begin(Grant::web_api(None));
+        let flow = begin(Grant::shared_web_api());
         assert!(flow.verifier.len() >= 43);
         assert!(flow.url.contains("code_challenge_method=S256"));
         assert!(flow.url.contains(&format!("state={}", flow.state)));
@@ -440,9 +494,9 @@ mod tests {
     }
 
     #[test]
-    fn custom_web_client_id_wins_when_present() {
-        assert_eq!(Grant::web_api(Some("  abc ")).client_id, "abc");
-        assert_eq!(Grant::web_api(Some("  ")).client_id, DEFAULT_WEB_CLIENT_ID);
+    fn personal_client_id_is_validated_at_the_boundary() {
+        assert_eq!(Grant::personal_web_api("  abc ").unwrap().client_id, "abc");
+        assert!(Grant::personal_web_api("  ").is_err());
     }
 
     #[test]
@@ -474,11 +528,40 @@ mod tests {
             ..token.clone()
         };
         assert!(expired.needs_refresh());
-        let dir = std::env::temp_dir().join(format!("fastpotify-token-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("oxidify-token-{}", std::process::id()));
         let path = dir.join("token.json");
         token.save(&path).unwrap();
         assert_eq!(StoredToken::load(&path), Some(token));
         StoredToken::remove(&path);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_tokens_move_to_the_matching_session() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxidify-token-migration-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        let legacy = dir.join("legacy.json");
+        let shared = dir.join("shared.json");
+        let personal = dir.join("personal.json");
+        for (client_id, target) in [
+            (DEFAULT_WEB_CLIENT_ID, &shared),
+            ("personal-client", &personal),
+        ] {
+            let token = StoredToken {
+                client_id: client_id.into(),
+                access_token: "access".into(),
+                refresh_token: "refresh".into(),
+                expires_at: now_secs() + 3600,
+                ..StoredToken::default()
+            };
+            token.save(&legacy).unwrap();
+            StoredToken::migrate_legacy(&legacy, &shared, &personal).unwrap();
+            assert_eq!(StoredToken::load(target), Some(token));
+            assert!(!legacy.exists());
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 }

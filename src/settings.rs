@@ -13,6 +13,27 @@ pub enum ThemeChoice {
     System,
 }
 
+/// What the mini player's display shows of the sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VisMode {
+    #[default]
+    Bars,
+    Scope,
+    Off,
+}
+
+impl VisMode {
+    /// The next mode round, the order a click on the display goes through.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Bars => Self::Scope,
+            Self::Scope => Self::Off,
+            Self::Off => Self::Bars,
+        }
+    }
+}
+
 impl ThemeChoice {
     pub const ALL: [ThemeChoice; 3] = [Self::Dark, Self::Light, Self::System];
 
@@ -73,11 +94,15 @@ pub struct Settings {
     pub accent_from_art: bool,
     /// Last local volume, 0..=65535.
     pub volume: u16,
+    /// Whether the library sidebar is visible.
+    pub sidebar_visible: bool,
     pub sidebar_width: f32,
+    pub lyrics_width: f32,
+    pub queue_width: f32,
     pub search_history: Vec<String>,
     pub show_shortcut_hints: bool,
-    /// A personal Spotify Web API application id, if the user registered one.
-    /// `None` uses the shared public application.
+    /// An optional personal Spotify Web API application id. The shared
+    /// application remains active for coverage when this is present.
     pub web_client_id: Option<String>,
     /// Local playback has been authorized at least once on this machine, so
     /// the app can resume it silently instead of prompting.
@@ -102,12 +127,49 @@ pub struct Settings {
     /// HTTP, stall, and decode failures still stop the current track.
     #[serde(default = "default_true")]
     pub alternate_skip_on_miss: bool,
+    /// The sidebar's own playlist order, set by dragging rows. Empty means
+    /// the automatic order: the pinned block first, then recently played.
+    pub sidebar_order: Vec<String>,
+    /// Interface zoom, egui's zoom factor; Ctrl+plus/minus changes it.
+    pub zoom: f32,
+    /// The Winamp window is open.
+    pub winamp_window: bool,
+    /// The skin the Winamp window wears: a file or folder name in the skins
+    /// folder. `None` is the built-in skin.
+    pub skin: Option<String>,
+    /// Screen pixels per skin pixel; `None` picks double size for the
+    /// display.
+    pub skin_scale: Option<u8>,
+    /// The Winamp window stays above other windows.
+    pub winamp_on_top: bool,
+    /// The mini player's visualiser: bars, scope, or off.
+    pub vis: VisMode,
+    /// The playlist window is open under the mini player.
+    pub playlist_open: bool,
+    /// How tall the playlist window is, in skin pixels.
+    pub playlist_height: u32,
+    /// The equalizer window is open under the mini player.
+    pub eq_open: bool,
+    /// The equalizer shapes local playback.
+    pub eq_on: bool,
+    /// The preamp, in decibels, never above zero.
+    pub eq_preamp_db: f32,
+    /// The ten bands, in decibels, 60 Hz to 16 kHz.
+    pub eq_bands_db: [f32; 10],
+    /// The balance, -1 all left to 1 all right.
+    pub balance: f32,
+    /// Play both channels the same.
+    pub mono: bool,
+    /// The playlist window is rolled up to its title bar.
+    pub playlist_shaded: bool,
+    /// The main window is rolled up to its title bar.
+    pub winamp_shaded: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            device_name: "Fastpotify".to_string(),
+            device_name: "Oxidify".to_string(),
             bitrate: 320,
             normalisation: false,
             autoplay: true,
@@ -119,7 +181,10 @@ impl Default for Settings {
             theme: ThemeChoice::Dark,
             accent_from_art: true,
             volume: (u16::MAX as u32 * 70 / 100) as u16,
+            sidebar_visible: true,
             sidebar_width: 250.0,
+            lyrics_width: 360.0,
+            queue_width: 360.0,
             search_history: Vec::new(),
             show_shortcut_hints: true,
             web_client_id: None,
@@ -132,6 +197,23 @@ impl Default for Settings {
             ytdlp_path: String::new(),
             alternate_min_score: default_alternate_min_score(),
             alternate_skip_on_miss: true,
+            sidebar_order: Vec::new(),
+            zoom: 1.0,
+            winamp_window: false,
+            skin: None,
+            skin_scale: None,
+            winamp_on_top: false,
+            vis: VisMode::default(),
+            playlist_open: false,
+            playlist_height: 174,
+            eq_open: false,
+            eq_on: false,
+            eq_preamp_db: 0.0,
+            eq_bands_db: [0.0; 10],
+            balance: 0.0,
+            mono: false,
+            playlist_shaded: false,
+            winamp_shaded: false,
         }
     }
 }
@@ -198,6 +280,80 @@ impl Settings {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn older_settings_keep_the_sidebar_visible() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert!(settings.sidebar_visible);
+    }
+
+    #[test]
+    fn a_fresh_install_opens_the_full_window_not_the_mini_player() {
+        // The Winamp mini player is opt-in: it appears only when the
+        // settings explicitly say so, never by default or by migration.
+        let fresh = Settings::default();
+        assert!(!fresh.winamp_window);
+        let legacy_without_the_field: Settings =
+            serde_json::from_str(r#"{"device_name":"Desk"}"#).unwrap();
+        assert!(!legacy_without_the_field.winamp_window);
+    }
+
+    #[test]
+    fn older_settings_keep_the_winamp_window_closed_and_the_built_in_skin() {
+        let settings: Settings = serde_json::from_str(r#"{"zoom": 1.2}"#).unwrap();
+        assert!(!settings.winamp_window);
+        assert_eq!(settings.skin, None);
+        assert_eq!(settings.skin_scale, None);
+        assert!(!settings.winamp_on_top);
+        assert_eq!(settings.vis, super::VisMode::Bars);
+        assert!(!settings.playlist_open);
+        assert_eq!(settings.playlist_height, 174);
+        assert!(!settings.eq_on);
+        assert_eq!(settings.eq_bands_db, [0.0; 10]);
+        assert_eq!(settings.balance, 0.0);
+        assert!(!settings.mono);
+        assert!(!settings.playlist_shaded);
+        assert!(!settings.winamp_shaded);
+    }
+
+    #[test]
+    fn the_visualiser_cycles_bars_scope_off() {
+        use super::VisMode;
+        assert_eq!(VisMode::Bars.next(), VisMode::Scope);
+        assert_eq!(VisMode::Scope.next(), VisMode::Off);
+        assert_eq!(VisMode::Off.next(), VisMode::Bars);
+        let settings: Settings = serde_json::from_str(r#"{"vis": "scope"}"#).unwrap();
+        assert_eq!(settings.vis, VisMode::Scope);
+    }
+
+    #[test]
+    fn a_chosen_skin_round_trips() {
+        let settings = Settings {
+            winamp_window: true,
+            skin: Some("Zaxon.wsz".into()),
+            skin_scale: Some(3),
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, settings);
+    }
+
+    #[test]
+    fn hidden_sidebar_round_trips() {
+        let settings = Settings {
+            sidebar_visible: false,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert!(!restored.sidebar_visible);
+    }
+}
+
 /// Restorable UI session: what was open when the app last closed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -209,6 +365,18 @@ pub struct SessionState {
     pub last_context: Option<String>,
     pub last_track: Option<String>,
     pub last_position_ms: u32,
+    /// Whether the listener had shuffle on, a mode that outlives contexts.
+    pub shuffle_on: bool,
+    /// Each table's chosen sort, by encoded page, restored at start.
+    pub sorts: Vec<(String, crate::model::TableSort)>,
+    /// Last window inner size, to restore on next launch.
+    pub window_size: Option<[f32; 2]>,
+    /// Last window outer position, to restore on next launch.
+    pub window_pos: Option<[f32; 2]>,
+    /// Whether the queue panel was open.
+    pub queue_open: Option<bool>,
+    /// Last outer position of the Winamp window.
+    pub winamp_pos: Option<[f32; 2]>,
 }
 
 impl SessionState {
@@ -230,7 +398,7 @@ impl SessionState {
 }
 
 #[cfg(test)]
-mod tests {
+mod alternate_settings_tests {
     use super::*;
 
     #[test]

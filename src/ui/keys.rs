@@ -15,6 +15,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             }
         };
         key(Modifiers::COMMAND, Key::F, Action::FocusSearch);
+        key(Modifiers::COMMAND, Key::B, Action::ToggleSidebar);
         key(Modifiers::COMMAND, Key::Comma, Action::Open(Page::Settings));
         key(Modifiers::COMMAND, Key::Q, Action::Quit);
         // winit installs its own macOS app menu, whose Hide item owns Cmd+H
@@ -29,6 +30,16 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             key(Modifiers::COMMAND, Key::H, Action::Open(Page::Home));
         }
         key(Modifiers::COMMAND, Key::L, Action::Open(Page::LikedSongs));
+        // Cmd+M minimises on macOS.
+        if cfg!(target_os = "macos") {
+            key(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::M,
+                Action::ToggleWinampWindow,
+            );
+        } else {
+            key(Modifiers::COMMAND, Key::M, Action::ToggleWinampWindow);
+        }
         key(
             Modifiers::COMMAND,
             Key::Slash,
@@ -61,6 +72,16 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             );
         }
         if !typing {
+            key(
+                Modifiers::NONE,
+                Key::Questionmark,
+                Action::ShowDialog(Dialog::Shortcuts),
+            );
+            key(
+                Modifiers::SHIFT,
+                Key::Questionmark,
+                Action::ShowDialog(Dialog::Shortcuts),
+            );
             key(Modifiers::SHIFT, Key::ArrowLeft, Action::SeekBy(-10_000));
             key(Modifiers::SHIFT, Key::ArrowRight, Action::SeekBy(10_000));
             key(Modifiers::NONE, Key::Space, Action::TogglePlay);
@@ -115,6 +136,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Q", "Show the queue"),
     ("L", "Show the lyrics"),
     ("Ctrl+F  or  /", "Search"),
+    ("Ctrl+B", "Show or hide the sidebar"),
     ("Alt+←  /  Alt+→", "Back or forward"),
     (
         if cfg!(target_os = "macos") {
@@ -127,7 +149,15 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+L", "Liked Songs"),
     ("Ctrl+Shift+A", "Go to the playing artist"),
     ("Ctrl+Shift+B", "Go to the playing album"),
+    (
+        if cfg!(target_os = "macos") {
+            "Ctrl+Shift+M"
+        } else {
+            "Ctrl+M"
+        },
+        "Winamp mini player",
+    ),
     ("Ctrl+,", "Settings"),
-    ("Ctrl+/", "Keyboard shortcuts"),
+    ("Ctrl+/ or ?", "Keyboard shortcuts"),
     ("Ctrl+Q", "Quit"),
 ];

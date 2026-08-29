@@ -1,12 +1,14 @@
-//! Fastpotify's internals, exposed so diagnostics and tests can reach them.
+//! Oxidify's internals, exposed so diagnostics and tests can reach them.
 
 pub mod alternate;
 pub mod api;
 pub mod app;
 pub mod auth;
 pub mod backend;
+pub mod bidi;
 #[cfg(any(test, feature = "demo"))]
 pub mod demo;
+pub mod eq;
 pub mod images;
 pub mod lyrics;
 #[cfg(target_os = "macos")]
@@ -24,6 +26,7 @@ pub mod player;
 pub mod settings;
 pub mod single_instance;
 pub mod sink;
+pub mod skin;
 pub mod system_fonts;
 pub mod theme;
 #[cfg(target_os = "linux")]
@@ -34,4 +37,6 @@ pub mod tray;
 pub mod ui;
 pub mod updates;
 pub mod util;
+pub mod vis;
+pub mod winamp;
 pub mod zeroconf;

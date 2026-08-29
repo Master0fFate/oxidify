@@ -1,0 +1,18 @@
+Oxidify
+https://github.com/Master0fFate/oxidify
+
+This product includes software developed as part of Fastpotify
+(https://github.com/crmne/fastpotify), Copyright (c) 2026 Carmine Paolino,
+licensed under the MIT License. Oxidify is a derivative work of that
+project; the original license and copyright notice are preserved in the
+LICENSE file of this repository and apply to the portions derived from it.
+
+Oxidify is an independent project. It is not affiliated with, endorsed by,
+or sponsored by Carmine Paolino or by Spotify AB. Spotify is a trademark
+of Spotify AB. Oxidify is not affiliated with, endorsed by, or sponsored
+by Spotify AB. Any Spotify integration is factual use of publicly
+documented interfaces and carries no claim of approval or compliance.
+
+Oxidify may embed an official yt-dlp executable per release target, as
+described in third_party/yt-dlp/NOTICE. yt-dlp is dedicated to the public
+domain under the Unlicense.

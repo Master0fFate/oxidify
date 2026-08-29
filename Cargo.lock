@@ -1511,57 +1511,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
-name = "fastpotify"
-version = "0.2.0"
-dependencies = [
- "aes",
- "anyhow",
- "base64",
- "clap",
- "cpal",
- "ctr",
- "directories",
- "eframe",
- "egui",
- "egui_extras",
- "env_logger",
- "hmac",
- "image",
- "jiff",
- "ksni",
- "librespot-connect",
- "librespot-core",
- "librespot-metadata",
- "librespot-playback",
- "librespot-protocol",
- "log",
- "mdns-sd",
- "memmap2",
- "mpris-server",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "open",
- "pbkdf2",
- "percent-encoding",
- "rand 0.9.5",
- "reqwest",
- "rodio",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "skrifa",
- "souvlaki",
- "thiserror 2.0.20",
- "tokio",
- "tray-icon",
- "urlencoding",
- "windows-sys 0.60.2",
- "winresource",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3738,6 +3687,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxidify"
+version = "0.3.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "base64",
+ "clap",
+ "cpal",
+ "ctr",
+ "directories",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "env_logger",
+ "flate2",
+ "hmac",
+ "image",
+ "jiff",
+ "ksni",
+ "librespot-connect",
+ "librespot-core",
+ "librespot-metadata",
+ "librespot-playback",
+ "librespot-protocol",
+ "log",
+ "mdns-sd",
+ "memmap2",
+ "mpris-server",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "open",
+ "pbkdf2",
+ "percent-encoding",
+ "rand 0.9.5",
+ "reqwest",
+ "rodio",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "skrifa",
+ "souvlaki",
+ "thiserror 2.0.20",
+ "tiny-skia",
+ "tokio",
+ "tray-icon",
+ "unicode-bidi",
+ "urlencoding",
+ "windows-sys 0.60.2",
+ "winresource",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5860,6 +5863,12 @@ name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
+
+[[package]]
+name = "unicode-bidi"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
 
 [[package]]
 name = "unicode-general-category"

@@ -34,6 +34,7 @@ use librespot_playback::{
 use sha1::{Digest, Sha1};
 
 use crate::sink::{ErrorHook, RodioSink};
+use crate::vis::{AudioTap, Tapped};
 
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
@@ -49,6 +50,10 @@ pub struct EngineConfig {
     pub volume_dir: PathBuf,
     pub audio_cache_dir: Option<PathBuf>,
     pub audio_cache_limit: Option<u64>,
+    /// Where the samples on their way out are copied for the visualiser.
+    pub tap: Arc<AudioTap>,
+    /// The equalizer's settings, shared with the window that sets them.
+    pub eq: crate::eq::SharedEq,
 }
 
 impl EngineConfig {
@@ -255,7 +260,6 @@ impl Engine {
         let device_id = config.device_id();
         let session_config = SessionConfig {
             device_id: device_id.clone(),
-            ap_port: Some(443),
             autoplay: Some(config.autoplay),
             ..SessionConfig::default()
         };
@@ -472,6 +476,8 @@ fn sink_builder(
     mixer: &Arc<dyn Mixer>,
 ) -> SinkAndVolume {
     let device = config.audio_device.clone();
+    let tap = Arc::clone(&config.tap);
+    let eq = Arc::clone(&config.eq);
     let report: ErrorHook = Arc::new(move |message: String| {
         let snapshot = {
             let mut current = state.lock().unwrap_or_else(|p| p.into_inner());
@@ -487,8 +493,14 @@ fn sink_builder(
     {
         match audio_backend::find(Some(name.to_string())) {
             Some(builder) => {
+                // The player applies the volume before these sinks see the
+                // samples; the tap is told, so the bars show the music.
+                let applied = mixer.get_soft_volume();
                 return (
-                    Box::new(move || builder(device, AudioFormat::S16)),
+                    Box::new(move || {
+                        let sink = builder(device, AudioFormat::S16);
+                        Box::new(Tapped::new(sink, tap, Some(applied), eq)) as Box<dyn Sink>
+                    }),
                     mixer.get_soft_volume(),
                 );
             }
@@ -497,7 +509,10 @@ fn sink_builder(
     }
     let volume = mixer.get_soft_volume();
     (
-        Box::new(move || Box::new(RodioSink::new(device, report, volume)) as Box<dyn Sink>),
+        Box::new(move || {
+            let sink = Box::new(RodioSink::new(device, report, volume));
+            Box::new(Tapped::new(sink, tap, None, eq)) as Box<dyn Sink>
+        }),
         Box::new(NoOpVolume),
     )
 }
@@ -724,7 +739,9 @@ mod tests {
     #[test]
     fn device_id_is_stable_hex() {
         let config = EngineConfig {
-            device_name: "Fastpotify".into(),
+            tap: AudioTap::new(),
+            eq: crate::eq::shared(),
+            device_name: "Oxidify".into(),
             bitrate_kbps: 320,
             normalisation: false,
             autoplay: true,

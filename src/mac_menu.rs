@@ -15,6 +15,7 @@ pub enum MenuCommand {
     Home,
     Search,
     LikedSongs,
+    Sidebar,
     Queue,
     Settings,
     Shortcuts,
@@ -83,10 +84,10 @@ mod mac_impl {
     define_class!(
         #[unsafe(super(NSObject))]
         #[thread_kind = MainThreadOnly]
-        #[name = "FastpotifyMenuHandler"]
-        pub struct FastpotifyMenuHandler;
+        #[name = "OxidifyMenuHandler"]
+        pub struct OxidifyMenuHandler;
 
-        impl FastpotifyMenuHandler {
+        impl OxidifyMenuHandler {
             #[unsafe(method(openSettings:))]
             fn open_settings(&self, _sender: &NSObject) {
                 push_command(MenuCommand::Settings);
@@ -155,6 +156,11 @@ mod mac_impl {
             #[unsafe(method(openLikedSongs:))]
             fn open_liked_songs(&self, _sender: &NSObject) {
                 push_command(MenuCommand::LikedSongs);
+            }
+
+            #[unsafe(method(toggleSidebar:))]
+            fn toggle_sidebar(&self, _sender: &NSObject) {
+                push_command(MenuCommand::Sidebar);
             }
 
             #[unsafe(method(toggleQueue:))]
@@ -257,8 +263,8 @@ mod mac_impl {
             return;
         }
 
-        let handler: Retained<FastpotifyMenuHandler> =
-            unsafe { objc2::msg_send![mtm.alloc::<FastpotifyMenuHandler>(), init] };
+        let handler: Retained<OxidifyMenuHandler> =
+            unsafe { objc2::msg_send![mtm.alloc::<OxidifyMenuHandler>(), init] };
         let target: &NSObject = &handler;
 
         // 1. Settings item in app menu (first menu)
@@ -464,6 +470,14 @@ mod mac_impl {
         ));
         view_menu.addItem(&create_item(
             mtm,
+            ns_string!("Toggle Sidebar"),
+            Some(sel!(toggleSidebar:)),
+            ns_string!("b"),
+            Some(NSEventModifierFlags::Command),
+            Some(target),
+        ));
+        view_menu.addItem(&create_item(
+            mtm,
             ns_string!("Queue"),
             Some(sel!(toggleQueue:)),
             ns_string!("u"),
@@ -522,7 +536,7 @@ mod mac_impl {
         ));
         help_menu.addItem(&create_item(
             mtm,
-            ns_string!("Fastpotify on GitHub"),
+            ns_string!("Oxidify on GitHub"),
             Some(sel!(openRepo:)),
             ns_string!(""),
             None,

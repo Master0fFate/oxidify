@@ -98,13 +98,13 @@ function Get-Sha256Lower([string]$Path) {
 function Invoke-Download([string]$Url, [string]$OutFile) {
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if ($curl) {
-        & curl.exe -fL --retry 3 --retry-delay 1 -A "fastpotify-ytdlp-vendor" -o $OutFile $Url
+        & curl.exe -fL --retry 3 --retry-delay 1 -A "oxidify-ytdlp-vendor" -o $OutFile $Url
         if ($LASTEXITCODE -ne 0) {
             throw "vendor.ps1: curl failed for $Url"
         }
         return
     }
-    Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -UserAgent "fastpotify-ytdlp-vendor"
+    Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -UserAgent "oxidify-ytdlp-vendor"
 }
 
 if (Test-Path -LiteralPath $dest) {
@@ -116,7 +116,7 @@ if (Test-Path -LiteralPath $dest) {
     Write-Host "vendor.ps1: existing $dest has hash $got, expected $expected; re-downloading"
 }
 
-$work = Join-Path ([System.IO.Path]::GetTempPath()) ("fastpotify-ytdlp-" + [guid]::NewGuid().ToString("n"))
+$work = Join-Path ([System.IO.Path]::GetTempPath()) ("oxidify-ytdlp-" + [guid]::NewGuid().ToString("n"))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 try {
     $sumsPath = Join-Path $work $sha256sumsName

@@ -157,13 +157,8 @@ async fn expand_context(api: &ApiClient, context: &str) -> Result<Vec<LocalTrack
         "playlist" => playlist_tracks(api, id).await,
         "album" => album_tracks(api, id).await,
         "artist" => {
-            let name = api
-                .artist(id)
-                .await
-                .map(|artist| artist.name)
-                .unwrap_or_default();
             let tracks = api
-                .artist_top_tracks(id, &name)
+                .artist_top_tracks(id)
                 .await
                 .map_err(|error| anyhow!("{error}"))?;
             Ok(tracks.iter().map(local_from_track).collect())

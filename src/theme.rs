@@ -1,4 +1,4 @@
-//! Fastpotify's visual language: palette, typography, icons, base widgets.
+//! Oxidify's visual language: palette, typography, icons, base widgets.
 //!
 //! Inter carries the interface with real weights (egui's `strong()` only
 //! brightens), IBM-free monospace is unnecessary here, and one Lucide icon
@@ -42,9 +42,9 @@ impl Palette {
             text: Color32::from_rgb(0xf2, 0xf4, 0xf6),
             secondary: Color32::from_rgb(0xa9, 0xb1, 0xbc),
             dim: Color32::from_rgb(0x6e, 0x77, 0x84),
-            accent: Color32::from_rgb(0x1e, 0xd7, 0x60),
-            accent_hover: Color32::from_rgb(0x3c, 0xe8, 0x7a),
-            on_accent: Color32::from_rgb(0x0a, 0x14, 0x0e),
+            accent: Color32::from_rgb(0x4d, 0x9f, 0xff),
+            accent_hover: Color32::from_rgb(0x82, 0xbc, 0xff),
+            on_accent: Color32::from_rgb(0x0a, 0x28, 0x48),
             danger: Color32::from_rgb(0xf5, 0x71, 0x7f),
             warning: Color32::from_rgb(0xf2, 0xb8, 0x5c),
             overlay: Color32::from_rgb(0x22, 0x27, 0x2e),
@@ -64,9 +64,9 @@ impl Palette {
             text: Color32::from_rgb(0x14, 0x17, 0x1a),
             secondary: Color32::from_rgb(0x53, 0x5b, 0x66),
             dim: Color32::from_rgb(0x8b, 0x93, 0x9e),
-            accent: Color32::from_rgb(0x15, 0xa6, 0x4a),
-            accent_hover: Color32::from_rgb(0x12, 0x8f, 0x40),
-            on_accent: Color32::WHITE,
+            accent: Color32::from_rgb(0x4d, 0x9f, 0xff),
+            accent_hover: Color32::from_rgb(0x2e, 0x83, 0xe6),
+            on_accent: Color32::from_rgb(0x06, 0x17, 0x29),
             danger: Color32::from_rgb(0xd6, 0x3b, 0x4c),
             warning: Color32::from_rgb(0xb8, 0x7a, 0x14),
             overlay: Color32::from_rgb(0xff, 0xff, 0xff),
@@ -297,7 +297,7 @@ macro_rules! icons {
     ($($variant:ident => $file:literal),* $(,)?) => {
         &[$((
             Icon::$variant,
-            concat!("bytes://fastpotify-icon-", $file, ".svg"),
+            concat!("bytes://oxidify-icon-", $file, ".svg"),
             include_bytes!(concat!("../assets/icons/", $file, ".svg")).as_slice(),
         )),*]
     };
@@ -353,6 +353,9 @@ pub enum Icon {
     Music,
     Pause,
     PauseFilled,
+    PanelLeft,
+    Pin,
+    PinOff,
     Pencil,
     Play,
     PlayFilled,
@@ -363,6 +366,7 @@ pub enum Icon {
     Repeat1,
     Search,
     Settings,
+    Shrink,
     Shuffle,
     SkipBack,
     SkipBackFilled,
@@ -438,6 +442,9 @@ const ICONS: &[(Icon, &str, &[u8])] = icons! {
     Music => "music",
     Pause => "pause",
     PauseFilled => "pause-filled",
+    PanelLeft => "panel-left",
+    Pin => "pin",
+    PinOff => "pin-off",
     Pencil => "pencil",
     Play => "play",
     PlayFilled => "play-filled",
@@ -448,6 +455,7 @@ const ICONS: &[(Icon, &str, &[u8])] = icons! {
     Repeat1 => "repeat-1",
     Search => "search",
     Settings => "settings",
+    Shrink => "shrink",
     Shuffle => "shuffle",
     SkipBack => "skip-back",
     SkipBackFilled => "skip-back-filled",
@@ -502,7 +510,10 @@ pub fn icon(ui: &mut egui::Ui, icon: Icon, size: f32, color: Color32) -> Respons
 
 /// Paints an icon centred in `rect` without allocating space.
 pub fn paint_icon(ui: &egui::Ui, icon: Icon, rect: egui::Rect, size: f32, color: Color32) {
-    let icon_rect = egui::Rect::from_center_size(rect.center(), Vec2::splat(size));
+    let icon_rect = egui::Rect::from_center_size(
+        rect.center() + play_glyph_offset(icon, size),
+        Vec2::splat(size),
+    );
     icon.image(color, size).paint_at(ui, icon_rect);
 }
 
@@ -539,6 +550,36 @@ pub fn icon_button(
 }
 
 /// A round, filled control such as the main play button.
+/// The horizontal nudge that visually centres a play triangle. A
+/// right-pointing triangle's mass sits left of its bounding box, so a
+/// geometrically centred glyph reads as pushed left and a full optical
+/// shift reads as pushed right. Lucide bakes about one viewBox unit
+/// (1/24) of right shift into the artwork; replacing it with a measured
+/// 3% of the icon size lands the glyph centred at every size used here.
+/// Every place that paints the glyph must use this, or the login-logo
+/// bug returns: hand-tuned nudges drifted apart per call site.
+pub fn play_glyph_offset(icon: Icon, icon_size: f32) -> Vec2 {
+    if matches!(icon, Icon::PlayFilled | Icon::Play) {
+        Vec2::new(icon_size * (0.03 - 1.0 / 24.0), 0.0)
+    } else {
+        Vec2::ZERO
+    }
+}
+
+/// The app's mark, the accent disc with the play triangle, drawn the same
+/// wherever it appears.
+pub fn logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32, disc: Color32, glyph: Color32) {
+    ui.painter().circle_filled(center, diameter / 2.0, disc);
+    let icon_size = diameter * 0.45;
+    let icon_rect = egui::Rect::from_center_size(
+        center + play_glyph_offset(Icon::PlayFilled, icon_size),
+        Vec2::splat(icon_size),
+    );
+    Icon::PlayFilled
+        .image(glyph, icon_size)
+        .paint_at(ui, icon_rect);
+}
+
 pub fn circle_button(
     ui: &mut egui::Ui,
     icon: Icon,
@@ -556,17 +597,7 @@ pub fn circle_button(
         let fill = if hovered { fill_hover } else { fill };
         ui.painter().circle_filled(rect.center(), radius, fill);
         let icon_size = diameter * 0.46;
-        // A right-pointing triangle's visual mass sits left of its bounding
-        // box, so a geometrically centred glyph reads as pushed left and a
-        // full optical shift reads as pushed right. Lucide bakes about one
-        // viewBox unit (1/24) of right shift into the artwork; replace it
-        // with a measured 3% of the icon size, which lands the triangle
-        // visually centred in the disc at every size used here.
-        let offset = if matches!(icon, Icon::PlayFilled | Icon::Play) {
-            Vec2::new(icon_size * (0.03 - 1.0 / 24.0), 0.0)
-        } else {
-            Vec2::ZERO
-        };
+        let offset = play_glyph_offset(icon, icon_size);
         let icon_rect =
             egui::Rect::from_center_size(rect.center() + offset, Vec2::splat(icon_size));
         icon.image(icon_color, icon_size).paint_at(ui, icon_rect);
@@ -711,10 +742,18 @@ pub fn text(
     font: egui::FontId,
     color: Color32,
 ) -> Response {
+    let text = text.into();
+    let halign = crate::bidi::halign_for(&text);
+    let display = crate::bidi::display_text(&text);
     ui.add(
-        egui::Label::new(egui::RichText::new(text).font(font).color(color))
-            .truncate()
-            .selectable(false),
+        egui::Label::new(
+            egui::RichText::new(display.into_owned())
+                .font(font)
+                .color(color),
+        )
+        .halign(halign)
+        .truncate()
+        .selectable(false),
     )
 }
 
@@ -725,11 +764,19 @@ pub fn link(
     font: egui::FontId,
     color: Color32,
 ) -> Response {
+    let text = text.into();
+    let halign = crate::bidi::halign_for(&text);
+    let display = crate::bidi::display_text(&text);
     let response = ui.add(
-        egui::Label::new(egui::RichText::new(text).font(font).color(color))
-            .truncate()
-            .selectable(false)
-            .sense(Sense::click()),
+        egui::Label::new(
+            egui::RichText::new(display.into_owned())
+                .font(font)
+                .color(color),
+        )
+        .halign(halign)
+        .truncate()
+        .selectable(false)
+        .sense(Sense::click()),
     );
     if response.hovered() {
         let rect = response.rect;
@@ -745,4 +792,78 @@ pub fn section_title(ui: &mut egui::Ui, palette: &Palette, label: &str) -> Respo
 
 pub fn subtle(ui: &mut egui::Ui, palette: &Palette, label: &str) -> Response {
     text(ui, label, regular(13.0), palette.secondary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Palette;
+
+    /// WCAG 2.x relative luminance, then the contrast ratio of the pair.
+    fn contrast(a: egui::Color32, b: egui::Color32) -> f32 {
+        fn channel(c: u8) -> f32 {
+            let c = f32::from(c) / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        fn luminance(c: egui::Color32) -> f32 {
+            0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+        }
+        let (a, b) = (luminance(a), luminance(b));
+        let (lighter, darker) = if a > b { (a, b) } else { (b, a) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn body_text_meets_45_to_1_on_every_layer_it_sits_on() {
+        for palette in [Palette::dark(), Palette::light()] {
+            for background in [palette.window, palette.panel, palette.surface] {
+                assert!(
+                    contrast(palette.text, background) >= 4.5,
+                    "text on {background:?} in {} is below 4.5:1",
+                    if palette.dark { "dark" } else { "light" }
+                );
+                assert!(
+                    contrast(palette.secondary, background) >= 4.5,
+                    "secondary on {background:?} in {} is below 4.5:1",
+                    if palette.dark { "dark" } else { "light" }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dim_text_and_accents_meet_their_floors() {
+        for palette in [Palette::dark(), Palette::light()] {
+            // `dim` carries hints and placeholders, not body copy. In dark
+            // it clears the 3:1 large-text floor on every layer; in light
+            // it keeps the original neutral, which lands just under it on
+            // surfaces, so the floor there is 2.7:1.
+            let dim_floor = if palette.dark { 3.0 } else { 2.7 };
+            for background in [palette.window, palette.panel, palette.surface] {
+                assert!(
+                    contrast(palette.dim, background) >= dim_floor,
+                    "dim on {background:?} in {} is below its floor",
+                    if palette.dark { "dark" } else { "light" }
+                );
+            }
+            assert!(contrast(palette.accent, palette.on_accent) >= 4.5);
+            assert!(contrast(palette.accent_hover, palette.on_accent) >= 4.5);
+        }
+    }
+
+    #[test]
+    fn the_accent_is_blue_not_green() {
+        for palette in [Palette::dark(), Palette::light()] {
+            for color in [palette.accent, palette.accent_hover] {
+                assert!(
+                    color.g() < color.b(),
+                    "accent {color:?} leans green, not blue"
+                );
+            }
+            assert!(palette.window.b() >= palette.window.g());
+        }
+    }
 }

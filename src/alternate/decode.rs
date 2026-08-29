@@ -353,7 +353,7 @@ pub fn spawn_decoder(
     let thread_state = Arc::clone(&state);
     let thread_buffer = buffer.clone();
     thread::Builder::new()
-        .name("fastpotify-decode".into())
+        .name("oxidify-decode".into())
         .spawn(move || decode_loop(thread_buffer, hint, start_ms, pcm_tx, cmd_rx, thread_state))
         .map_err(|error| error.to_string())?;
     Ok((

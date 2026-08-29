@@ -17,19 +17,23 @@ pub mod show;
 pub mod sidebar;
 pub mod topbar;
 pub mod widgets;
+pub mod winamp;
 
 use egui::{Align2, Color32, CornerRadius, Frame, Margin, Rect, Stroke, vec2};
 
 use crate::api::models::pick_image;
 use crate::app::App;
 use crate::backend::AuthStatus;
-use crate::model::{Page, ToastKind};
+use crate::model::{Action, Page, ToastKind};
 use crate::theme::{self, Icon};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let ctx = &ctx;
     keys::handle(app, ctx);
+    for path in winamp::dropped_skins(ctx) {
+        app.actions.push(Action::InstallSkin(path));
+    }
     let signed_in = app.is_connected() && app.user.is_some();
     let connecting = matches!(app.auth, AuthStatus::Connecting | AuthStatus::Starting)
         || (app.is_connected() && app.user.is_none());
@@ -39,7 +43,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     player_bar::show(app, ui);
-    sidebar::show(app, ui);
+    if app.settings.sidebar_visible {
+        sidebar::show(app, ui);
+    }
     if app.show_queue_panel {
         queue::side_panel(app, ui);
     }
@@ -49,6 +55,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     central(app, ui);
     devices::popup(app, ctx);
     dialogs::show(app, ctx);
+    widgets::drag_ghost(ctx, &app.palette);
     toasts(app, ctx, theme::PLAYER_BAR_HEIGHT + 16.0);
 }
 
@@ -79,7 +86,7 @@ fn page_tint(app: &mut App) -> Option<Color32> {
             .and_then(|page| page.show.get())
             .and_then(|show| pick_image(&show.images, 300))
             .map(str::to_string),
-        Page::LikedSongs => return Some(Color32::from_rgb(0x50, 0x38, 0xc8)),
+        Page::LikedSongs => return Some(Color32::from_rgb(0x2b, 0x4c, 0x73)),
         _ => None,
     };
     if !app.settings.accent_from_art && image.is_some() {

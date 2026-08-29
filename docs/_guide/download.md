@@ -1,98 +1,64 @@
 ---
 title: Download
-description: Get Fastpotify for macOS, Windows, or Linux, with install instructions for each.
+description: Get Oxidify for macOS, Windows, or Linux, with install instructions for each.
 nav_order: 1
 ---
 
-{% assign v = site.fastpotify_version %}
-{% assign base = "https://github.com/crmne/fastpotify/releases/download/v" | append: v %}
+{% assign v = site.oxidify_version %}
+{% assign base = "https://github.com/Master0fFate/oxidify/releases/download/v" | append: v %}
 
 The current version is **v{{ v }}**. Every file below, with its SHA-256, is
 listed in [checksums.txt]({{ base }}/checksums.txt); all versions live on
-the [releases page](https://github.com/crmne/fastpotify/releases).
+the [releases page](https://github.com/Master0fFate/oxidify/releases).
 
 ## macOS
 
 One download for both Apple Silicon and Intel:
 
-- [fastpotify-v{{ v }}-macos-universal.dmg]({{ base }}/fastpotify-v{{ v }}-macos-universal.dmg)
+- [oxidify-v{{ v }}-macos-universal.dmg]({{ base }}/oxidify-v{{ v }}-macos-universal.dmg)
 
-Open it and drag **Fastpotify** to Applications. Or, with
-[Homebrew](https://brew.sh):
-
-```sh
-brew install --cask crmne/tap/fastpotify
-```
-
-Homebrew installs it like any download, so the first-open steps below
-apply once. To skip them, clear the quarantine flag instead:
-
-```sh
-xattr -d com.apple.quarantine /Applications/Fastpotify.app
-```
+Open it and drag **Oxidify** to Applications.
 
 ### First open on macOS
 
-This build is not yet notarized with Apple, so macOS blocks it the first
+This build is not notarized with Apple, so macOS blocks it the first
 time. Recent macOS versions (Sequoia and later) no longer let you bypass
 this with a right-click, so you open it once through Privacy & Security:
 
-1. Double-click **Fastpotify** in Applications. macOS says it cannot be
+1. Double-click **Oxidify** in Applications. macOS says it cannot be
    opened because Apple cannot check it for malicious software. Click
    **Done** (do **not** click Move to Trash).
 2. Open **System Settings**, then **Privacy & Security**.
-3. Scroll down to the **Security** section, find *"Fastpotify was blocked
+3. Scroll down to the **Security** section, find *"Oxidify was blocked
    to protect your Mac"*, and click **Open Anyway**.
 4. Authenticate, then click **Open Anyway** once more.
 
-macOS remembers the choice: every launch after this is an ordinary
-double-click. This step disappears once notarized builds ship.
+macOS remembers the choice, so later launches work with an ordinary
+double-click.
 
 ## Windows
 
-The installer adds Fastpotify to the Start menu and needs no administrator
-rights. Almost every PC wants the first one; the second is for Windows on
-ARM:
+The installer adds Oxidify to the Start menu and needs no administrator
+rights. Choose x86_64 for most PCs or aarch64 for Windows on ARM:
 
-- [fastpotify-v{{ v }}-x86_64-pc-windows-msvc-setup.exe]({{ base }}/fastpotify-v{{ v }}-x86_64-pc-windows-msvc-setup.exe)
-- [fastpotify-v{{ v }}-aarch64-pc-windows-msvc-setup.exe]({{ base }}/fastpotify-v{{ v }}-aarch64-pc-windows-msvc-setup.exe)
+- [oxidify-v{{ v }}-x86_64-pc-windows-msvc-setup.exe]({{ base }}/oxidify-v{{ v }}-x86_64-pc-windows-msvc-setup.exe)
+- [oxidify-v{{ v }}-aarch64-pc-windows-msvc-setup.exe]({{ base }}/oxidify-v{{ v }}-aarch64-pc-windows-msvc-setup.exe)
 
 If you would rather not install anything, the same program comes as a zip:
-unpack it and run `fastpotify.exe`.
+unpack it and run `oxidify.exe`.
 
-- [fastpotify-v{{ v }}-x86_64-pc-windows-msvc.zip]({{ base }}/fastpotify-v{{ v }}-x86_64-pc-windows-msvc.zip)
-- [fastpotify-v{{ v }}-aarch64-pc-windows-msvc.zip]({{ base }}/fastpotify-v{{ v }}-aarch64-pc-windows-msvc.zip)
+- [oxidify-v{{ v }}-x86_64-pc-windows-msvc.zip]({{ base }}/oxidify-v{{ v }}-x86_64-pc-windows-msvc.zip)
+- [oxidify-v{{ v }}-aarch64-pc-windows-msvc.zip]({{ base }}/oxidify-v{{ v }}-aarch64-pc-windows-msvc.zip)
 
 Either way, SmartScreen may warn about an unknown publisher on first run;
 choose More info, then Run anyway.
 
 ## Linux
 
-### Arch Linux
+- [oxidify-v{{ v }}-x86_64-unknown-linux-gnu.tar.gz]({{ base }}/oxidify-v{{ v }}-x86_64-unknown-linux-gnu.tar.gz)
+- [oxidify-v{{ v }}-aarch64-unknown-linux-gnu.tar.gz]({{ base }}/oxidify-v{{ v }}-aarch64-unknown-linux-gnu.tar.gz)
 
-Fastpotify is in the AUR, with the desktop entry and icon installed for you:
-
-```sh
-yay -S fastpotify          # the released build
-yay -S fastpotify-git      # built from the latest commit
-```
-
-### Flatpak
-
-[FlatPark](https://flatpark.org/apps/rocks.fastpotify.Fastpotify) packages
-each Linux release as a sandboxed Flatpak and follows every new version:
-
-```sh
-flatpak remote-add --if-not-exists flatpark https://dl.flatpark.org/flatpark.flatpakrepo
-flatpak install flatpark rocks.fastpotify.Fastpotify
-```
-
-### Other distributions
-
-- [fastpotify-v{{ v }}-x86_64-unknown-linux-gnu.tar.gz]({{ base }}/fastpotify-v{{ v }}-x86_64-unknown-linux-gnu.tar.gz)
-- [fastpotify-v{{ v }}-aarch64-unknown-linux-gnu.tar.gz]({{ base }}/fastpotify-v{{ v }}-aarch64-unknown-linux-gnu.tar.gz)
-
-Unpack, put `fastpotify` on your PATH, and copy the desktop entry and icon
+Unpack, put `oxidify` on your PATH, and copy the desktop entry and icon
 from the bundled `packaging/` directory if you want it in your launcher.
 Runtime needs are the ordinary desktop libraries: ALSA, PulseAudio or
 PipeWire, and Wayland or X11.

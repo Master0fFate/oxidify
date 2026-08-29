@@ -1,14 +1,14 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Fastpotify
+Name=Oxidify
 GenericName=Music Player
-Comment=A fast, native Spotify client
-Exec=fastpotify
+Comment=A fast, native music player for your Spotify library
+Exec=oxidify
 Terminal=false
 Categories=AudioVideo;Audio;Player;Music;
 Keywords=spotify;music;player;streaming;
-Icon=fastpotify
+Icon=oxidify
 StartupNotify=true
-StartupWMClass=fastpotify
+StartupWMClass=oxidify
 MimeType=x-scheme-handler/spotify;

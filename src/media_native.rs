@@ -68,8 +68,8 @@ impl Bridge {
         wake: Wake,
     ) -> Result<Self, String> {
         let mut controls = MediaControls::new(PlatformConfig {
-            display_name: "Fastpotify",
-            dbus_name: "fastpotify",
+            display_name: "Oxidify",
+            dbus_name: "oxidify",
             hwnd,
         })
         .map_err(|error| error.to_string())?;
@@ -169,8 +169,8 @@ mod host {
 
     /// A window that is never shown, for the controls to belong to.
     fn create_hidden_window() -> Result<HWND, String> {
-        let class_name = wide("FastpotifyMediaControls");
-        let title = wide("Fastpotify");
+        let class_name = wide("OxidifyMediaControls");
+        let title = wide("Oxidify");
         let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
         let class = WNDCLASSW {
             style: 0,
@@ -219,7 +219,7 @@ mod host {
     ) -> Result<u32, String> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
-            .name("fastpotify-media".to_owned())
+            .name("oxidify-media".to_owned())
             .spawn(move || {
                 // The controls are WinRT objects, which want COM on the thread
                 // that makes them; apartment-threaded, so their callbacks

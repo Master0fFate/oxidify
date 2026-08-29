@@ -142,9 +142,9 @@ download() {
   url=$1
   out=$2
   if command -v curl >/dev/null 2>&1; then
-    curl -fL --retry 3 --retry-delay 1 -A "fastpotify-ytdlp-vendor" -o "$out" "$url"
+    curl -fL --retry 3 --retry-delay 1 -A "oxidify-ytdlp-vendor" -o "$out" "$url"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --user-agent="fastpotify-ytdlp-vendor" -O "$out" "$url"
+    wget -q --user-agent="oxidify-ytdlp-vendor" -O "$out" "$url"
   else
     echo "vendor.sh: need curl or wget" >&2
     exit 1
@@ -160,7 +160,7 @@ if [ -f "$dest" ]; then
   echo "vendor.sh: existing $dest has hash $got, expected $expected; re-downloading"
 fi
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/fastpotify-ytdlp.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/oxidify-ytdlp.XXXXXX")
 trap 'rm -rf "$work"' EXIT INT HUP
 
 sums_url="$base_url/$sha256sums_name"

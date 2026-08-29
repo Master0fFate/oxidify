@@ -1,4 +1,4 @@
-//! Linux desktop media controls (MPRIS) for Fastpotify.
+//! Linux desktop media controls (MPRIS) for Oxidify.
 //!
 //! D-Bus runs on its own thread with a local executor and exchanges bounded
 //! messages with the interface, which stays the only owner of playback
@@ -16,7 +16,7 @@ use crate::media::{MediaCommand, MediaState, MediaTrack};
 use crate::player::{Playback, RepeatMode};
 
 const PLAYING_POSITION_INTERVAL: Duration = Duration::from_millis(1000);
-const TRACK_OBJECT_PATH_PREFIX: &str = "/me/paolino/Fastpotify/Track/";
+const TRACK_OBJECT_PATH_PREFIX: &str = "/rocks/oxidify/Track/";
 
 enum Update {
     State(MediaState),
@@ -36,7 +36,7 @@ impl MediaService {
         let (command_tx, commands) = std::sync::mpsc::channel();
         let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(wake);
         let spawned = thread::Builder::new()
-            .name("fastpotify-mpris".to_string())
+            .name("oxidify-mpris".to_string())
             .spawn(move || {
                 let runtime = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -110,9 +110,9 @@ async fn run(
     commands: Sender<MediaCommand>,
     wake: std::sync::Arc<dyn Fn() + Send + Sync>,
 ) -> mpris_server::zbus::Result<()> {
-    let player = Player::builder("fastpotify")
-        .identity("Fastpotify")
-        .desktop_entry("fastpotify")
+    let player = Player::builder("oxidify")
+        .identity("Oxidify")
+        .desktop_entry("oxidify")
         .can_raise(true)
         .can_quit(true)
         .can_control(true)

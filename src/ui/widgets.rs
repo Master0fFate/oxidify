@@ -6,7 +6,7 @@ use egui::{
 
 use crate::api::models::*;
 use crate::app::App;
-use crate::model::{Action, Dialog, Page, RowContext};
+use crate::model::{Action, Dialog, DragEntry, DragTrack, Page, RowContext};
 use crate::theme::{self, Icon, Palette};
 use crate::util;
 
@@ -163,7 +163,7 @@ pub fn menu_item_enabled(
     label: &str,
     enabled: bool,
 ) -> bool {
-    let width = ui.available_width().max(200.0);
+    let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(
         vec2(width, 28.0),
         if enabled {
@@ -195,11 +195,14 @@ pub fn menu_item_enabled(
         }
         // A playlist can be named a paragraph; the label ends at the menu's
         // edge instead of running past it.
+        let display = crate::bidi::display_text(label);
+        let halign = crate::bidi::halign_for(label);
         let mut job = egui::text::LayoutJob::simple_singleline(
-            label.to_string(),
+            display.into_owned(),
             theme::regular(13.5),
             color,
         );
+        job.halign = halign;
         job.wrap = egui::text::TextWrapping {
             max_width: (rect.right() - 10.0 - x).max(0.0),
             max_rows: 1,
@@ -207,11 +210,11 @@ pub fn menu_item_enabled(
             overflow_character: Some('\u{2026}'),
         };
         let galley = ui.painter().layout_job(job);
-        ui.painter().galley(
-            pos2(x, rect.center().y - galley.size().y / 2.0),
-            galley,
-            color,
-        );
+        let pos = match halign {
+            Align::RIGHT => pos2(rect.right() - 10.0, rect.center().y - galley.size().y / 2.0),
+            _ => pos2(x, rect.center().y - galley.size().y / 2.0),
+        };
+        ui.painter().galley(pos, galley, color);
     }
     let clicked = enabled && response.clicked();
     if clicked {
@@ -468,6 +471,9 @@ pub struct TrackRow<'a> {
     pub added_by: Option<&'a str>,
     pub show_added_by: bool,
     pub compact: bool,
+    /// Vertical offset while rows part around the slot a dragged row
+    /// would land in; 0.0 everywhere else.
+    pub shift: f32,
 }
 
 /// Column widths of the track table, computed from the available width.
@@ -488,7 +494,11 @@ fn columns(width: f32, row: &TrackRow<'_>) -> Columns {
     let medium = width > 560.0;
     Columns {
         number: if row.compact { 0.0 } else { 44.0 },
-        cover: if row.show_cover { 52.0 } else { 0.0 },
+        cover: if row.show_cover {
+            if row.compact { 44.0 } else { 52.0 }
+        } else {
+            0.0
+        },
         album: if row.show_album && medium {
             (width * 0.28).clamp(140.0, 360.0)
         } else {
@@ -504,9 +514,9 @@ fn columns(width: f32, row: &TrackRow<'_>) -> Columns {
         } else {
             0.0
         },
-        heart: 36.0,
-        duration: 56.0,
-        more: 36.0,
+        heart: if row.compact { 0.0 } else { 36.0 },
+        duration: if row.compact { 44.0 } else { 56.0 },
+        more: if row.compact { 0.0 } else { 36.0 },
     }
 }
 
@@ -530,15 +540,39 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
         theme::ROW_HEIGHT
     };
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, row_height), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, row_height), Sense::click_and_drag());
+    let rect = rect.translate(vec2(0.0, row.shift));
     if !ui.is_rect_visible(rect) {
         return;
     }
-    let now_playing = app.now_playing();
-    let is_current = now_playing
-        .as_ref()
-        .is_some_and(|now| now.uri == row.item.uri());
-    let playing = is_current && now_playing.as_ref().is_some_and(|now| now.playing);
+    // Moving past the drag threshold puts the track in hand for the sidebar
+    // to catch. egui tells clicks and drags apart by that threshold, so
+    // single click, double click, and the context menu stay as they were.
+    if row.item.is_track() && response.drag_started_by(egui::PointerButton::Primary) {
+        // A drag that begins on an editable playlist's own row remembers
+        // where, so that playlist's table can move the row while every
+        // other target keeps treating the drop as a copy.
+        let from = match row.context {
+            RowContext::Context {
+                editable_playlist: Some((id, _)),
+                ..
+            } => Some((id.clone(), row.index as u32)),
+            _ => None,
+        };
+        egui::DragAndDrop::set_payload(
+            ui.ctx(),
+            DragTrack {
+                uri: row.item.uri().to_string(),
+                title: row.item.name().to_string(),
+                image: row.item.image(64).map(str::to_string),
+                from,
+            },
+        );
+    }
+    let is_current = app
+        .current_track_uri()
+        .is_some_and(|uri| uri == row.item.uri());
+    let playing = is_current && app.believed_playing();
     let hovered = ui.rect_contains_pointer(rect);
     let unavailable = match row.item {
         PlayableItem::Track(track) => track.is_playable == Some(false) || track.is_local,
@@ -729,7 +763,12 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
     }
     // Date added.
     if cols.added > 0.0 {
-        if let Some(added) = row.added_at {
+        // Spotify stamps the epoch on dates it never recorded; an empty
+        // cell is truer than January 1970.
+        if let Some(added) = row
+            .added_at
+            .filter(|added| !added.starts_with("1970-01-01"))
+        {
             let cell = Rect::from_min_size(pos2(x, rect.top()), vec2(cols.added, row_height));
             painter.text(
                 pos2(cell.left(), cell.center().y),
@@ -743,30 +782,32 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
     }
 
     // Heart.
-    let saved = app.is_saved(row.item.uri());
-    let heart_rect = Rect::from_min_size(pos2(x, rect.top()), vec2(cols.heart, row_height));
-    if row.item.is_track() && (hovered || saved == Some(true)) {
-        let mut child = ui.new_child(
-            UiBuilder::new()
-                .max_rect(heart_rect)
-                .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
-        );
-        let (icon, color) = if saved == Some(true) {
-            (Icon::HeartFilled, palette.accent)
-        } else {
-            (Icon::Heart, palette.secondary)
-        };
-        let tooltip = if saved == Some(true) {
-            "Remove from Liked Songs"
-        } else {
-            "Save to Liked Songs"
-        };
-        if theme::icon_button(&mut child, icon, 16.0, color, palette.text, tooltip).clicked() {
-            app.actions
-                .push(Action::ToggleSaved(row.item.uri().to_string()));
+    if cols.heart > 0.0 {
+        let saved = app.is_saved(row.item.uri());
+        let heart_rect = Rect::from_min_size(pos2(x, rect.top()), vec2(cols.heart, row_height));
+        if row.item.is_track() && (hovered || saved == Some(true)) {
+            let mut child = ui.new_child(
+                UiBuilder::new()
+                    .max_rect(heart_rect)
+                    .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
+            );
+            let (icon, color) = if saved == Some(true) {
+                (Icon::HeartFilled, palette.accent)
+            } else {
+                (Icon::Heart, palette.secondary)
+            };
+            let tooltip = if saved == Some(true) {
+                "Remove from Liked Songs"
+            } else {
+                "Save to Liked Songs"
+            };
+            if theme::icon_button(&mut child, icon, 16.0, color, palette.text, tooltip).clicked() {
+                app.actions
+                    .push(Action::ToggleSaved(row.item.uri().to_string()));
+            }
         }
+        x += cols.heart;
     }
-    x += cols.heart;
 
     // Duration.
     let duration_rect = Rect::from_min_size(pos2(x, rect.top()), vec2(cols.duration, row_height));
@@ -780,8 +821,12 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
     x += cols.duration;
 
     // More.
-    let more_rect = Rect::from_min_size(pos2(x, rect.top()), vec2(cols.more, row_height));
-    if hovered {
+    // The row's menu stays alive while it is open: when the button existed
+    // only on a hovered row, the pointer's trip to the menu could leave
+    // the row and close it before anything was clicked.
+    let menu_id = ui.id().with(("row-menu", row.index));
+    if cols.more > 0.0 && (hovered || egui::Popup::is_id_open(ui.ctx(), menu_id)) {
+        let more_rect = Rect::from_min_size(pos2(x, rect.top()), vec2(cols.more, row_height));
         let mut child = ui.new_child(
             UiBuilder::new()
                 .max_rect(more_rect)
@@ -796,6 +841,7 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
             "More",
         );
         egui::Popup::menu(&more)
+            .id(menu_id)
             .frame(menu_frame(&palette))
             .show(|ui| item_menu(ui, app, row.item, Some(row.context), Some(row.index)));
     }
@@ -823,6 +869,61 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
     egui::Popup::context_menu(&response)
         .frame(menu_frame(&palette))
         .show(|ui| item_menu(ui, app, row.item, Some(row.context), Some(row.index)));
+}
+
+/// The chip that rides the pointer while a song is being dragged.
+pub fn drag_ghost(ctx: &egui::Context, palette: &Palette) {
+    // A song and a sidebar row ride the pointer the same way.
+    let chip = egui::DragAndDrop::payload::<DragTrack>(ctx)
+        .map(|track| (track.title.clone(), track.image.clone()))
+        .or_else(|| {
+            egui::DragAndDrop::payload::<DragEntry>(ctx)
+                .map(|entry| (entry.title.clone(), entry.image.clone()))
+        });
+    let Some((title, image)) = chip else {
+        return;
+    };
+    // The payload lives through the release frame; the chip should not.
+    if !ctx.input(|input| input.pointer.any_down()) {
+        return;
+    }
+    let Some(pos) = ctx.pointer_latest_pos() else {
+        return;
+    };
+    egui::Area::new(egui::Id::new("drag-ghost"))
+        .order(egui::Order::Tooltip)
+        .interactable(false)
+        .fixed_pos(pos + vec2(16.0, 6.0))
+        .show(ctx, |ui| {
+            ui.set_opacity(0.9);
+            egui::Frame::new()
+                .fill(palette.overlay)
+                .stroke(Stroke::new(1.0, palette.outline))
+                .corner_radius(CornerRadius::same(theme::RADIUS))
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 4],
+                    blur: 16,
+                    spread: 0,
+                    color: palette.shadow,
+                })
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.set_max_width(280.0);
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        cover(ui, palette, image.as_deref(), 24.0, 4.0, Icon::Music);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&title)
+                                    .font(theme::medium(13.0))
+                                    .color(palette.text),
+                            )
+                            .truncate()
+                            .selectable(false),
+                        );
+                    });
+                });
+        });
 }
 
 pub fn explicit_badge(ui: &mut Ui, palette: &Palette) {
@@ -902,14 +1003,53 @@ pub fn table_header(
             clicked = Some(column);
         }
     };
+    let mut number_clicked = false;
     let mut x = rect.left() + 8.0;
-    ui.painter().text(
-        pos2(x + 22.0, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        "#",
-        font.clone(),
-        color,
-    );
+    {
+        let number = Rect::from_center_size(pos2(x + 22.0, rect.center().y), vec2(30.0, 22.0));
+        // With no sort chosen the list already plays its own order, and
+        // the # says so: lit, arrow pointing down the list.
+        let natural = sort.is_none();
+        let active = sort.filter(|sort| sort.column == SortColumn::Index);
+        let response = ui.interact(number, ui.id().with("table-header-number"), Sense::click());
+        let number_color = if natural || active.is_some() {
+            palette.accent
+        } else if response.hovered() {
+            palette.text
+        } else {
+            color
+        };
+        ui.painter().text(
+            number.center(),
+            egui::Align2::CENTER_CENTER,
+            "#",
+            font.clone(),
+            number_color,
+        );
+        if let Some(ascending) = active
+            .map(|sort| sort.ascending)
+            .or(natural.then_some(true))
+        {
+            let center = pos2(number.center().x + 12.0, rect.center().y);
+            let (wing, tip) = if ascending { (2.8, -3.2) } else { (-2.8, 3.2) };
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    center + vec2(-4.0, wing),
+                    center + vec2(4.0, wing),
+                    center + vec2(0.0, tip),
+                ],
+                number_color,
+                egui::Stroke::NONE,
+            ));
+        }
+        if response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("The list's own order, reversed")
+            .clicked()
+        {
+            number_clicked = true;
+        }
+    }
     x += 44.0;
     if show_cover {
         x += 52.0;
@@ -942,6 +1082,9 @@ pub fn table_header(
     if added_width > 0.0 {
         heading(ui, cx, "DATE ADDED", SortColumn::Added);
     }
+    if number_clicked {
+        clicked = Some(SortColumn::Index);
+    }
     let clock = Rect::from_center_size(
         pos2(rect.right() - 36.0 - 56.0 / 2.0 - 6.0, rect.center().y),
         Vec2::splat(15.0),
@@ -960,6 +1103,23 @@ pub fn table_header(
         color
     };
     Icon::Clock.image(clock_color, 15.0).paint_at(ui, clock);
+    if let Some(sort) = sort.filter(|sort| sort.column == SortColumn::Duration) {
+        let center = pos2(clock.right() + 9.0, rect.center().y);
+        let (wing, tip) = if sort.ascending {
+            (2.8, -3.2)
+        } else {
+            (-2.8, 3.2)
+        };
+        ui.painter().add(egui::Shape::convex_polygon(
+            vec![
+                center + vec2(-4.0, wing),
+                center + vec2(4.0, wing),
+                center + vec2(0.0, tip),
+            ],
+            clock_color,
+            egui::Stroke::NONE,
+        ));
+    }
     if response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text("Sort by duration")
@@ -985,7 +1145,10 @@ pub fn ellipsized(
     width: f32,
     max_rows: usize,
 ) -> std::sync::Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::simple(text.to_string(), font, color, width);
+    let display = crate::bidi::display_text(text);
+    let halign = crate::bidi::halign_for(text);
+    let mut job = egui::text::LayoutJob::simple(display.into_owned(), font, color, width);
+    job.halign = halign;
     job.wrap.max_rows = max_rows;
     job.wrap.break_anywhere = false;
     job.wrap.overflow_character = Some('…');
@@ -1008,8 +1171,26 @@ pub fn card(
     playable: bool,
 ) -> CardResponse {
     let palette = app.palette;
-    let image_size = CARD_WIDTH - 24.0;
-    let height = image_size + 70.0;
+    const PAD: f32 = 12.0;
+    const TITLE_GAP: f32 = 10.0;
+    const SUBTITLE_GAP: f32 = 2.0;
+    const BOTTOM_PAD: f32 = 8.0;
+    let image_size = CARD_WIDTH - 2.0 * PAD;
+    let text_width = image_size;
+    let title_font = theme::semibold(14.0);
+    let subtitle_font = theme::regular(12.5);
+    // Every card reserves the title row and two subtitle rows, whatever its
+    // own subtitle needs: a two-line subtitle then sits inside the hover
+    // background, and a shelf that mixes one- and two-line subtitles keeps
+    // its covers on one line instead of centring cards of different heights.
+    let (title_row, subtitle_row) = ui.fonts_mut(|fonts| {
+        (
+            fonts.row_height(&title_font),
+            fonts.row_height(&subtitle_font),
+        )
+    });
+    let height =
+        PAD + image_size + TITLE_GAP + title_row + SUBTITLE_GAP + 2.0 * subtitle_row + BOTTOM_PAD;
     let (rect, response) = ui.allocate_exact_size(vec2(CARD_WIDTH, height), Sense::click());
     let mut play = false;
     if ui.is_rect_visible(rect) {
@@ -1023,7 +1204,7 @@ pub fn card(
                     .gamma_multiply(if palette.dark { 0.8 } else { 1.0 }),
             );
         }
-        let image_rect = Rect::from_min_size(rect.min + vec2(12.0, 12.0), Vec2::splat(image_size));
+        let image_rect = Rect::from_min_size(rect.min + vec2(PAD, PAD), Vec2::splat(image_size));
         let radius = if round { image_size / 2.0 } else { 6.0 };
         paint_shadow(ui, &palette, image_rect, radius);
         paint_cover(
@@ -1034,36 +1215,37 @@ pub fn card(
             radius,
             if round { Icon::User } else { Icon::Music },
         );
-        let text_left = rect.left() + 12.0;
-        let text_width = CARD_WIDTH - 24.0;
-        let title_galley = ellipsized(
-            ui,
-            title,
-            theme::semibold(14.0),
-            palette.text,
-            text_width,
-            1,
-        );
+        let text_left = rect.left() + PAD;
+        let title_galley = ellipsized(ui, title, title_font, palette.text, text_width, 1);
         let title_rect = Rect::from_min_size(
-            pos2(text_left, image_rect.bottom() + 10.0),
-            vec2(text_width, 20.0),
+            pos2(text_left, image_rect.bottom() + TITLE_GAP),
+            vec2(text_width, title_row),
         );
-        ui.painter()
-            .galley(title_rect.min, title_galley, palette.text);
+        let title_pos = match title_galley.job.halign {
+            Align::RIGHT => pos2(title_rect.right(), title_rect.top()),
+            Align::Center => pos2(title_rect.center().x, title_rect.top()),
+            _ => title_rect.min,
+        };
+        ui.painter().galley(title_pos, title_galley, palette.text);
         let subtitle_galley = ellipsized(
             ui,
             subtitle,
-            theme::regular(12.5),
+            subtitle_font,
             palette.secondary,
             text_width,
             2,
         );
         let subtitle_rect = Rect::from_min_size(
-            pos2(text_left, title_rect.bottom() + 2.0),
-            vec2(text_width, 34.0),
+            pos2(text_left, title_rect.bottom() + SUBTITLE_GAP),
+            vec2(text_width, 2.0 * subtitle_row),
         );
+        let subtitle_pos = match subtitle_galley.job.halign {
+            Align::RIGHT => pos2(subtitle_rect.right(), subtitle_rect.top()),
+            Align::Center => pos2(subtitle_rect.center().x, subtitle_rect.top()),
+            _ => subtitle_rect.min,
+        };
         ui.painter()
-            .galley(subtitle_rect.min, subtitle_galley, palette.secondary);
+            .galley(subtitle_pos, subtitle_galley, palette.secondary);
 
         if playable && hovered {
             let button_rect = Rect::from_center_size(
@@ -1353,7 +1535,9 @@ pub fn setting_row(
 ) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            ui.set_width(ui.available_width() - 260.0);
+            // A frame can arrive before the window has its size (a fullscreen
+            // request on Wayland answers a frame late), so never go negative.
+            ui.set_width((ui.available_width() - 260.0).max(0.0));
             theme::text(ui, label, theme::medium(14.0), palette.text);
             if !description.is_empty() {
                 ui.add(

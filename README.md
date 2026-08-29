@@ -1,87 +1,94 @@
-# Fastpotify
+# Oxidify
 
-**Spotify, native and fast.** A lightweight Spotify client written in Rust with
-[egui](https://github.com/emilk/egui), playing music through
-[librespot](https://github.com/librespot-org/librespot). It runs on Linux,
-macOS, and Windows, starts in well under a second, and stays small while it
-runs. There is no browser engine anywhere in the process.
+**Your library, native and fast.** A lightweight music player for your
+Spotify library, written in Rust with [egui](https://github.com/emilk/egui),
+playing music through [librespot](https://github.com/librespot-org/librespot).
+It runs on Linux, macOS, and Windows, starts in well under a second, and
+stays small while it runs. There is no browser engine anywhere in the
+process.
 
-Fastpotify follows in the footsteps of
-[Omarchy Spotify](https://github.com/stappmus/Omarchy-Spotify) and
-[spotify-tui](https://github.com/Rigellute/spotify-tui): the familiar Spotify
-layout, the whole library, and a Spotify Connect receiver on your computer,
-as one ordinary desktop application rather than a shell plugin.
+Oxidify is derived from
+[Fastpotify](https://github.com/crmne/fastpotify) and keeps its familiar
+layout, library access, and Spotify Connect receiver in one desktop
+application, adding resilient alternate local playback for accounts that
+cannot use Spotify Connect.
 
-![Fastpotify showing a playlist, with the queue open and a track playing on a remote speaker](docs/screenshot.png)
+![Oxidify showing a playlist, with the queue open and a track playing on a remote speaker](docs/screenshot.png)
 
-**Documentation:** [fastpotify.rocks](https://fastpotify.rocks/): what it is, getting started, everyday use, and how it connects to Spotify.
+**Documentation:** the `docs/` directory builds the site: what it is,
+getting started, everyday use, and how it connects to Spotify.
 
 ## What it does
 
-- **Plays music on this computer.** Fastpotify is a Spotify Connect device by
-  default. Pick it from your phone, or press play here. Gapless, up to 320 kbps,
-  with optional volume normalisation and an on-disk audio cache. An
-  **alternate local audio** mode keeps Spotify metadata and plays a third-party
-  match instead; that is not Spotify audio and not Spotify Connect.
+- **Plays music on this computer.** Oxidify is a Spotify Connect device by
+  default. Pick it from your phone, or press play here. Gapless, up to 320
+  kbps, with optional volume normalisation and an on-disk audio cache. An
+  **alternate local audio** mode keeps Spotify metadata and plays a
+  third-party match instead; that is not Spotify audio and not Spotify
+  Connect.
+- **Plays without Premium.** Free and unconfirmed accounts are routed to
+  alternate local audio instead of attempting Spotify playback; Premium
+  users can select it too. See [Alternate local audio](#alternate-local-audio)
+  for exactly what that does and does not promise.
 - **Controls every other device.** Move playback to a speaker, a phone, or
   another computer from the device picker, and keep controlling it: play,
   pause, skip, seek, shuffle, repeat, volume.
 - **Finds speakers on your network.** A librespot, spotifyd, or hardware
   receiver waiting on the LAN is invisible to Spotify's API until it has an
-  account. Fastpotify discovers those over mDNS and connects them for you,
+  account. Oxidify discovers those over mDNS and connects them for you,
   after which they behave like any other Spotify Connect device.
-- **Your whole library.** Playlists, Liked Songs, saved albums, followed
+- **Library access.** Playlists, Liked Songs, saved albums, followed
   artists, podcasts, and saved episodes, filterable in the sidebar and as
-  full pages.
+  full pages. Sidebar rows pin to the top and drag into your own order.
 - **Search** across songs, artists, albums, playlists, podcasts, and episodes,
   with a top result and per-type views.
 - **Home** with Made for you, Recently played, your top artists and songs, and
   recommendations.
 - **Artist pages** with popular songs, a filterable discography, and related
-  artists. **Album**, **playlist**, and **podcast** pages with everything
-  playable from any row.
+  artists. **Album**, **playlist**, and **podcast** pages support playback
+  from any row.
 - **Playlists you own** can be created, renamed, described, reordered, and
-  edited: add from any row's menu, remove from the playlist page.
+  edited: add from any row's menu or by dragging a song onto the playlist in
+  the sidebar, remove from the playlist page.
 - **Queue** as a side panel or a page; add anything to it from a row menu.
-- **Album-art colour.** Pages and the player bar take a tint from the cover
-  of what you are looking at or listening to. Turn it off in Settings.
+- **Lyrics** beside whatever is playing, timed lines that follow the song,
+  from Spotify or [LRCLIB](https://lrclib.net).
+- **Album-art colour.** Pages and the player bar can take a tint from the
+  cover of what you are looking at or listening to. Turn it off in Settings
+  and the interface stays in its neutral chrome with blue accents.
 - **Light and dark**, or follow the system.
-- **Keyboard-first.** Every common action has a shortcut (`Ctrl+/` lists
+- **Winamp mini player.** `Ctrl+M` turns the window into a tiny player that
+  wears classic `.wsz` skins, drawn pixel for pixel at 1x to 4x, with the
+  spectrum analyser, the playlist, and the equalizer hanging under it as
+  they did; the logo in the skin brings the big window back. Drop a skin
+  from the [Winamp Skin Museum](https://skins.webamp.org) on either window
+  to add it.
+- **Equalizer.** Winamp's ten bands and presets over the music played on
+  this computer, in Settings and in the skin.
+- **Keyboard-first.** Every common action has a shortcut (`Ctrl+/` or `?` lists
   them).
 - **Keeps playing when you close the window.** The window closes for real,
   the music and the process stay in the system tray (Linux status notifier),
   and clicking the tray, or your desktop's media controls, brings a window
   back. No compositor-specific tricks, so it behaves the same on any
   desktop. Quit from the tray menu or `Ctrl+Q`; turn the behaviour off in
-  Settings if you prefer close-to-quit.
-- **Honest about the network.** Pages show spinners while they load, a
-  quiet indicator appears in the top bar whenever the app is talking to
-  Spotify for more than a moment, and if Spotify asks the app to back off
-  you see that it is waiting, instead of an unexplained pause.
-- **One instance.** Launching it again surfaces the window that is already
-  open instead of starting a rival copy, on every platform.
+  Settings if you prefer close-to-quit. On macOS the Dock icon stays present,
+  and clicking it opens the window again.
+- **Visible network activity.** Pages show spinners while they load. An
+  indicator appears in the top bar when a Spotify request takes more than a
+  moment or is waiting for a rate limit.
+- **One instance.** Launching it again brings the existing window forward
+  instead of starting a second copy, on every platform.
 - **Desktop integration.** MPRIS on Linux, so media keys, the shell, and
-  `playerctl` see Fastpotify like any other player. On macOS and Windows,
-  `fastpotify next` and its siblings drive the running app from a terminal,
+  `playerctl` see Oxidify like any other player. On macOS and Windows,
+  `oxidify next` and its siblings drive the running app from a terminal,
   a launcher, or a hotkey.
 
 ## Install
 
-On Arch Linux, Fastpotify is in the AUR:
-
-```bash
-yay -S fastpotify          # the released build
-yay -S fastpotify-git      # built from the latest commit
-```
-
-On macOS, with [Homebrew](https://brew.sh):
-
-```sh
-brew install --cask crmne/tap/fastpotify
-```
-
-Everywhere else it is a single binary. Build it with a stable Rust toolchain
-(1.95 or newer):
+Prebuilt binaries and installers for macOS, Windows, and Linux live on the
+[releases page](https://github.com/Master0fFate/oxidify/releases). Or build
+the single binary yourself with a stable Rust toolchain (1.95 or newer):
 
 ```bash
 cargo install --path .
@@ -112,15 +119,19 @@ listen to, for example `noto-fonts` and `noto-fonts-cjk` (Arch) or
 `fonts-noto` and `fonts-noto-cjk` (Debian or Ubuntu). A script with no face
 installed still shows as empty boxes.
 
-A desktop entry is provided in `packaging/applications/fastpotify.desktop`.
+A desktop entry is provided in `packaging/applications/oxidify.desktop`.
+
+Coming from Fastpotify? The first run imports your settings, sign-ins,
+skins, and playback credentials from Fastpotify's directories, once, and
+never writes back to them.
 
 ## Sign in
 
 Press **Sign in with Spotify**. Your browser opens Spotify's own consent
-page (Authorization Code with PKCE); Fastpotify never sees your password.
+page (Authorization Code with PKCE); Oxidify never sees your password.
 When Spotify redirects back to the app, your library, search, and control
 of other devices work immediately. The refresh token is stored in the
-platform's state directory (`~/.local/state/fastpotify` on Linux), so the
+platform's state directory (`~/.local/state/oxidify` on Linux), so the
 browser is needed once per machine.
 
 Playing music **on this computer** through Spotify Connect is one more
@@ -130,33 +141,54 @@ the device menu ("Play here, set up once") or Settings; it needs Spotify
 Premium, and librespot stores a reusable credential so it also never asks
 again. Browsing and remote control work on any account without this step.
 
-For a Free account, or until Spotify confirms Premium, Fastpotify selects
+The Web API always keeps shared catalog coverage. You can also register a
+personal Spotify Development Mode app and paste its Client ID in Settings →
+Account; supported requests use its separate quota while complete playlist
+views, playlist-bearing search, external playlists, and unavailable operations
+continue through the shared app.
+
+## Alternate local audio
+
+For a Free account, or until Spotify confirms Premium, Oxidify selects
 **Alternate local audio** instead of attempting Spotify playback. Premium
 users can also select it under Settings → Playback on this computer. This
 mode still talks to the Spotify Web API for library, search, and metadata,
 then resolves each track against a Piped-compatible API you configure and/or
 `yt-dlp`.
-Fastpotify does not bundle Piped and does not ship a public Piped instance.
+
+Oxidify does not bundle Piped and does not ship a public Piped instance.
 Release builds embed one official pinned `yt-dlp` executable for that
 target, extract it into the local state directory, and never download it at
 runtime. A user-installed `yt-dlp` is used only when its version is strictly
 newer than the pin. Spotify tokens are never sent to those tools, and the
 result is not Spotify audio. You are responsible for the endpoint and any
-binary you run, and for their terms of use. Podcasts are not supported in
-that mode. Weak matches are never played. Playback starts when audio headers
-are in, not after a fixed time buffer. An M4A file with its `moov`
-atom at the end may wait until the download finishes. Alternate playback
-does not select Opus, WebM, or Ogg/Vorbis: YouTube's useful native
-alternative is WebM/Opus, and Opus is not decoded. Network stalls and
-transient HTTP errors retry with bounded backoff and resume from the ranges
-already received; expired media URLs are refreshed.
+binary you run, and for their terms of use. Nothing here is approved or
+authorized by Spotify or by YouTube, and Oxidify makes no claim that it is.
+Podcasts are not supported in that mode. Weak matches are never played.
+Playback starts when audio headers are in, not after a fixed time buffer.
+An M4A file with its `moov` atom at the end may wait until the download
+finishes. Alternate playback does not select Opus, WebM, or Ogg/Vorbis:
+YouTube's useful native alternative is WebM/Opus, and Opus is not decoded.
+Network stalls and transient HTTP errors retry with bounded backoff and
+resume from the ranges already received; expired media URLs are refreshed.
 A terminal transport or decode failure stops the current track instead of
 skipping it.
 
-By default the Web API uses the shared public application also used by
-spotify-player, ncspot, and Omarchy Spotify. If you hit rate limits you can
-register your own (free) Spotify application and paste its Client ID in
-Settings → Account.
+## Account safety
+
+We are not aware of a Spotify account being suspended for using Oxidify
+or another librespot player with Premium. Sign-in happens on Spotify's own
+pages, audio uses the quality included with Premium, DRM stays intact, and
+Oxidify does not rip tracks or block ads.
+
+Reported suspensions usually involve modded apps that remove ads from free
+accounts, track ripping, or stream manipulation. Oxidify does none of
+those things, and [CONTRIBUTING.md](CONTRIBUTING.md) prohibits them.
+
+Alternate local playback is different: it does not stream from Spotify at
+all. Whether matching and playing third-party audio is acceptable under the
+terms of your account and of the services you point it at is your
+responsibility; see the section above.
 
 ## Keyboard shortcuts
 
@@ -170,52 +202,76 @@ Settings → Account.
 | `S` / `R` | Shuffle / cycle repeat |
 | `Q` | Queue panel |
 | `Ctrl+F` or `/` | Search |
+| `Ctrl+B` | Show or hide the sidebar |
 | `Alt+←` / `Alt+→` | Back or forward |
 | `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
+| `Ctrl+M` | Winamp mini player |
 | `Ctrl+,` | Settings |
-| `Ctrl+/` | All shortcuts |
+| `Ctrl+/` or `?` | All shortcuts |
 | `Ctrl+Q` | Quit |
 
 On macOS, `Cmd` replaces `Ctrl`.
 
 ## Controlling it from outside
 
-On Linux, Fastpotify is an MPRIS player, so `playerctl --player=fastpotify
+On Linux, Oxidify is an MPRIS player, so `playerctl --player=oxidify
 play-pause` already works.
 
 macOS and Windows have no such bus, so the same verbs are subcommands. They
 talk to the instance already running and print nothing on success:
 
 ```
-fastpotify play-pause          fastpotify volume 40
-fastpotify play                fastpotify volume-up [percent]
-fastpotify pause               fastpotify volume-down [percent]
-fastpotify next                fastpotify mute
-fastpotify previous            fastpotify shuffle
-fastpotify seek 15             fastpotify repeat
-fastpotify seek -- -15         fastpotify show
-fastpotify now-playing [--raw]
+oxidify play-pause          oxidify volume 40
+oxidify play                oxidify volume-up [percent]
+oxidify pause               oxidify volume-down [percent]
+oxidify next                oxidify mute
+oxidify previous            oxidify shuffle [on|off]
+oxidify seek 15             oxidify repeat [off|context|track]
+oxidify seek -- -15         oxidify like
+oxidify seek-to 90          oxidify play-uri spotify:playlist:37i9…
+oxidify show                oxidify transfer <device-id>
+oxidify now-playing [--raw] oxidify devices [--raw]
 ```
 
-`now-playing` prints one readable line; `--raw` prints the fields
-tab-separated — state, title, artists, album, position_ms, duration_ms,
-volume, shuffle, repeat — for a script that wants one of them. A verb exits
-non-zero when Fastpotify is not running.
+`shuffle` and `repeat` toggle when asked for nothing in particular and set
+the state outright when given one, which is what a button that draws the
+current state wants: a missed update otherwise leaves the two disagreeing
+until the next press. `like` saves the playing track to your library, or
+takes it back out.
 
-That is enough for a launcher such as Raycast or Alfred to drive playback
-through its own script commands.
+`now-playing` prints one readable line; `--raw` prints the fields
+tab-separated (state, title, artists, album, position_ms, duration_ms,
+volume, shuffle, repeat, art_url, saved, device) for a script that wants
+one of them. `saved` is `yes`, `no`, or `unknown` while the answer is still
+on its way. The last three fields were added after the first nine, and
+appended rather than woven in, so a script written against the older shape
+still reads correctly.
+
+`devices` lists the Spotify Connect devices, id first, the active one
+marked with `*`; `--raw` prints them as JSON. The app only refreshes that
+list while its own picker is open, so asking for it also asks it to look
+again: on a cold list the first call can come back empty and the next one
+has it.
+
+A verb exits non-zero when Oxidify is not running.
+
+Launchers such as Raycast or Alfred can use these commands to control
+playback. The Stream Deck plugin speaks the same channel, which is why
+the verbs cover more than a media key can ask for.
 
 ## Settings
 
-Everything lives in one readable JSON file (`~/.config/fastpotify/settings.json`
-on Linux): the Connect device name, bitrate, normalisation, autoplay, gapless
-playback, the audio backend (PulseAudio/PipeWire or ALSA on Linux), audio
-cache size, theme, whether pages take colour from artwork, and the optional
-alternate playback fields (`playback_backend`, `piped_api_base`, `ytdlp_path`,
-`alternate_min_score`, `alternate_skip_on_miss`). Playback settings apply when
-you press **Apply and restart playback**. Switching source stops the other
-engine so both never run at once. The default remains Spotify Connect.
+Settings live in one readable JSON file (`~/.config/oxidify/settings.json`
+on Linux). They include the Connect device name, bitrate, normalisation,
+autoplay, gapless playback, the audio backend (PulseAudio/PipeWire or ALSA
+on Linux), audio cache size, theme, sidebar state, whether pages take
+colour from artwork, the mini player's skin and size, and the alternate
+playback fields (`playback_backend`, `piped_api_base`, `ytdlp_path`,
+`alternate_min_score`, `alternate_skip_on_miss`).
+Playback settings apply when you press **Apply and restart playback**.
+Switching source stops the other engine so both never run at once. The
+default remains Spotify Connect.
 
 Caches (audio, artwork) live under the cache directory and can be deleted at
 any time without signing you out.
@@ -228,9 +284,10 @@ any time without signing you out.
 - `src/player.rs`: the librespot session, player, mixer, and Spirc (Spotify
   Connect) wrapped into one engine that folds player events into a state
   snapshot for the interface.
-- `src/api/`: a small Web API client with bounded concurrency,
-  `Retry-After` handling, and automatic fallback between the 2026 endpoint
-  shapes (`/me/library`, `/playlists/{id}/items`) and the classic ones.
+- `src/api/`: one routing gateway over independent shared and personal Web API
+  sessions, each with bounded concurrency and coordinated `Retry-After`
+  handling. Capability profiles select current endpoint contracts before a
+  request is dispatched.
 - `src/backend.rs`: a tokio runtime on its own thread; the interface talks to
   it through channels and is woken with `request_repaint`, so the app is idle
   when nothing happens.
@@ -240,9 +297,9 @@ any time without signing you out.
   Views collect `Action`s while drawing and the app applies them afterwards.
 - `src/mpris.rs`: Linux media controls on a dedicated thread.
 
-Fastpotify pins its Rust toolchain in `rust-toolchain.toml`; `cargo test`
-covers the API models, the endpoint fallbacks, PKCE, the player state
-machine, and a headless render of every page, panel, and dialog.
+Oxidify pins its Rust toolchain in `rust-toolchain.toml`; `cargo test`
+covers the API models, dual-session routing, PKCE, the player state machine,
+and a headless render of every page, panel, and dialog.
 
 To look at the interface without a Spotify account, build with the `demo`
 feature and start it with sample data:
@@ -254,15 +311,27 @@ cargo run --features demo -- --demo --demo-page playlist:pl1 --demo-show queue
 Demo mode never writes settings. `--demo-shot <PATH>` writes the window to a
 PNG and exits, which is how the screenshot above is made.
 
-## Acknowledgements
+## Contributing
 
-Fastpotify stands on [librespot](https://github.com/librespot-org/librespot),
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or pull
+request. It describes the project's design principles, product boundaries,
+and the complete local checks that every change must pass.
+
+## Provenance and legal
+
+Oxidify is an independent, MIT-licensed project derived from
+[Fastpotify](https://github.com/crmne/fastpotify) by Carmine Paolino; see
+[NOTICE](NOTICE) for the required attribution. The original MIT license and
+copyright are preserved in [LICENSE](LICENSE).
+
+Oxidify is not affiliated with, endorsed by, or sponsored by Spotify AB or
+by the Fastpotify author. Spotify is a trademark of Spotify AB. Oxidify is
+an unofficial client built on Spotify's public Web API and librespot;
+nothing in it implies Spotify's approval, and Spotify changes these
+interfaces from time to time.
+
+Oxidify stands on [librespot](https://github.com/librespot-org/librespot),
 [egui](https://github.com/emilk/egui), the [Inter](https://rsms.me/inter/)
 typeface (OFL), and [Lucide](https://lucide.dev) icons (ISC). Release builds
 may embed [yt-dlp](https://github.com/yt-dlp/yt-dlp) (Unlicense); see
 [third_party/yt-dlp/NOTICE](third_party/yt-dlp/NOTICE).
-
-Fastpotify is an independent project and is not affiliated with Spotify.
-Spotify is a trademark of Spotify AB.
-
-Licensed under the [MIT License](LICENSE).

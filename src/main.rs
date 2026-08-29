@@ -2,13 +2,13 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use fastpotify::{app, backend, paths, settings, single_instance, util};
+use oxidify::{app, backend, paths, settings, single_instance, util};
 
 use clap::Parser;
 
 /// A fast, native Spotify client.
 #[derive(Debug, Parser)]
-#[command(name = "fastpotify", version, about)]
+#[command(name = "oxidify", version, about)]
 struct Cli {
     /// A command for the running instance; without one, the app starts.
     #[command(subcommand)]
@@ -33,7 +33,7 @@ struct Cli {
     demo_page: Option<String>,
 
     /// Extra demo surfaces: a comma-separated list of `queue`, `devices`,
-    /// `shortcuts`, `create`, `light`.
+    /// `shortcuts`, `create`, `light`, `focus`.
     #[cfg(feature = "demo")]
     #[arg(long)]
     demo_show: Option<String>,
@@ -72,6 +72,8 @@ enum Control {
         #[arg(allow_negative_numbers = true)]
         seconds: i64,
     },
+    /// Seek to a position, in seconds from the start
+    SeekTo { seconds: u32 },
     /// Set the volume to a percentage
     Volume {
         #[arg(value_parser = clap::value_parser!(u8).range(0..=100))]
@@ -89,14 +91,27 @@ enum Control {
     },
     /// Toggle mute
     Mute,
-    /// Toggle shuffle
-    Shuffle,
-    /// Cycle the repeat mode
-    Repeat,
+    /// Toggle shuffle, or set it outright
+    Shuffle { state: Option<OnOff> },
+    /// Cycle the repeat mode, or set it outright
+    Repeat { mode: Option<Repeat> },
+    /// Save the playing track to your library, or take it back out
+    Like,
+    /// Play a Spotify URI: a track, album, playlist, artist, or show
+    PlayUri { uri: String },
+    /// List the Spotify Connect devices
+    Devices {
+        /// Print the JSON the running instance sent instead.
+        #[arg(long)]
+        raw: bool,
+    },
+    /// Move playback to a device, by the id `devices` prints
+    Transfer { device_id: String },
     /// Print the playing track
     NowPlaying {
         /// Print the fields tab-separated instead: state, title, artists,
-        /// album, position_ms, duration_ms, volume, shuffle, repeat.
+        /// album, position_ms, duration_ms, volume, shuffle, repeat,
+        /// art_url, saved, device.
         #[arg(long)]
         raw: bool,
     },
@@ -104,11 +119,30 @@ enum Control {
     Show,
 }
 
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum OnOff {
+    On,
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum Repeat {
+    /// Play through and stop
+    Off,
+    /// Repeat the album, playlist, or queue
+    Context,
+    /// Repeat this track
+    Track,
+}
+
 /// Sends one control verb to the running instance. Speaks over the
 /// single-instance loopback socket, which Linux does not have.
 #[cfg(not(target_os = "linux"))]
 fn run_control(control: Control) -> i32 {
-    let raw = matches!(control, Control::NowPlaying { raw: true });
+    let raw = matches!(
+        control,
+        Control::NowPlaying { raw: true } | Control::Devices { raw: true }
+    );
     let verb = match control {
         Control::PlayPause => "playpause".to_owned(),
         Control::Play => "play".to_owned(),
@@ -116,12 +150,32 @@ fn run_control(control: Control) -> i32 {
         Control::Next => "next".to_owned(),
         Control::Previous => "previous".to_owned(),
         Control::Seek { seconds } => format!("seek-by {}", seconds.saturating_mul(1000)),
+        Control::SeekTo { seconds } => format!("seek-to {}", u64::from(seconds) * 1000),
         Control::Volume { percent } => format!("volume-set {percent}"),
         Control::VolumeUp { percent } => format!("volume-by {percent}"),
         Control::VolumeDown { percent } => format!("volume-by -{percent}"),
         Control::Mute => "mute".to_owned(),
-        Control::Shuffle => "shuffle".to_owned(),
-        Control::Repeat => "repeat".to_owned(),
+        Control::Shuffle { state: None } => "shuffle".to_owned(),
+        Control::Shuffle { state: Some(state) } => {
+            let state = match state {
+                OnOff::On => "on",
+                OnOff::Off => "off",
+            };
+            format!("shuffle-set {state}")
+        }
+        Control::Repeat { mode: None } => "repeat".to_owned(),
+        Control::Repeat { mode: Some(mode) } => {
+            let mode = match mode {
+                Repeat::Off => "off",
+                Repeat::Context => "context",
+                Repeat::Track => "track",
+            };
+            format!("repeat-set {mode}")
+        }
+        Control::Like => "save-toggle".to_owned(),
+        Control::PlayUri { uri } => format!("play-uri {uri}"),
+        Control::Devices { .. } => "devices".to_owned(),
+        Control::Transfer { device_id } => format!("transfer {device_id}"),
         Control::NowPlaying { .. } => "nowplaying".to_owned(),
         Control::Show => "show".to_owned(),
     };
@@ -135,8 +189,16 @@ fn run_control(control: Control) -> i32 {
             }
             0
         }
+        Ok(single_instance::Reply::Devices(snapshot)) => {
+            if raw {
+                println!("{snapshot}");
+            } else {
+                print!("{}", format_devices(&snapshot));
+            }
+            0
+        }
         Err(error) => {
-            eprintln!("Fastpotify is not running, or predates remote control: {error}");
+            eprintln!("Oxidify is not running, or predates remote control: {error}");
             1
         }
     }
@@ -146,7 +208,7 @@ fn run_control(control: Control) -> i32 {
 fn run_control(_control: Control) -> i32 {
     eprintln!(
         "On Linux the running instance speaks MPRIS instead; use e.g. \
-         `playerctl --player=fastpotify play-pause`."
+         `playerctl --player=oxidify play-pause`."
     );
     2
 }
@@ -175,6 +237,33 @@ fn format_now_playing(snapshot: &str) -> String {
     }
 }
 
+/// The `devices` snapshot as one line per device, the active one marked.
+/// The id comes first because `oxidify transfer` is what it is for.
+#[cfg(not(target_os = "linux"))]
+fn format_devices(snapshot: &str) -> String {
+    let Ok(devices) = serde_json::from_str::<Vec<serde_json::Value>>(snapshot) else {
+        return String::new();
+    };
+    let field =
+        |device: &serde_json::Value, key: &str| device[key].as_str().unwrap_or_default().to_owned();
+    devices
+        .iter()
+        .map(|device| {
+            format!(
+                "{}{}\t{}\t{}\n",
+                if device["active"].as_bool().unwrap_or(false) {
+                    "* "
+                } else {
+                    "  "
+                },
+                field(device, "id"),
+                field(device, "name"),
+                field(device, "kind"),
+            )
+        })
+        .collect()
+}
+
 fn main() -> eframe::Result<()> {
     let cli = Cli::parse();
     // A control launch is a client, not a second app: talk to the running
@@ -183,11 +272,16 @@ fn main() -> eframe::Result<()> {
         std::process::exit(run_control(control));
     }
     let default_filter = if cli.verbose {
-        "info,librespot=info,fastpotify=debug"
+        "info,librespot=info,oxidify=debug"
     } else {
-        "warn,fastpotify=info"
+        "warn,oxidify=info"
     };
     let dirs = paths::AppDirs::discover();
+    // A user coming from Fastpotify keeps their settings, sign-ins, skins,
+    // and playback credentials: import them once, before anything writes.
+    if let Some(legacy) = paths::AppDirs::legacy_fastpotify() {
+        dirs.import_legacy(&legacy);
+    }
     let dirs_ready = dirs.ensure();
     let mut logger =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter));
@@ -227,7 +321,7 @@ fn main() -> eframe::Result<()> {
         match single_instance::acquire(&waker) {
             single_instance::Outcome::Only(guard) => Some(guard),
             single_instance::Outcome::Surfaced => {
-                log::info!("Fastpotify is already running; asked it to show its window");
+                log::info!("Oxidify is already running; asked it to show its window");
                 return Ok(());
             }
         }
@@ -253,8 +347,8 @@ fn main() -> eframe::Result<()> {
     }
     #[cfg(feature = "demo")]
     if demo {
-        fastpotify::demo::populate(&mut app);
-        fastpotify::demo::apply_flags(&mut app, cli.demo_page.as_deref(), cli.demo_show.as_deref());
+        oxidify::demo::populate(&mut app);
+        oxidify::demo::apply_flags(&mut app, cli.demo_page.as_deref(), cli.demo_show.as_deref());
     }
     #[cfg(feature = "demo")]
     let shot = cli.demo_shot.clone().map(|path| Shot {
@@ -269,12 +363,16 @@ fn main() -> eframe::Result<()> {
         let creator_waker = waker.clone();
         #[cfg(feature = "demo")]
         let creator_shot = shot.clone();
+        let mini = {
+            let guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+            MiniWindow::wanted(guard.as_ref().expect("application state present"))
+        };
         #[cfg(feature = "demo")]
-        let options = native_options(shot.is_some());
+        let options = native_options(shot.is_some() && mini.is_none(), mini);
         #[cfg(not(feature = "demo"))]
-        let options = native_options(false);
+        let options = native_options(false, mini);
         eframe::run_native(
-            "Fastpotify",
+            "Oxidify",
             options,
             Box::new(move |cc| {
                 creator_waker.attach(&cc.egui_ctx);
@@ -288,9 +386,9 @@ fn main() -> eframe::Result<()> {
                 // repaint.
                 #[cfg(target_os = "macos")]
                 {
-                    fastpotify::mac_menu::init();
+                    oxidify::mac_menu::init();
                     let ctx = cc.egui_ctx.clone();
-                    fastpotify::mac_menu::set_waker(move || ctx.request_repaint());
+                    oxidify::mac_menu::set_waker(move || ctx.request_repaint());
                 }
                 app.attach(&cc.egui_ctx);
                 Ok(Box::new(Shell {
@@ -303,11 +401,18 @@ fn main() -> eframe::Result<()> {
         )?;
         waker.detach();
 
-        let hide = {
+        let (switch, hide) = {
             let guard = slot.lock().unwrap_or_else(|p| p.into_inner());
             let app = guard.as_ref().expect("application state present");
-            !app.quit_requested && app.hide_intent
+            (
+                !app.quit_requested && app.switch_intent,
+                !app.quit_requested && app.hide_intent,
+            )
         };
+        if switch {
+            // Straight back round: the other kind of window opens.
+            continue;
+        }
         if !hide {
             break;
         }
@@ -329,7 +434,7 @@ fn main() -> eframe::Result<()> {
                     break;
                 }
             }
-            fastpotify::tray::idle(std::time::Duration::from_millis(150));
+            oxidify::tray::idle(std::time::Duration::from_millis(150));
         }
         let quit = {
             let guard = slot.lock().unwrap_or_else(|p| p.into_inner());
@@ -375,7 +480,7 @@ fn log_panics(path: std::path::PathBuf) {
         previous(info);
         let thread = std::thread::current();
         let entry = format!(
-            "{} fastpotify {} on thread {:?}: {info}\n",
+            "{} oxidify {} on thread {:?}: {info}\n",
             jiff::Timestamp::now(),
             env!("CARGO_PKG_VERSION"),
             thread.name().unwrap_or("unnamed"),
@@ -391,22 +496,67 @@ fn log_panics(path: std::path::PathBuf) {
     }));
 }
 
-fn native_options(fullscreen: bool) -> eframe::NativeOptions {
-    eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Fastpotify")
-            .with_app_id("fastpotify")
+/// The Winamp mini player's window, when that is the window to open.
+struct MiniWindow {
+    /// A first size; the window corrects it once it knows the display.
+    size: egui::Vec2,
+    position: Option<[f32; 2]>,
+    on_top: bool,
+}
+
+impl MiniWindow {
+    fn wanted(app: &app::App) -> Option<Self> {
+        app.settings.winamp_window.then(|| Self {
+            size: oxidify::ui::winamp::initial_size(&app.settings),
+            position: app.winamp.restore_pos,
+            on_top: app.settings.winamp_on_top,
+        })
+    }
+}
+
+fn native_options(fullscreen: bool, mini: Option<MiniWindow>) -> eframe::NativeOptions {
+    let icon = if cfg!(target_os = "macos") {
+        // macOS takes the dock icon from the bundle's .icns, which is the
+        // 1024px drawing with the platform's rounding. Setting a window
+        // icon there replaces it with this flat 128px square.
+        egui::IconData::default()
+    } else {
+        app_icon()
+    };
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("Oxidify")
+        .with_app_id("oxidify")
+        .with_icon(icon);
+    let viewport = match mini {
+        Some(mini) => {
+            let level = if mini.on_top {
+                egui::WindowLevel::AlwaysOnTop
+            } else {
+                egui::WindowLevel::Normal
+            };
+            // See-through, for skins that are not rectangles; the skin
+            // paints every pixel that is the window.
+            let viewport = viewport
+                .with_decorations(false)
+                .with_transparent(true)
+                .with_resizable(false)
+                .with_maximize_button(false)
+                .with_inner_size(mini.size)
+                .with_min_inner_size(mini.size)
+                .with_max_inner_size(mini.size)
+                .with_window_level(level);
+            match mini.position {
+                Some([x, y]) => viewport.with_position([x, y]),
+                None => viewport,
+            }
+        }
+        None => viewport
             .with_inner_size([1240.0, 800.0])
             .with_min_inner_size([760.0, 520.0])
-            .with_fullscreen(fullscreen)
-            // macOS takes the dock icon from the bundle's .icns, which is the
-            // 1024px drawing with the platform's rounding. Setting a window
-            // icon there replaces it with this flat 128px square.
-            .with_icon(if cfg!(target_os = "macos") {
-                egui::IconData::default()
-            } else {
-                app_icon()
-            }),
+            .with_fullscreen(fullscreen),
+    };
+    eframe::NativeOptions {
+        viewport,
         // A Wayland compositor stops sending frame callbacks to a hidden
         // window; waiting for vsync there would block the event loop.
         // Repaints are event-driven, so nothing spins.
@@ -489,9 +639,9 @@ impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(app) = self.app.as_mut() {
             #[cfg(target_os = "macos")]
-            for command in fastpotify::mac_menu::drain_commands() {
-                use fastpotify::mac_menu::MenuCommand;
-                use fastpotify::model::{Action, Dialog, Page};
+            for command in oxidify::mac_menu::drain_commands() {
+                use oxidify::mac_menu::MenuCommand;
+                use oxidify::model::{Action, Dialog, Page};
                 let action = match command {
                     MenuCommand::PlayPause => Action::TogglePlay,
                     MenuCommand::Next => Action::Next,
@@ -506,6 +656,7 @@ impl eframe::App for Shell {
                     MenuCommand::Home => Action::Open(Page::Home),
                     MenuCommand::Search => Action::FocusSearch,
                     MenuCommand::LikedSongs => Action::Open(Page::LikedSongs),
+                    MenuCommand::Sidebar => Action::ToggleSidebar,
                     MenuCommand::Queue => Action::ToggleQueuePanel,
                     MenuCommand::Settings => Action::Open(Page::Settings),
                     MenuCommand::Shortcuts => Action::ShowDialog(Dialog::Shortcuts),
@@ -513,7 +664,7 @@ impl eframe::App for Shell {
                     MenuCommand::Forward => Action::Forward,
                     MenuCommand::OpenRepo => {
                         ctx.open_url(egui::OpenUrl::new_tab(
-                            "https://github.com/crmne/fastpotify",
+                            "https://github.com/Master0fFate/oxidify",
                         ));
                         continue;
                     }
@@ -555,6 +706,20 @@ impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if let Some(app) = self.app.as_mut() {
             app.frame_ui(ui);
+        }
+    }
+
+    /// The mini player's window is see-through where the skin leaves it
+    /// out; the big window paints itself over eframe's own ground.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        if self
+            .app
+            .as_ref()
+            .is_some_and(|app| app.settings.winamp_window)
+        {
+            [0.0; 4]
+        } else {
+            egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
         }
     }
 

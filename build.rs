@@ -26,12 +26,12 @@ fn main() {
 fn embed_windows_resources() {
     #[cfg(windows)]
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        println!("cargo:rerun-if-changed=packaging/windows/fastpotify.ico");
+        println!("cargo:rerun-if-changed=packaging/windows/oxidify.ico");
         let mut resource = winresource::WindowsResource::new();
         resource
-            .set_icon("packaging/windows/fastpotify.ico")
-            .set("ProductName", "Fastpotify")
-            .set("FileDescription", "Fastpotify");
+            .set_icon("packaging/windows/oxidify.ico")
+            .set("ProductName", "Oxidify")
+            .set("FileDescription", "Oxidify");
         if let Err(error) = resource.compile() {
             println!("cargo:warning=Windows resources not embedded: {error}");
         }
@@ -42,7 +42,7 @@ fn embed_ytdlp() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let manifest_path = manifest_dir.join("third_party/yt-dlp/manifest");
     println!("cargo:rerun-if-changed={}", manifest_path.display());
-    println!("cargo:rerun-if-env-changed=FASTPOTIFY_SKIP_YTDLP_BUNDLE");
+    println!("cargo:rerun-if-env-changed=OXIDIFY_SKIP_YTDLP_BUNDLE");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let generated = out_dir.join("bundled_ytdlp.rs");
@@ -102,7 +102,7 @@ fn embed_ytdlp() {
 
 fn skip_bundle() -> bool {
     matches!(
-        env::var("FASTPOTIFY_SKIP_YTDLP_BUNDLE")
+        env::var("OXIDIFY_SKIP_YTDLP_BUNDLE")
             .ok()
             .as_deref()
             .map(str::trim),

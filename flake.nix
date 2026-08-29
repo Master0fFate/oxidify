@@ -80,8 +80,8 @@
       });
 
       packages = forAllSystems (pkgs: rec {
-        default = fastpotify;
-        fastpotify =
+        default = oxidify;
+        oxidify =
           let
             toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
             rustPlatform = pkgs.makeRustPlatform {
@@ -103,7 +103,7 @@
               );
           in
           rustPlatform.buildRustPackage {
-            pname = "fastpotify";
+            pname = "oxidify";
             version = (pkgs.lib.importTOML ./Cargo.toml).package.version;
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
@@ -126,22 +126,22 @@
 
             # The GUI dlopens its Wayland, X11 and GL libraries at run time.
             postFixup = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-              wrapProgram $out/bin/fastpotify \
+              wrapProgram $out/bin/oxidify \
                 --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibs}
             '';
 
             postInstall = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-              install -Dm644 packaging/applications/fastpotify.desktop \
-                $out/share/applications/fastpotify.desktop
-              install -Dm644 packaging/icons/fastpotify.svg \
-                $out/share/icons/hicolor/scalable/apps/fastpotify.svg
+              install -Dm644 packaging/applications/oxidify.desktop \
+                $out/share/applications/oxidify.desktop
+              install -Dm644 packaging/icons/oxidify.svg \
+                $out/share/icons/hicolor/scalable/apps/oxidify.svg
             '';
 
             meta = {
               description = "Fast native Spotify client with local playback and Spotify Connect";
-              homepage = "https://fastpotify.rocks";
+              homepage = "https://github.com/Master0fFate/oxidify";
               license = pkgs.lib.licenses.mit;
-              mainProgram = "fastpotify";
+              mainProgram = "oxidify";
             };
           };
       });

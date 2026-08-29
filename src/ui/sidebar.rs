@@ -4,7 +4,7 @@ use egui::{Align, CornerRadius, Frame, Layout, Margin, Rect, Sense, Vec2, pos2, 
 
 use crate::api::models::pick_image;
 use crate::app::App;
-use crate::model::{Action, Dialog, Loadable, Page};
+use crate::model::{Action, Dialog, DragEntry, DragTrack, Loadable, Page};
 use crate::theme::{self, Icon, Palette};
 
 const ROW_HEIGHT: f32 = 60.0;
@@ -114,34 +114,40 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(2.0);
         theme::text(ui, "Your Library", theme::bold(15.0), palette.text);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let add = theme::icon_button(
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if theme::icon_button(
                 ui,
-                Icon::Plus,
-                18.0,
+                Icon::PanelLeft,
+                16.0,
                 palette.secondary,
                 palette.text,
-                "Create playlist",
-            );
-            egui::Popup::menu(&add)
-                .frame(super::widgets::menu_frame(&palette))
-                .show(|ui| {
-                    if super::widgets::menu_item(
-                        ui,
-                        &palette,
-                        Some(Icon::ListPlus),
-                        "Create a new playlist",
-                    ) {
-                        app.actions.push(Action::ShowDialog(Dialog::CreatePlaylist {
-                            name: String::new(),
-                            public: false,
-                            add_uris: Vec::new(),
-                        }));
-                    }
-                });
+                "Hide sidebar (Cmd+B)",
+            )
+            .clicked()
+            {
+                app.actions.push(Action::ToggleSidebar);
+            }
+            // One item never deserved a menu: the plus creates directly.
+            if theme::icon_button(
+                ui,
+                Icon::Plus,
+                16.0,
+                palette.secondary,
+                palette.text,
+                "Create a playlist",
+            )
+            .clicked()
+            {
+                app.actions.push(Action::ShowDialog(Dialog::CreatePlaylist {
+                    name: String::new(),
+                    public: false,
+                    add_uris: Vec::new(),
+                }));
+            }
             if theme::icon_button(
                 ui,
                 Icon::Search,
-                17.0,
+                16.0,
                 palette.secondary,
                 palette.text,
                 "Search Your Library",
@@ -353,7 +359,10 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     }
 
     // Pinned entries sit on top, in the order they were pinned; Liked
-    // Songs stays above them, and everyone else keeps their order.
+    // Songs stays above them, and everyone else keeps their order. Once
+    // the playlists shelf has an order of its own, that order wins there:
+    // rows sit where they were dropped, and playlists the saved order has
+    // not met yet, the newly created and followed, wait at the top.
     let pin_rank = |uri: &str| {
         app.settings
             .pinned_contexts
@@ -361,17 +370,39 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
             .position(|held| held == uri)
             .unwrap_or(usize::MAX)
     };
+    let custom_order = filter == Filter::Playlists && !app.settings.sidebar_order.is_empty();
+    let saved_rank = |uri: &str| {
+        app.settings
+            .sidebar_order
+            .iter()
+            .position(|held| held == uri)
+    };
+    // Pins are pins, whatever orders the rest: Liked Songs, then the
+    // pinned block, then everyone else by the listener's own order or,
+    // failing one, by recency.
     entries.sort_by_key(|entry| {
         if entry.liked {
             (0, 0)
         } else {
             match pin_rank(&entry.uri) {
+                usize::MAX if custom_order => match saved_rank(&entry.uri) {
+                    Some(rank) => (3, rank),
+                    None => (2, entry.playlist_index.unwrap_or(0)),
+                },
                 usize::MAX => (2, 0),
                 rank => (1, rank),
             }
         }
     });
+    // The zones a dragged row can land in: everything sits below Liked
+    // Songs, and the pinned entries form one block right after it.
+    let liked_rows = entries.iter().take_while(|entry| entry.liked).count();
+    let pinned_rows = entries
+        .iter()
+        .filter(|entry| !entry.liked && pin_rank(&entry.uri) != usize::MAX)
+        .count();
     let playing_context = app.playing_context_uri();
+    let context_playing = app.believed_playing();
     let current_page = app.page().clone();
 
     egui::ScrollArea::vertical()
@@ -396,15 +427,79 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                     },
                 );
             }
+            // While something is in hand, find where it hangs up front:
+            // neighbours shift before that row draws, so the spot cannot
+            // be discovered row by row. The fixed row height makes it
+            // arithmetic.
+            let list_top = ui.cursor().top();
+            let pointer = ui
+                .ctx()
+                .pointer_latest_pos()
+                .filter(|pos| ui.clip_rect().contains(*pos));
+            // A song in hand lands on a row, when that row can take one.
+            let dragging_song = egui::DragAndDrop::has_payload_of_type::<DragTrack>(ui.ctx());
+            let drop_target = dragging_song
+                .then_some(pointer)
+                .flatten()
+                .map(|pos| ((pos.y - list_top) / ROW_HEIGHT).floor())
+                .filter(|row| *row >= 0.0 && *row < entries.len() as f32)
+                .map(|row| row as usize)
+                .filter(|row| entries[*row].liked || entries[*row].owned);
+            // A sidebar row in hand lands between rows: the slot nearest
+            // the pointer, never above Liked Songs.
+            let reordering = egui::DragAndDrop::has_payload_of_type::<DragEntry>(ui.ctx());
+            let reorder_slot = reordering.then_some(pointer).flatten().map(|pos| {
+                (((pos.y - list_top) / ROW_HEIGHT).round().max(0.0) as usize)
+                    .clamp(liked_rows, entries.len())
+            });
             super::widgets::virtual_rows(ui, entries.len(), ROW_HEIGHT, |ui, index| {
                 let entry = &entries[index];
+                let droppable = entry.liked || entry.owned;
+                let drop_hover = drop_target == Some(index);
                 let active = entry.page == current_page;
-                let playing =
-                    !entry.uri.is_empty() && playing_context.as_deref() == Some(entry.uri.as_str());
+                let playing = context_playing
+                    && !entry.uri.is_empty()
+                    && playing_context.as_deref() == Some(entry.uri.as_str());
                 let pinned =
                     !entry.uri.is_empty() && app.settings.pinned_contexts.contains(&entry.uri);
-                let (rect, response) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
+                let (rect, response) = ui.allocate_exact_size(
+                    vec2(ui.available_width(), ROW_HEIGHT),
+                    Sense::click_and_drag(),
+                );
+                // Past the drag threshold the row itself is in hand, to be
+                // pinned into place; clicks and the context menu keep their
+                // meaning. Liked Songs stays where it is.
+                if !entry.liked
+                    && !entry.uri.is_empty()
+                    && response.drag_started_by(egui::PointerButton::Primary)
+                {
+                    egui::DragAndDrop::set_payload(
+                        ui.ctx(),
+                        DragEntry {
+                            uri: entry.uri.clone(),
+                            title: entry.name.clone(),
+                            image: entry.image.clone(),
+                        },
+                    );
+                }
+                // Neighbours ease apart around the row that would take a
+                // song, macOS style, and part at the slot a dragged row
+                // would land in. Each row keeps one animated offset, which
+                // also eases everything back after the drag ends.
+                let shift = ui.ctx().animate_value_with_time(
+                    ui.id().with(("drop-shift", index)),
+                    if let Some(slot) = reorder_slot {
+                        if index < slot { -4.0 } else { 4.0 }
+                    } else {
+                        match drop_target {
+                            Some(target) if index < target => -4.0,
+                            Some(target) if index > target => 4.0,
+                            _ => 0.0,
+                        }
+                    },
+                    0.12,
+                );
+                let rect = rect.translate(vec2(0.0, shift));
                 if ui.is_rect_visible(rect) {
                     if active {
                         ui.painter()
@@ -414,6 +509,19 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                             rect,
                             CornerRadius::same(6),
                             palette.surface_hover.gamma_multiply(0.6),
+                        );
+                    }
+                    if drop_hover {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(6),
+                            palette.accent.gamma_multiply(0.18),
+                        );
+                        ui.painter().rect_stroke(
+                            rect,
+                            CornerRadius::same(6),
+                            egui::Stroke::new(1.5, palette.accent),
+                            egui::StrokeKind::Inside,
                         );
                     }
                     let cover_rect = Rect::from_center_size(
@@ -470,7 +578,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                             pos2(rect.right() - 16.0, rect.center().y),
                             Vec2::splat(13.0),
                         );
-                        Icon::BookmarkFilled
+                        Icon::Pin
                             .image(palette.secondary, 13.0)
                             .paint_at(ui, icon_rect);
                     }
@@ -501,7 +609,11 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                             )
                             .paint_at(
                                 ui,
-                                Rect::from_center_size(cover_rect.center(), Vec2::splat(18.0)),
+                                Rect::from_center_size(
+                                    cover_rect.center()
+                                        + theme::play_glyph_offset(Icon::PlayFilled, 18.0),
+                                    Vec2::splat(18.0),
+                                ),
                             );
                         if let Some(play) = &play_response {
                             play.clone().on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -522,6 +634,32 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                                 offset_index: None,
                             });
                         }
+                    }
+                    // Rows that cannot take the song step back a little.
+                    if dragging_song && !droppable {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(6),
+                            palette.panel.gamma_multiply(0.5),
+                        );
+                    }
+                }
+                if dragging_song
+                    && droppable
+                    && let Some(track) = response.dnd_release_payload::<DragTrack>()
+                {
+                    if entry.liked {
+                        // Dropping on Liked Songs saves; a song already
+                        // saved is left alone.
+                        if app.is_saved(&track.uri) != Some(true) {
+                            app.actions.push(Action::ToggleSaved(track.uri.clone()));
+                        }
+                    } else if let Page::Playlist(id) = &entry.page {
+                        app.actions.push(Action::AddToPlaylist {
+                            playlist_id: id.clone(),
+                            playlist_name: entry.name.clone(),
+                            uris: vec![track.uri.clone()],
+                        });
                     }
                 }
                 if response.clicked() {
@@ -553,11 +691,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                             if super::widgets::menu_item(
                                 ui,
                                 &palette,
-                                Some(if pinned {
-                                    Icon::Bookmark
-                                } else {
-                                    Icon::BookmarkFilled
-                                }),
+                                Some(if pinned { Icon::PinOff } else { Icon::Pin }),
                                 if pinned { "Unpin" } else { "Pin to top" },
                             ) {
                                 if pinned {
@@ -566,7 +700,21 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                                         .retain(|held| held != &entry.uri);
                                 } else {
                                     app.settings.pinned_contexts.push(entry.uri.clone());
+                                    app.settings.sidebar_order.retain(|held| held != &entry.uri);
                                 }
+                                app.mark_settings_dirty();
+                            }
+                            if custom_order
+                                && super::widgets::menu_item(
+                                    ui,
+                                    &palette,
+                                    Some(Icon::Clock),
+                                    "Sort by recently played",
+                                )
+                            {
+                                // Dragging a row brings the listener's own
+                                // order back, so this asks no confirmation.
+                                app.settings.sidebar_order.clear();
                                 app.mark_settings_dirty();
                             }
                         });
@@ -587,32 +735,199 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                 }
                 response.on_hover_cursor(egui::CursorIcon::PointingHand);
             });
+            if let Some(slot) = reorder_slot {
+                // A line in the gap the rows opened, so the eye lands
+                // where the row will.
+                let y = list_top + slot as f32 * ROW_HEIGHT;
+                ui.painter().hline(
+                    ui.max_rect().x_range().shrink(6.0),
+                    y,
+                    egui::Stroke::new(2.0, palette.accent),
+                );
+                if ui.input(|input| input.pointer.any_released())
+                    && let Some(drag) = egui::DragAndDrop::take_payload::<DragEntry>(ui.ctx())
+                {
+                    if filter == Filter::Playlists {
+                        drop_playlist_row(app, &entries, liked_rows, pinned_rows, slot, &drag.uri);
+                    } else {
+                        drop_row(app, &entries, liked_rows, pinned_rows, slot, &drag.uri);
+                    }
+                }
+            }
             if let Some(page) = more_page {
                 super::widgets::load_more_when_near_end(ui, app, page, true);
             }
         });
 }
 
-/// The purple-to-blue Liked Songs tile.
+/// A dropped playlist row lands in one of two worlds. Inside the pinned
+/// block it pins, or reorders the pins, exactly where it fell. Below the
+/// block it orders the rest: the first such drop snapshots the order on
+/// screen so nothing jumps, and rows then sit where they are put. A
+/// pinned row dropped below the block is unpinned.
+fn drop_playlist_row(
+    app: &mut App,
+    entries: &[Entry],
+    liked_rows: usize,
+    pinned_rows: usize,
+    slot: usize,
+    uri: &str,
+) {
+    let section_end = liked_rows + pinned_rows;
+    let was_pinned = app.settings.pinned_contexts.iter().any(|held| held == uri);
+    if pinned_rows > 0 && slot < section_end {
+        // Into the pinned block: the pinned entry the drop lands in front
+        // of anchors the new pin position.
+        let anchor = entries[liked_rows..section_end]
+            .iter()
+            .skip(slot.saturating_sub(liked_rows))
+            .map(|entry| entry.uri.as_str())
+            .find(|held| *held != uri)
+            .map(str::to_string);
+        let mut pinned = app.settings.pinned_contexts.clone();
+        pinned.retain(|held| held != uri);
+        let at = anchor
+            .and_then(|anchor| pinned.iter().position(|held| *held == anchor))
+            .unwrap_or(pinned.len());
+        pinned.insert(at, uri.to_string());
+        if pinned != app.settings.pinned_contexts {
+            app.settings.pinned_contexts = pinned;
+            app.settings.sidebar_order.retain(|held| held != uri);
+            app.mark_settings_dirty();
+        }
+        return;
+    }
+    // Below the block: the rest of the shelf takes the listener's own
+    // order, and a pinned row dropped here stops being pinned.
+    if was_pinned {
+        app.settings.pinned_contexts.retain(|held| held != uri);
+        app.mark_settings_dirty();
+        if app.settings.sidebar_order.is_empty() {
+            // The automatic order stays automatic: the row returns to
+            // living by recency.
+            return;
+        }
+    }
+    let mut order = full_playlist_order(app);
+    let anchor = entries
+        .iter()
+        .skip(slot)
+        .filter(|entry| !entry.liked)
+        .map(|entry| entry.uri.as_str())
+        .find(|held| *held != uri)
+        .map(str::to_string);
+    order.retain(|held| held != uri);
+    let at = anchor
+        .and_then(|anchor| order.iter().position(|held| *held == anchor))
+        .unwrap_or(order.len());
+    order.insert(at, uri.to_string());
+    if order != app.settings.sidebar_order {
+        app.settings.sidebar_order = order;
+        app.mark_settings_dirty();
+    }
+}
+
+/// Every loaded playlist in the order the shelf presents them when no
+/// filter narrows the view: the saved order once one exists, with the
+/// playlists it has not met yet first, otherwise the pinned block and
+/// then recency. The saved order is rewritten from this, so it covers
+/// the whole library rather than the rows that happened to be visible.
+fn full_playlist_order(app: &App) -> Vec<String> {
+    let Some(playlists) = app.library.playlists.get() else {
+        return Vec::new();
+    };
+    let mut ordered: Vec<_> = playlists.iter().enumerate().collect();
+    if app.settings.sidebar_order.is_empty() {
+        let recent = |uri: &str| {
+            app.recent_contexts
+                .iter()
+                .position(|held| held == uri)
+                .unwrap_or(usize::MAX)
+        };
+        let pinned = |uri: &str| {
+            app.settings
+                .pinned_contexts
+                .iter()
+                .position(|held| held == uri)
+        };
+        ordered.sort_by_key(|(index, playlist)| match pinned(&playlist.uri) {
+            Some(rank) => (0, rank, 0),
+            None => (1, recent(&playlist.uri), *index),
+        });
+    } else {
+        let saved = |uri: &str| {
+            app.settings
+                .sidebar_order
+                .iter()
+                .position(|held| held == uri)
+        };
+        ordered.sort_by_key(|(index, playlist)| match saved(&playlist.uri) {
+            Some(rank) => (1, rank, 0),
+            None => (0, *index, 0),
+        });
+    }
+    ordered
+        .into_iter()
+        .map(|(_, playlist)| playlist.uri.clone())
+        // Pins live in their own list; the saved order holds the rest.
+        .filter(|uri| !app.settings.pinned_contexts.contains(uri))
+        .collect()
+}
+
+/// A dropped album, artist, or podcast row lands in the pinned block:
+/// within the block the drop position is its new pin order, and below the
+/// block the row goes back to living by recency, so it simply stops being
+/// pinned. Liked Songs is not part of the pinned list and never moves.
+fn drop_row(
+    app: &mut App,
+    entries: &[Entry],
+    liked_rows: usize,
+    pinned_rows: usize,
+    slot: usize,
+    uri: &str,
+) {
+    let mut pinned = app.settings.pinned_contexts.clone();
+    let section_end = liked_rows + pinned_rows;
+    if slot <= section_end {
+        // The pinned entry the drop lands in front of anchors the new
+        // position, so entries pinned from another shelf keep theirs.
+        let anchor = entries[liked_rows..section_end]
+            .iter()
+            .skip(slot - liked_rows)
+            .map(|entry| entry.uri.as_str())
+            .find(|held| *held != uri)
+            .map(str::to_string);
+        pinned.retain(|held| held != uri);
+        let at = anchor
+            .and_then(|anchor| pinned.iter().position(|held| *held == anchor))
+            .unwrap_or(pinned.len());
+        pinned.insert(at, uri.to_string());
+    } else {
+        pinned.retain(|held| held != uri);
+    }
+    if pinned != app.settings.pinned_contexts {
+        app.settings.pinned_contexts = pinned;
+        app.mark_settings_dirty();
+    }
+}
+
+/// The Liked Songs tile: neutral chrome, the accent's blue heart.
 pub fn liked_cover(ui: &egui::Ui, rect: Rect, radius: f32) {
-    let top = egui::Color32::from_rgb(0x45, 0x0a, 0xf5);
-    let bottom = egui::Color32::from_rgb(0xc4, 0xef, 0xd9);
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(rect.left_top(), top);
-    mesh.colored_vertex(rect.right_top(), egui::Color32::from_rgb(0x6a, 0x3a, 0xe8));
-    mesh.colored_vertex(rect.right_bottom(), bottom);
-    mesh.colored_vertex(
-        rect.left_bottom(),
-        egui::Color32::from_rgb(0x8e, 0x9f, 0xe5),
-    );
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    let painter = ui.painter().with_clip_rect(rect);
-    let _ = radius;
-    painter.add(egui::Shape::mesh(mesh));
+    let (fill, heart) = if ui.visuals().dark_mode {
+        (
+            egui::Color32::from_rgb(0x1d, 0x21, 0x27),
+            egui::Color32::from_rgb(0x4d, 0x9f, 0xff),
+        )
+    } else {
+        (
+            egui::Color32::from_rgb(0xee, 0xf0, 0xf3),
+            egui::Color32::from_rgb(0x2e, 0x83, 0xe6),
+        )
+    };
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(radius.min(127.0) as u8), fill);
+
     let size = rect.width() * 0.45;
     let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(size));
-    Icon::HeartFilled
-        .image(egui::Color32::WHITE, size)
-        .paint_at(ui, icon_rect);
+    Icon::HeartFilled.image(heart, size).paint_at(ui, icon_rect);
 }

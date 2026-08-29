@@ -402,9 +402,9 @@ fn bundled_bin_name() -> &'static str {
 
 fn fallback_bin_name() -> &'static str {
     if cfg!(windows) {
-        "yt-dlp.fastpotify.exe"
+        "yt-dlp.oxidify.exe"
     } else {
-        "yt-dlp.fastpotify"
+        "yt-dlp.oxidify"
     }
 }
 
@@ -598,7 +598,7 @@ mod tests {
 
     fn scratch_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "fastpotify-ytdlp-{}-{}",
+            "oxidify-ytdlp-{}-{}",
             std::process::id(),
             unique_suffix()
         ));
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn missing_configured_path_still_collects_path_candidates() {
-        let missing = collect_user_candidates(Some("/no/such/fastpotify-ytdlp"));
+        let missing = collect_user_candidates(Some("/no/such/oxidify-ytdlp"));
         let path_only = collect_user_candidates(None);
         assert_eq!(missing, path_only);
     }
@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn extract_is_idempotent_and_hash_mismatch_keeps_dest() {
         let dir = scratch_dir();
-        let good = b"fastpotify-fake-ytdlp";
+        let good = b"oxidify-fake-ytdlp";
         let good_hash = sha256_hex(good);
         let payload = BundlePayload {
             bytes: good,
@@ -856,6 +856,6 @@ mod tests {
 
     #[test]
     fn probe_missing_binary_is_none() {
-        assert!(probe_version(Path::new("no-such-ytdlp-binary-fastpotify-test")).is_none());
+        assert!(probe_version(Path::new("no-such-ytdlp-binary-oxidify-test")).is_none());
     }
 }

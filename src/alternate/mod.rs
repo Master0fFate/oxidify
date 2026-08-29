@@ -145,7 +145,7 @@ pub fn ytdlp_path_notice(raw: &str) -> Option<String> {
     match validate_ytdlp_path(raw) {
         Err(message) => Some(message),
         Ok(Some(path)) if !std::path::Path::new(&path).is_file() => Some(
-            "That path is not a file. Fastpotify still uses yt-dlp on PATH or the official bundled build.".into(),
+            "That path is not a file. Oxidify still uses yt-dlp on PATH or the official bundled build.".into(),
         ),
         _ => None,
     }
@@ -203,7 +203,7 @@ mod tests {
     fn missing_ytdlp_path_does_not_block_piped() {
         let settings = Settings {
             piped_api_base: "https://piped.example".into(),
-            ytdlp_path: "/no/such/fastpotify-ytdlp".into(),
+            ytdlp_path: "/no/such/oxidify-ytdlp".into(),
             ..Settings::default()
         };
         let config = AlternateConfig::from_settings(&settings);
@@ -217,7 +217,7 @@ mod tests {
             return;
         }
         let settings = Settings {
-            ytdlp_path: "/no/such/fastpotify-ytdlp".into(),
+            ytdlp_path: "/no/such/oxidify-ytdlp".into(),
             ..Settings::default()
         };
         let config = AlternateConfig::from_settings(&settings);

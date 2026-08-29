@@ -140,7 +140,7 @@ fn spawn_inner(
     lookup: Arc<dyn MediaLookup>,
 ) -> AlternateHandle {
     let media_http = reqwest::Client::builder()
-        .user_agent(concat!("fastpotify/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("oxidify/", env!("CARGO_PKG_VERSION")))
         .build()
         .unwrap_or_else(|_| http.clone());
     let (tx, rx) = mpsc::unbounded_channel();
@@ -1133,6 +1133,9 @@ mod tests {
             Arc::new(ApiClient::new(
                 reqwest::Client::new(),
                 Arc::new(crate::api::NetActivity::default()),
+                20,
+                50,
+                crate::api::ApiSource::Shared,
             )),
             reqwest::Client::new(),
             Arc::new(|_| {}),
@@ -1167,6 +1170,9 @@ mod tests {
             Arc::new(ApiClient::new(
                 reqwest::Client::new(),
                 Arc::new(crate::api::NetActivity::default()),
+                20,
+                50,
+                crate::api::ApiSource::Shared,
             )),
             reqwest::Client::new(),
             Arc::new(|_| {}),
@@ -1303,6 +1309,9 @@ mod tests {
             Arc::new(ApiClient::new(
                 reqwest::Client::new(),
                 Arc::new(crate::api::NetActivity::default()),
+                20,
+                50,
+                crate::api::ApiSource::Shared,
             )),
             reqwest::Client::new(),
             Arc::new(|_| {}),
@@ -1334,6 +1343,9 @@ mod tests {
             Arc::new(ApiClient::new(
                 reqwest::Client::new(),
                 Arc::new(crate::api::NetActivity::default()),
+                20,
+                50,
+                crate::api::ApiSource::Shared,
             )),
             reqwest::Client::new(),
             Arc::new(|_| {}),
@@ -1474,6 +1486,9 @@ mod tests {
             Arc::new(ApiClient::new(
                 reqwest::Client::new(),
                 Arc::new(crate::api::NetActivity::default()),
+                20,
+                50,
+                crate::api::ApiSource::Shared,
             )),
             reqwest::Client::new(),
             notify,
@@ -1660,6 +1675,9 @@ mod tests {
             Arc::new(ApiClient::new(
                 reqwest::Client::new(),
                 Arc::new(crate::api::NetActivity::default()),
+                20,
+                50,
+                crate::api::ApiSource::Shared,
             )),
             reqwest::Client::new(),
             Arc::new(move |event| {
@@ -1926,6 +1944,9 @@ mod tests {
             Arc::new(ApiClient::new(
                 reqwest::Client::new(),
                 Arc::new(crate::api::NetActivity::default()),
+                20,
+                50,
+                crate::api::ApiSource::Shared,
             )),
             reqwest::Client::new(),
             notify,
@@ -2149,6 +2170,9 @@ mod tests {
             Arc::new(ApiClient::new(
                 reqwest::Client::new(),
                 Arc::new(crate::api::NetActivity::default()),
+                20,
+                50,
+                crate::api::ApiSource::Shared,
             )),
             reqwest::Client::new(),
             Arc::new(|_| {}),
