@@ -130,9 +130,10 @@ never writes back to them.
 Press **Sign in with Spotify**. Your browser opens Spotify's own consent
 page (Authorization Code with PKCE); Oxidify never sees your password.
 When Spotify redirects back to the app, your library, search, and control
-of other devices work immediately. The refresh token is stored in the
-platform's state directory (`~/.local/state/oxidify` on Linux), so the
-browser is needed once per machine.
+of other devices work immediately. If the browser does not open, the waiting
+screen can open the sign-in page again or copy its link for manual use. The
+refresh token is stored in the platform's state directory
+(`~/.local/state/oxidify` on Linux), so the browser is needed once per machine.
 
 Playing music **on this computer** through Spotify Connect is one more
 one-time browser approval. Spotify treats streaming as a separate grant for

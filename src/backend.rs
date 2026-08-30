@@ -1088,22 +1088,23 @@ impl Worker {
         self.cancel_signin = Some(cancel_tx);
         self.authorizing_source = Some(source);
         self.api.set_state(source, SessionState::Authorizing);
-        if source == ApiSource::Shared {
-            self.emit(Event::Auth(AuthStatus::WaitingForBrowser {
-                url: flow.url.clone(),
-            }));
-        }
-        if let Err(error) = open::that_detached(&flow.url) {
-            log::warn!("unable to open a browser: {error}");
-        }
         let http = self.http.clone();
         let events = self.events.clone();
         let waker = self.waker.clone();
         let commands = self.commands.clone();
         tokio::spawn(async move {
             let result = async {
-                let code =
-                    crate::auth::wait_for_code(grant.redirect_port, &flow.state, cancel_rx).await?;
+                let listener = crate::auth::bind_redirect(grant.redirect_port).await?;
+                if source == ApiSource::Shared {
+                    let _ = events.send(Event::Auth(AuthStatus::WaitingForBrowser {
+                        url: flow.url.clone(),
+                    }));
+                    waker.wake();
+                }
+                if let Err(error) = open::that_detached(&flow.url) {
+                    log::warn!("unable to open a browser: {error}");
+                }
+                let code = crate::auth::wait_for_code(listener, &flow.state, cancel_rx).await?;
                 let response =
                     crate::auth::exchange_code(&http, &grant, &code, &flow.verifier).await?;
                 crate::auth::StoredToken::from_response(&grant.client_id, response, None)
@@ -1320,17 +1321,17 @@ impl Worker {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         self.cancel_signin = Some(cancel_tx);
         self.emit(Event::Playback(LocalPlayback::Authorizing));
-        if let Err(error) = open::that_detached(&flow.url) {
-            log::warn!("unable to open a browser: {error}");
-        }
         let http = self.http.clone();
         let events = self.events.clone();
         let waker = self.waker.clone();
         let commands = self.commands.clone();
         tokio::spawn(async move {
             let result = async {
-                let code =
-                    crate::auth::wait_for_code(grant.redirect_port, &flow.state, cancel_rx).await?;
+                let listener = crate::auth::bind_redirect(grant.redirect_port).await?;
+                if let Err(error) = open::that_detached(&flow.url) {
+                    log::warn!("unable to open a browser: {error}");
+                }
+                let code = crate::auth::wait_for_code(listener, &flow.state, cancel_rx).await?;
                 crate::auth::exchange_code(&http, &grant, &code, &flow.verifier).await
             }
             .await;

@@ -550,6 +550,7 @@ pub enum Action {
     RefreshDevices,
     RefreshQueue,
     CopyLink(String),
+    CopySignInLink(String),
     /// A web page, in the browser.
     OpenUrl(String),
     OpenInSpotify(String),

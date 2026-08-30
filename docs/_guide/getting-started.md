@@ -45,7 +45,8 @@ A desktop entry ships in `packaging/applications/oxidify.desktop`.
 Start the app and press **Sign in with Spotify**. Your browser opens
 Spotify's own consent page; your password never touches Oxidify. When
 Spotify redirects back, your library loads and you can search, browse, and
-control your other devices immediately.
+control your other devices immediately. If the browser does not open, use
+**Open sign-in page** or **Copy link** on the waiting screen.
 
 Oxidify stores a refresh token in your platform's state directory
 (`~/.local/state/oxidify` on Linux). You normally need the browser only

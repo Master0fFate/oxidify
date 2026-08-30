@@ -157,19 +157,26 @@ pub struct TokenResponse {
     pub scope: Option<String>,
 }
 
+/// Binds the loopback receiver before the browser is opened.
+///
+/// Keeping this as a separate step prevents a fast browser from redirecting to
+/// the port before Oxidify is ready to accept it.
+pub async fn bind_redirect(port: u16) -> Result<TcpListener> {
+    let address: SocketAddr = ([127, 0, 0, 1], port).into();
+    TcpListener::bind(address)
+        .await
+        .with_context(|| format!("unable to listen on {address} for the Spotify redirect"))
+}
+
 /// Listens for Spotify's redirect and returns the authorization code.
 ///
 /// Ends early when `cancel` flips to true (the user gave up) or after ten
 /// minutes.
 pub async fn wait_for_code(
-    port: u16,
+    listener: TcpListener,
     expected_state: &str,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<String> {
-    let address: SocketAddr = ([127, 0, 0, 1], port).into();
-    let listener = TcpListener::bind(address)
-        .await
-        .with_context(|| format!("unable to listen on {address} for the Spotify redirect"))?;
     let deadline = tokio::time::sleep(LOGIN_TIMEOUT);
     tokio::pin!(deadline);
 
@@ -509,6 +516,22 @@ mod tests {
         assert!(
             parse_request_line("GET /login?error=access_denied&state=s1 HTTP/1.1", "s1").is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn a_prebound_listener_accepts_an_immediate_redirect() {
+        let listener = bind_redirect(0).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+        let waiting = tokio::spawn(wait_for_code(listener, "expected", cancel_rx));
+
+        let mut browser = tokio::net::TcpStream::connect(address).await.unwrap();
+        browser
+            .write_all(b"GET /login?code=ready&state=expected HTTP/1.1\r\n\r\n")
+            .await
+            .unwrap();
+
+        assert_eq!(waiting.await.unwrap().unwrap(), "ready");
     }
 
     #[test]

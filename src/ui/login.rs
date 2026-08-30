@@ -9,7 +9,6 @@ use crate::theme;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
     let palette = app.palette;
-    let ctx = ui.ctx().clone();
     egui::CentralPanel::default()
         .frame(Frame::new().fill(palette.window))
         .show(ui, |ui| {
@@ -49,10 +48,28 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
                                 theme::text(ui, "Waiting for Spotify in your browser…", theme::medium(14.0), palette.text);
                             });
                             ui.add_space(6.0);
-                            if theme::link(ui, "Didn't open? Open the sign-in page again", theme::regular(13.0), palette.secondary).clicked() {
-                                ctx.open_url(egui::OpenUrl::new_tab(url));
-                            }
-                            ui.add_space(14.0);
+                            theme::text(
+                                ui,
+                                "Browser trouble? Open the page again or copy its link.",
+                                theme::regular(12.5),
+                                palette.secondary,
+                            );
+                            ui.horizontal_centered(|ui| {
+                                if theme::pill_button(
+                                    ui,
+                                    &palette,
+                                    "Open sign-in page",
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    app.actions.push(Action::OpenUrl(url.clone()));
+                                }
+                                if theme::pill_button(ui, &palette, "Copy link", false).clicked() {
+                                    app.actions.push(Action::CopySignInLink(url));
+                                }
+                            });
+                            ui.add_space(10.0);
                             if theme::pill_button(ui, &palette, "Cancel", false).clicked() {
                                 app.actions.push(Action::CancelSignIn);
                             }

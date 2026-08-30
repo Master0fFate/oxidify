@@ -22,7 +22,9 @@ personal acceleration, and local playback:
    which librespot stores its own reusable credential. Premium is required,
    because that is what Spotify's streaming protocol requires.
 
-Local playback authorization stays separate from both Web API grants.
+Local playback authorization stays separate from both Web API grants. Before
+Oxidify opens either browser flow, it starts the loopback receiver that accepts
+the redirect. The main sign-in waiting screen can also reopen or copy its URL.
 
 By default the Web API uses the shared public application also used by
 spotify-player, ncspot, and Omarchy Spotify, whose allowance Spotify

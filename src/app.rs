@@ -3984,6 +3984,10 @@ impl App {
                     self.toast("Link copied");
                 }
             }
+            Action::CopySignInLink(text) => {
+                ctx.copy_text(text);
+                self.toast("Sign-in link copied");
+            }
             Action::OpenInSpotify(uri) => {
                 if let Some(url) = util::open_spotify_url(&uri) {
                     ctx.open_url(egui::OpenUrl::new_tab(url));

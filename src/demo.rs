@@ -590,6 +590,12 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                 app.actions.push(Action::SettingsChanged);
             }
             "focus" => app.settings.sidebar_visible = false,
+            "login" => {
+                app.auth = AuthStatus::WaitingForBrowser {
+                    url: "https://accounts.spotify.com/authorize?demo=1".into(),
+                };
+                app.user = None;
+            }
             // The built-in skin, whatever the settings say, so shots are
             // the same everywhere and never show someone else's art.
             "winamp" => {
@@ -811,6 +817,11 @@ mod tests {
             frame(&ctx, &mut app);
         }
         assert!(!app.palette.dark);
+        app.auth = AuthStatus::WaitingForBrowser {
+            url: "https://accounts.spotify.com/authorize?demo=1".into(),
+        };
+        app.user = None;
+        frame(&ctx, &mut app);
         app.backend.shutdown();
         let _ = std::fs::remove_dir_all(root);
     }
