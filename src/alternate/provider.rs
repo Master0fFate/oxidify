@@ -15,7 +15,7 @@ use super::bundle;
 use super::matching::{Candidate, TrackQuery, rank_candidates};
 use super::native_youtube::NativeYoutube;
 use super::piped::PipedClient;
-use super::streams::AudioStream;
+use super::streams::{AudioStream, select_audio_stream};
 use super::ytdlp::YtDlp;
 
 const NATIVE_SEARCH_TIMEOUT: Duration = Duration::from_secs(6);
@@ -206,7 +206,7 @@ impl Resolver {
         {
             return Ok(cached);
         }
-        self.resolve_streams(id, false).await
+        self.resolve_streams(id).await
     }
 
     async fn refresh_streams(&self, id: &str) -> Result<StreamLookup> {
@@ -214,12 +214,12 @@ impl Resolver {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
-        self.resolve_streams(id, true).await
+        self.resolve_streams(id).await
     }
 
-    async fn resolve_streams(&self, id: &str, refresh: bool) -> Result<StreamLookup> {
+    async fn resolve_streams(&self, id: &str) -> Result<StreamLookup> {
         let resolved = self.resolve_youtube(id).await?;
-        if !refresh || !resolved.streams.is_empty() {
+        if select_audio_stream(&resolved.streams).is_some() {
             self.stream_cache
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -230,25 +230,23 @@ impl Resolver {
 
     async fn resolve_youtube(&self, id: &str) -> Result<StreamLookup> {
         match tokio::time::timeout(STREAM_TIMEOUT, self.native.streams(id)).await {
-            Ok(Ok(streams)) if !streams.is_empty() => {
-                return Ok(StreamLookup {
-                    streams,
-                    provider: ProviderKind::NativeYoutube,
-                });
+            Ok(Ok(streams)) => {
+                if let Some(lookup) = playable_lookup(streams, ProviderKind::NativeYoutube) {
+                    return Ok(lookup);
+                }
+                log::info!("native YouTube had no AAC/M4A or MP3 URL; trying fallback");
             }
-            Ok(Ok(_)) => log::debug!("native YouTube returned no streams"),
             Ok(Err(error)) => log::warn!("native YouTube streams failed: {error}"),
             Err(_) => log::warn!("native YouTube streams timed out"),
         }
         if let Some(piped) = &self.piped {
             match tokio::time::timeout(STREAM_TIMEOUT, piped.streams(id)).await {
-                Ok(Ok(streams)) if !streams.is_empty() => {
-                    return Ok(StreamLookup {
-                        streams,
-                        provider: ProviderKind::Piped,
-                    });
+                Ok(Ok(streams)) => {
+                    if let Some(lookup) = playable_lookup(streams, ProviderKind::Piped) {
+                        return Ok(lookup);
+                    }
+                    log::info!("Piped had no AAC/M4A or MP3 URL; trying fallback");
                 }
-                Ok(Ok(_)) => log::debug!("Piped returned no streams"),
                 Ok(Err(error)) => log::warn!("Piped streams failed: {error}"),
                 Err(_) => log::warn!("Piped streams timed out"),
             }
@@ -357,6 +355,12 @@ where
         .map_err(|error| error.to_string())
 }
 
+fn playable_lookup(streams: Vec<AudioStream>, provider: ProviderKind) -> Option<StreamLookup> {
+    select_audio_stream(&streams)
+        .is_some()
+        .then_some(StreamLookup { streams, provider })
+}
+
 fn search_text(query: &TrackQuery) -> String {
     let mut parts = query.artists.clone();
     parts.push(query.title.clone());
@@ -441,6 +445,51 @@ mod tests {
         assert!(cache.entries.len() <= 2);
         std::thread::sleep(Duration::from_millis(3));
         assert_eq!(cache.get("c"), None);
+    }
+
+    fn stream(format: &str, mime: &str, codec: &str, url: &str, video_only: bool) -> AudioStream {
+        AudioStream {
+            url: url.into(),
+            mime: Some(mime.into()),
+            codec: Some(codec.into()),
+            format: Some(format.into()),
+            bitrate: Some(128_000),
+            video_only,
+            quality: None,
+            http_headers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn opus_and_empty_native_urls_fall_through() {
+        let unusable = vec![
+            stream("m4a", "audio/mp4", "mp4a.40.2", "", false),
+            stream(
+                "webm",
+                "audio/webm",
+                "opus",
+                "https://cdn.example/a.webm",
+                false,
+            ),
+            stream(
+                "mp4",
+                "video/mp4",
+                "avc1",
+                "https://cdn.example/18.mp4",
+                true,
+            ),
+        ];
+        assert!(playable_lookup(unusable, ProviderKind::NativeYoutube).is_none());
+        let playable = vec![stream(
+            "m4a",
+            "audio/mp4",
+            "mp4a.40.2",
+            "https://cdn.example/140.m4a",
+            false,
+        )];
+        let lookup = playable_lookup(playable, ProviderKind::NativeYoutube).unwrap();
+        assert_eq!(lookup.provider, ProviderKind::NativeYoutube);
+        assert_eq!(lookup.streams[0].format.as_deref(), Some("m4a"));
     }
 
     #[test]

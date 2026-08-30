@@ -79,19 +79,25 @@ impl NativeYoutube {
         Ok(info
             .formats
             .into_iter()
-            .filter(|format| format.has_audio)
+            .filter(|format| is_direct_audio(format.has_audio, format.has_video, &format.url))
             .map(|format| AudioStream {
                 url: format.url,
                 mime: Some(format.mime_type.mime.to_string()),
                 codec: format.mime_type.audio_codec,
                 format: Some(format.mime_type.container),
                 bitrate: u32::try_from(format.average_bitrate.unwrap_or(format.bitrate)).ok(),
-                video_only: format.has_video,
+                video_only: false,
                 quality: format.audio_quality,
                 http_headers: Vec::new(),
             })
             .collect())
     }
+}
+
+/// Adaptive YouTube audio often arrives with an empty URL until a player
+/// cipher is solved. Muxed `video/mp4` is not a local AAC/MP3 path.
+fn is_direct_audio(has_audio: bool, has_video: bool, url: &str) -> bool {
+    has_audio && !has_video && !url.is_empty()
 }
 
 #[cfg(test)]
@@ -101,5 +107,13 @@ mod tests {
     #[test]
     fn search_limit_stays_bounded() {
         assert_eq!(SEARCH_LIMIT, 8);
+    }
+
+    #[test]
+    fn skips_empty_urls_and_muxed_video() {
+        assert!(!is_direct_audio(true, false, ""));
+        assert!(!is_direct_audio(true, true, "https://cdn.example/18.mp4"));
+        assert!(!is_direct_audio(false, false, "https://cdn.example/a.m4a"));
+        assert!(is_direct_audio(true, false, "https://cdn.example/140.m4a"));
     }
 }
