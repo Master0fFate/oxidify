@@ -11,7 +11,7 @@ use super::probe;
 use super::provider::{MediaLookup, ScriptedBody};
 use super::streams::{AudioStream, select_audio_stream};
 
-pub const INITIAL_PREFIX: u64 = 2 * 1024 * 1024;
+pub const INITIAL_PREFIX: u64 = 512 * 1024;
 const COALESCE_GAP: u64 = 128 * 1024;
 
 #[derive(Clone, Copy, Debug)]

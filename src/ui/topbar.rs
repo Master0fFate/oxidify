@@ -205,17 +205,41 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             ui.add_space(10.0);
                             theme::text(ui, &name, theme::semibold(14.0), palette.text);
                         });
-                        if let Some(product) =
-                            app.user.as_ref().and_then(|user| user.product.clone())
-                        {
+                        let product = app
+                            .user
+                            .as_ref()
+                            .and_then(|user| user.product.clone())
+                            .map(|product| capitalize(&product));
+                        let source = app.now_playing().and_then(|now| {
+                            now.local
+                                .then_some(now.source_label.as_deref())
+                                .flatten()
+                                .map(alternate_source_brief)
+                        });
+                        if product.is_some() || source.is_some() {
                             ui.horizontal(|ui| {
                                 ui.add_space(10.0);
-                                theme::text(
-                                    ui,
-                                    capitalize(&product),
-                                    theme::regular(12.0),
-                                    palette.secondary,
-                                );
+                                if let Some(product) = &product {
+                                    theme::text(
+                                        ui,
+                                        product,
+                                        theme::regular(12.0),
+                                        palette.secondary,
+                                    );
+                                }
+                                if let Some(source) = &source {
+                                    let prefix = if product.is_some() {
+                                        " · using "
+                                    } else {
+                                        "using "
+                                    };
+                                    theme::text(
+                                        ui,
+                                        format!("{prefix}{source}"),
+                                        theme::regular(12.0),
+                                        palette.secondary,
+                                    );
+                                }
                             });
                         }
                         super::widgets::menu_separator(ui, &palette);
@@ -269,18 +293,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         .on_hover_text("Talking to Spotify…");
                 }
                 if let Some(now) = app.now_playing()
-                    && (!now.local || now.source_label.is_some())
+                    && !now.local
                 {
-                    let label = if now.local {
-                        now.source_label
-                            .clone()
-                            .unwrap_or_else(|| "Alternate local audio".into())
-                    } else {
-                        format!(
-                            "Playing on {}",
-                            now.device_name.unwrap_or_else(|| "another device".into())
-                        )
-                    };
+                    let label = format!(
+                        "Playing on {}",
+                        now.device_name.unwrap_or_else(|| "another device".into())
+                    );
                     let max_w = ui.available_width();
                     if max_w >= SOURCE_MIN {
                         source_chip(ui, &palette, &label, max_w, &mut app.actions);
@@ -377,6 +395,19 @@ fn source_chip(
     }
 }
 
+fn alternate_source_brief(label: &str) -> String {
+    let lower = label.to_ascii_lowercase();
+    if lower.contains("yt-dlp") {
+        "yt-dlp".into()
+    } else if lower.contains("piped") {
+        "Piped".into()
+    } else if lower.contains("youtube") {
+        "YouTube".into()
+    } else {
+        "alternate audio".into()
+    }
+}
+
 fn capitalize(text: &str) -> String {
     let mut chars = text.chars();
     match chars.next() {
@@ -420,6 +451,18 @@ mod tests {
         let avatar_left = avatar_right - AVATAR_SIZE;
         assert!(avatar_left >= 0.0);
         assert!(avatar_right <= total);
+    }
+
+    #[test]
+    fn alternate_source_brief_names_the_real_route() {
+        assert_eq!(
+            alternate_source_brief("yt-dlp YouTube match · not Spotify audio"),
+            "yt-dlp"
+        );
+        assert_eq!(
+            alternate_source_brief("Piped match · not Spotify audio"),
+            "Piped"
+        );
     }
 
     #[test]

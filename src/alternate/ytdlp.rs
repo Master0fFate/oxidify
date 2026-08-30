@@ -23,22 +23,25 @@ const AUDIO_FORMAT: &str = "140/139/bestaudio[ext=m4a]/bestaudio[acodec*=mp4a]/b
 #[derive(Clone, Debug)]
 pub struct YtDlp {
     binary: PathBuf,
+    cache_dir: PathBuf,
 }
 
 impl YtDlp {
-    pub fn new(binary: PathBuf) -> Self {
-        Self { binary }
+    pub fn new(binary: PathBuf, cache_dir: PathBuf) -> Self {
+        Self { binary, cache_dir }
     }
 
     pub async fn search(&self, query: &str) -> Result<Vec<Candidate>> {
         let query = sanitize_query(query);
+        let cache = self.cache_dir.to_string_lossy().into_owned();
         let stdout = run(
             &self.binary,
             &[
                 "--ignore-config",
                 "--no-update",
                 "--no-warnings",
-                "--no-cache-dir",
+                "--cache-dir",
+                &cache,
                 "--no-playlist",
                 "--flat-playlist",
                 "--skip-download",
@@ -59,13 +62,18 @@ impl YtDlp {
     }
 
     async fn streams_for_url(&self, url: &str) -> Result<Vec<AudioStream>> {
+        let cache = self.cache_dir.to_string_lossy().into_owned();
         let stdout = run(
             &self.binary,
             &[
                 "--ignore-config",
                 "--no-update",
                 "--no-warnings",
-                "--no-cache-dir",
+                "--cache-dir",
+                &cache,
+                "--no-check-formats",
+                "--extractor-args",
+                "youtube:player_client=android,ios",
                 "--no-playlist",
                 "--skip-download",
                 "--format",

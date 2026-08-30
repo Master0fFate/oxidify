@@ -111,7 +111,7 @@ impl Resolver {
             match bundle::resolve(config.ytdlp_path.as_deref(), ytdlp_dir) {
                 Some(resolved) => {
                     bundle::log_choice(&resolved);
-                    Some(YtDlp::new(resolved.path))
+                    Some(YtDlp::new(resolved.path, ytdlp_dir.join("ytdlp-cache")))
                 }
                 None => None,
             }
