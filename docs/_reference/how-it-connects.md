@@ -92,9 +92,10 @@ The opt-in alternate engine is a separate session. It does not announce a
 Connect device, does not use Spirc, and does not run at the same time as
 librespot. It resolves Spotify track metadata to a third-party match. Native
 YouTube and optional Piped searches share one async HTTP client; the existing
-match score ranks their candidates together. Native YouTube resolves streams
-first, Piped follows when configured, and yt-dlp is the compatibility fallback.
-The engine decodes AAC/M4A or MP3 locally. Playback starts when container headers and
+match score ranks their candidates together. Playable stream URLs come from
+Piped and/or yt-dlp (AAC M4A itag 140, then MP3). rusty_ytdl is search-only:
+it does not decrypt adaptive media URLs. The engine fetches by HTTP range and
+decodes AAC/M4A or MP3 locally. Playback starts when container headers and
 the first packets are in (a few frames for MP3; fast-start M4A once `moov`
 is present). Fast-start M4A (`moov` before `mdat`) can start while the rest
 downloads; `moov` at the end waits until the file is complete. Alternate

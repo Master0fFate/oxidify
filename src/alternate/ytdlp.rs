@@ -16,6 +16,9 @@ use super::streams::AudioStream;
 const MAX_STDOUT: usize = 8 * 1024 * 1024;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(25);
 const STREAM_TIMEOUT: Duration = Duration::from_secs(25);
+/// Audio YouTube actually publishes that this player can decode.
+/// No HLS, no Opus/WebM, no muxed video. `140` is AAC ~128 kbps.
+const AUDIO_FORMAT: &str = "140/139/bestaudio[ext=m4a]/bestaudio[acodec*=mp4a]/bestaudio[ext=mp3]";
 
 #[derive(Clone, Debug)]
 pub struct YtDlp {
@@ -65,6 +68,8 @@ impl YtDlp {
                 "--no-cache-dir",
                 "--no-playlist",
                 "--skip-download",
+                "--format",
+                AUDIO_FORMAT,
                 "--dump-json",
                 "--",
                 url,
@@ -152,6 +157,22 @@ struct FlatEntry {
 struct Dump {
     #[serde(default)]
     formats: Vec<Format>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    ext: Option<String>,
+    #[serde(default)]
+    acodec: Option<String>,
+    #[serde(default)]
+    vcodec: Option<String>,
+    #[serde(default)]
+    abr: Option<f64>,
+    #[serde(default)]
+    tbr: Option<f64>,
+    #[serde(default)]
+    audio_ext: Option<String>,
+    #[serde(default)]
+    http_headers: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,26 +225,44 @@ pub fn parse_search_json(stdout: &str) -> Result<Vec<Candidate>> {
 
 pub fn parse_format_json(stdout: &str) -> Result<Vec<AudioStream>> {
     let dump: Dump = serde_json::from_str(stdout.trim()).context("yt-dlp format JSON")?;
-    Ok(dump
+    let selected = Format {
+        url: dump.url,
+        ext: dump.ext,
+        acodec: dump.acodec,
+        vcodec: dump.vcodec,
+        abr: dump.abr,
+        tbr: dump.tbr,
+        audio_ext: dump.audio_ext,
+        http_headers: dump.http_headers,
+    };
+    let mut streams: Vec<AudioStream> = dump
         .formats
         .into_iter()
-        .filter_map(|format| {
-            let url = format.url.filter(|url| !url.is_empty())?;
-            let vcodec = format.vcodec.as_deref().unwrap_or("");
-            let video_only = !vcodec.is_empty() && vcodec != "none";
-            let bitrate = format.abr.or(format.tbr).map(|kbps| (kbps * 1000.0) as u32);
-            Some(AudioStream {
-                url,
-                mime: None,
-                codec: format.acodec,
-                format: format.audio_ext.or(format.ext),
-                bitrate,
-                video_only,
-                quality: None,
-                http_headers: safe_http_headers(format.http_headers),
-            })
-        })
-        .collect())
+        .filter_map(format_to_stream)
+        .collect();
+    if let Some(stream) = format_to_stream(selected)
+        && !streams.iter().any(|existing| existing.url == stream.url)
+    {
+        streams.insert(0, stream);
+    }
+    Ok(streams)
+}
+
+fn format_to_stream(format: Format) -> Option<AudioStream> {
+    let url = format.url.filter(|url| !url.is_empty())?;
+    let vcodec = format.vcodec.as_deref().unwrap_or("");
+    let video_only = !vcodec.is_empty() && vcodec != "none";
+    let bitrate = format.abr.or(format.tbr).map(|kbps| (kbps * 1000.0) as u32);
+    Some(AudioStream {
+        url,
+        mime: None,
+        codec: format.acodec,
+        format: format.audio_ext.or(format.ext),
+        bitrate,
+        video_only,
+        quality: None,
+        http_headers: safe_http_headers(format.http_headers),
+    })
 }
 
 fn safe_http_headers(headers: Option<HashMap<String, String>>) -> Vec<(String, String)> {
@@ -293,6 +332,32 @@ mod tests {
                 .all(|(key, _)| !key.eq_ignore_ascii_case("cookie")
                     && !key.eq_ignore_ascii_case("authorization"))
         );
+    }
+
+    #[test]
+    fn selected_audio_url_is_kept_without_a_formats_array() {
+        let stdout = r#"{
+            "id":"dQw4w9WgXcQ",
+            "url":"https://cdn.example/140.m4a",
+            "ext":"m4a",
+            "acodec":"mp4a.40.2",
+            "vcodec":"none",
+            "abr":129.0
+        }"#;
+        let streams = parse_format_json(stdout).unwrap();
+        assert_eq!(streams.len(), 1);
+        assert_eq!(streams[0].format.as_deref(), Some("m4a"));
+        assert!(!streams[0].video_only);
+        assert!(streams[0].url.ends_with("140.m4a"));
+    }
+
+    #[test]
+    fn audio_format_selector_is_aac_or_mp3_only() {
+        assert!(AUDIO_FORMAT.contains("140"));
+        assert!(AUDIO_FORMAT.contains("m4a"));
+        assert!(AUDIO_FORMAT.contains("mp3"));
+        assert!(!AUDIO_FORMAT.contains("webm"));
+        assert!(!AUDIO_FORMAT.contains("bestaudio]"))
     }
 
     #[test]

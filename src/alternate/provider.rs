@@ -229,39 +229,53 @@ impl Resolver {
     }
 
     async fn resolve_youtube(&self, id: &str) -> Result<StreamLookup> {
-        match tokio::time::timeout(STREAM_TIMEOUT, self.native.streams(id)).await {
-            Ok(Ok(streams)) => {
-                if let Some(lookup) = playable_lookup(streams, ProviderKind::NativeYoutube) {
-                    return Ok(lookup);
-                }
-                log::info!("native YouTube had no AAC/M4A or MP3 URL; trying fallback");
-            }
-            Ok(Err(error)) => log::warn!("native YouTube streams failed: {error}"),
-            Err(_) => log::warn!("native YouTube streams timed out"),
+        // rusty_ytdl lists AAC itag 140 but leaves the URL empty. Asking it
+        // for streams only delays Piped / yt-dlp, which can decrypt the URL.
+        let mut tasks: JoinSet<(ProviderKind, Result<Vec<AudioStream>, String>)> = JoinSet::new();
+        if let Some(piped) = self.piped.clone() {
+            let id = id.to_string();
+            tasks.spawn(async move {
+                let result = tokio::time::timeout(STREAM_TIMEOUT, piped.streams(&id))
+                    .await
+                    .map_err(|_| "Piped streams timed out".to_string())
+                    .and_then(|result| result.map_err(|error| error.to_string()));
+                (ProviderKind::Piped, result)
+            });
         }
-        if let Some(piped) = &self.piped {
-            match tokio::time::timeout(STREAM_TIMEOUT, piped.streams(id)).await {
-                Ok(Ok(streams)) => {
-                    if let Some(lookup) = playable_lookup(streams, ProviderKind::Piped) {
+        if let Some(ytdlp) = self.ytdlp.clone() {
+            let id = id.to_string();
+            tasks.spawn(async move {
+                let result = tokio::time::timeout(YTDLP_FALLBACK_TIMEOUT, ytdlp.streams(&id))
+                    .await
+                    .map_err(|_| "yt-dlp stream lookup timed out".to_string())
+                    .and_then(|result| result.map_err(|error| error.to_string()));
+                (ProviderKind::YtDlpYoutube, result)
+            });
+        }
+        if tasks.is_empty() {
+            return Err(anyhow!("no YouTube stream provider answered"));
+        }
+        let mut last_error = None;
+        while let Some(joined) = tasks.join_next().await {
+            match joined {
+                Ok((provider, Ok(streams))) => {
+                    if let Some(lookup) = playable_lookup(streams, provider) {
+                        tasks.abort_all();
                         return Ok(lookup);
                     }
-                    log::info!("Piped had no AAC/M4A or MP3 URL; trying fallback");
+                    log::info!("{provider:?} had no AAC/M4A or MP3 URL");
                 }
-                Ok(Err(error)) => log::warn!("Piped streams failed: {error}"),
-                Err(_) => log::warn!("Piped streams timed out"),
+                Ok((provider, Err(error))) => {
+                    log::warn!("{provider:?} streams failed: {error}");
+                    last_error = Some(error);
+                }
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => last_error = Some(error.to_string()),
             }
         }
-        let ytdlp = self
-            .ytdlp
-            .as_ref()
-            .ok_or_else(|| anyhow!("no YouTube stream provider answered"))?;
-        let streams = tokio::time::timeout(YTDLP_FALLBACK_TIMEOUT, ytdlp.streams(id))
-            .await
-            .map_err(|_| anyhow!("yt-dlp stream fallback timed out"))??;
-        Ok(StreamLookup {
-            streams,
-            provider: ProviderKind::YtDlpYoutube,
-        })
+        Err(anyhow!(last_error.unwrap_or_else(|| {
+            "No playable audio stream (need AAC/M4A or MP3; Opus/WebM is not decoded).".into()
+        })))
     }
 }
 

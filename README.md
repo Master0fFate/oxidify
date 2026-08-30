@@ -158,10 +158,13 @@ endpoint in parallel. All results use the same title, artist, duration, and
 mismatch score; the higher-scoring source wins. A match at 90% or above ends
 the race early and cancels slower providers.
 
-Native asynchronous Rust HTTP is the normal YouTube path. Search results are
-cached for six hours and resolved media URLs for ten minutes, both in bounded
-in-memory caches. Piped is a compatibility fallback. `yt-dlp` runs only after
-native extraction fails or cannot produce a confident match. Release builds
+Native asynchronous Rust HTTP is used for YouTube **search**. Playable stream
+URLs come from Piped, if you set one, otherwise `yt-dlp` asking only for AAC
+M4A (itag 140) or MP3. rusty_ytdl lists those formats but does not decrypt
+their URLs, so it is not used for playback. Search results are cached for six
+hours and resolved media URLs for ten minutes. HTTP range fetch starts from
+headers and seeks into undownloaded regions; the rest of the file is not
+pulled unless you listen or seek there. Release builds
 embed one official pinned `yt-dlp` executable, extract it into the local state
 directory, and never download it at runtime. A user-installed `yt-dlp` is used
 only when its version is strictly newer than the pin. Spotify tokens are never

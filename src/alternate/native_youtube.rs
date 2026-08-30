@@ -1,34 +1,32 @@
-//! Native asynchronous YouTube search and stream extraction.
+//! Native asynchronous YouTube search.
 //!
-//! This is the normal YouTube path. Piped and yt-dlp remain compatibility
-//! fallbacks because YouTube extraction changes independently of Oxidify.
+//! Stream URLs still come from Piped or yt-dlp. rusty_ytdl lists AAC formats
+//! but does not decrypt their URLs.
 
 use anyhow::{Context, Result};
+use rusty_ytdl::RequestOptions;
 use rusty_ytdl::search::{SearchOptions, SearchResult, YouTube};
-use rusty_ytdl::{RequestOptions, Video, VideoOptions};
 
 use super::matching::Candidate;
 use super::piped::sanitize_video_id;
-use super::streams::AudioStream;
 
 const SEARCH_LIMIT: u64 = 8;
 
 #[derive(Clone, Debug)]
 pub struct NativeYoutube {
-    http: reqwest::Client,
     search: YouTube,
 }
 
 impl NativeYoutube {
     pub fn new(http: reqwest::Client) -> Result<Self> {
         let options = RequestOptions {
-            client: Some(http.clone()),
+            client: Some(http),
             max_retries: Some(1),
             ..RequestOptions::default()
         };
         let search = YouTube::new_with_options(&options)
             .context("unable to initialize native YouTube search")?;
-        Ok(Self { http, search })
+        Ok(Self { search })
     }
 
     pub async fn search(&self, query: &str) -> Result<Vec<Candidate>> {
@@ -60,44 +58,6 @@ impl NativeYoutube {
             })
             .collect())
     }
-
-    pub async fn streams(&self, video_id: &str) -> Result<Vec<AudioStream>> {
-        let id = sanitize_video_id(video_id).context("invalid YouTube video id")?;
-        let options = VideoOptions {
-            request_options: RequestOptions {
-                client: Some(self.http.clone()),
-                max_retries: Some(1),
-                ..RequestOptions::default()
-            },
-            ..VideoOptions::default()
-        };
-        let video = Video::new_with_options(id, options).context("invalid YouTube video id")?;
-        let info = video
-            .get_basic_info()
-            .await
-            .context("native YouTube stream extraction failed")?;
-        Ok(info
-            .formats
-            .into_iter()
-            .filter(|format| is_direct_audio(format.has_audio, format.has_video, &format.url))
-            .map(|format| AudioStream {
-                url: format.url,
-                mime: Some(format.mime_type.mime.to_string()),
-                codec: format.mime_type.audio_codec,
-                format: Some(format.mime_type.container),
-                bitrate: u32::try_from(format.average_bitrate.unwrap_or(format.bitrate)).ok(),
-                video_only: false,
-                quality: format.audio_quality,
-                http_headers: Vec::new(),
-            })
-            .collect())
-    }
-}
-
-/// Adaptive YouTube audio often arrives with an empty URL until a player
-/// cipher is solved. Muxed `video/mp4` is not a local AAC/MP3 path.
-fn is_direct_audio(has_audio: bool, has_video: bool, url: &str) -> bool {
-    has_audio && !has_video && !url.is_empty()
 }
 
 #[cfg(test)]
@@ -107,13 +67,5 @@ mod tests {
     #[test]
     fn search_limit_stays_bounded() {
         assert_eq!(SEARCH_LIMIT, 8);
-    }
-
-    #[test]
-    fn skips_empty_urls_and_muxed_video() {
-        assert!(!is_direct_audio(true, false, ""));
-        assert!(!is_direct_audio(true, true, "https://cdn.example/18.mp4"));
-        assert!(!is_direct_audio(false, false, "https://cdn.example/a.m4a"));
-        assert!(is_direct_audio(true, false, "https://cdn.example/140.m4a"));
     }
 }
