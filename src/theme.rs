@@ -580,6 +580,33 @@ pub fn logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32, disc: Color32, gly
         .paint_at(ui, icon_rect);
 }
 
+/// Draw the Oxidify crystal brand mark from `packaging/icons/oxidify.svg`.
+///
+/// This is intentionally separate from [`logo`]: playback controls use the
+/// play disc, while branded surfaces must show the actual Oxidify identity.
+pub fn brand_logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32) {
+    let painter = ui.painter();
+    let scale = diameter / 128.0;
+    let field = Color32::from_rgb(0x91, 0xc4, 0xff);
+    let ink = Color32::from_rgb(0x0d, 0x3a, 0x73);
+    let inset = 4.0 * scale;
+    painter.rect_filled(
+        egui::Rect::from_center_size(center, Vec2::splat(diameter)).shrink(inset),
+        egui::CornerRadius::same((28.0 * scale).round() as u8),
+        field,
+    );
+    let points = (0..6)
+        .map(|step| {
+            let angle = std::f32::consts::TAU * step as f32 / 6.0 - std::f32::consts::FRAC_PI_2;
+            center + Vec2::new(angle.cos() * 42.0 * scale, angle.sin() * 42.0 * scale)
+        })
+        .collect::<Vec<_>>();
+    let mut closed = points.clone();
+    closed.push(points[0]);
+    painter.add(egui::Shape::line(closed, Stroke::new(9.0 * scale, ink)));
+    painter.circle_filled(center, 8.0 * scale, ink);
+}
+
 pub fn circle_button(
     ui: &mut egui::Ui,
     icon: Icon,
