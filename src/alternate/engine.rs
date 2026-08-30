@@ -123,7 +123,8 @@ pub fn spawn(
     ytdlp_dir: PathBuf,
 ) -> Result<AlternateHandle, String> {
     config.validate()?;
-    let lookup: Arc<dyn MediaLookup> = Arc::new(Resolver::from_config(&config, &ytdlp_dir)?);
+    let lookup: Arc<dyn MediaLookup> =
+        Arc::new(Resolver::from_config(&config, &ytdlp_dir, http.clone())?);
     let output = match output {
         Some(output) => output,
         None => Box::new(RodioOutput::open().map_err(|error| error.to_string())?),
@@ -139,10 +140,7 @@ fn spawn_inner(
     output: Box<dyn AudioOutput + Send>,
     lookup: Arc<dyn MediaLookup>,
 ) -> AlternateHandle {
-    let media_http = reqwest::Client::builder()
-        .user_agent(concat!("oxidify/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .unwrap_or_else(|_| http.clone());
+    let media_http = http;
     let (tx, rx) = mpsc::unbounded_channel();
     let (cancel, cancel_rx) = watch::channel(false);
     let join = tokio::spawn(run(
@@ -781,32 +779,25 @@ async fn resolve_and_stream(
         artists: track.artists.clone(),
         duration_ms: (track.duration_ms > 0).then_some(track.duration_ms),
     };
-    let search_text = {
-        let mut parts = query.artists.clone();
-        parts.push(query.title.clone());
-        parts.join(" ")
-    };
-    let (video_id, used_ytdlp) = if let Some(id) = cached_id {
-        (id, false)
+    let video_id = if let Some(id) = cached_id {
+        id
     } else {
-        match lookup.search(&search_text).await {
-            Ok((candidates, used_ytdlp)) => {
-                match rank_candidates(&query, &candidates, config.min_score) {
-                    Some(ranked) => (ranked.candidate.id, used_ytdlp),
-                    None => {
-                        send(Job::MatchFailed {
-                            token,
-                            uri: track.uri.clone(),
-                            error: format!(
-                                "No confident match for {} — {}",
-                                track.title,
-                                track.artist_names()
-                            ),
-                        });
-                        return;
-                    }
+        match lookup.search(&query, config.min_score).await {
+            Ok(candidates) => match rank_candidates(&query, &candidates, config.min_score) {
+                Some(ranked) => ranked.candidate.id,
+                None => {
+                    send(Job::MatchFailed {
+                        token,
+                        uri: track.uri.clone(),
+                        error: format!(
+                            "No confident match for {} — {}",
+                            track.title,
+                            track.artist_names()
+                        ),
+                    });
+                    return;
                 }
-            }
+            },
             Err(error) => {
                 send(Job::TransportFailed {
                     token,
@@ -827,7 +818,7 @@ async fn resolve_and_stream(
         });
         return;
     }
-    let (streams, stream_ytdlp) = match lookup.streams(&video_id).await {
+    let resolved = match lookup.streams(&video_id).await {
         Ok(value) => value,
         Err(error) => {
             send(Job::TransportFailed {
@@ -838,7 +829,7 @@ async fn resolve_and_stream(
             return;
         }
     };
-    let Some(stream) = select_audio_stream(&streams) else {
+    let Some(stream) = select_audio_stream(&resolved.streams) else {
         send(Job::MatchFailed {
             token,
             uri: track.uri.clone(),
@@ -847,11 +838,7 @@ async fn resolve_and_stream(
         });
         return;
     };
-    let label = if used_ytdlp || stream_ytdlp {
-        "yt-dlp match · not Spotify audio"
-    } else {
-        "Piped match · not Spotify audio"
-    };
+    let label = resolved.provider.label();
     let hint = FormatHint::from_labels(
         stream.format.as_deref(),
         stream.mime.as_deref(),
@@ -1045,24 +1032,22 @@ mod tests {
     impl MediaLookup for HoldLookup {
         fn search(
             &self,
-            _query: &str,
+            _query: &TrackQuery,
+            _min_score: f32,
         ) -> super::super::provider::LookupFuture<
-            Result<(Vec<super::super::matching::Candidate>, bool), String>,
+            Result<Vec<super::super::matching::Candidate>, String>,
         > {
             let rx = self.hold.lock().unwrap_or_else(|p| p.into_inner()).take();
             Box::pin(async move {
                 if let Some(rx) = rx {
                     let _ = rx.await;
                 }
-                Ok((
-                    vec![super::super::matching::Candidate {
-                        id: "dQw4w9WgXcQ".into(),
-                        title: "Song".into(),
-                        uploader: "Artist - Topic".into(),
-                        duration_ms: Some(1_000),
-                    }],
-                    true,
-                ))
+                Ok(vec![super::super::matching::Candidate {
+                    id: "dQw4w9WgXcQ".into(),
+                    title: "Song".into(),
+                    uploader: "Artist - Topic".into(),
+                    duration_ms: Some(1_000),
+                }])
             })
         }
 
@@ -1070,11 +1055,11 @@ mod tests {
             &self,
             _id: &str,
         ) -> super::super::provider::LookupFuture<
-            Result<(Vec<super::super::streams::AudioStream>, bool), String>,
+            Result<super::super::provider::StreamLookup, String>,
         > {
             Box::pin(async {
-                Ok((
-                    vec![super::super::streams::AudioStream {
+                Ok(super::super::provider::StreamLookup {
+                    streams: vec![super::super::streams::AudioStream {
                         url: "https://example.invalid/a.m4a".into(),
                         mime: Some("audio/mp4".into()),
                         codec: Some("mp4a.40.2".into()),
@@ -1084,8 +1069,8 @@ mod tests {
                         quality: None,
                         http_headers: Vec::new(),
                     }],
-                    true,
-                ))
+                    provider: super::super::provider::ProviderKind::YtDlpYoutube,
+                })
             })
         }
 
@@ -1199,21 +1184,19 @@ mod tests {
     impl MediaLookup for MissLookup {
         fn search(
             &self,
-            _query: &str,
+            _query: &TrackQuery,
+            _min_score: f32,
         ) -> super::super::provider::LookupFuture<
-            Result<(Vec<super::super::matching::Candidate>, bool), String>,
+            Result<Vec<super::super::matching::Candidate>, String>,
         > {
             self.searches.fetch_add(1, Ordering::SeqCst);
             Box::pin(async {
-                Ok((
-                    vec![super::super::matching::Candidate {
-                        id: "abcdefghijk".into(),
-                        title: "totally unrelated karaoke nightcore mix".into(),
-                        uploader: "RandomChannel".into(),
-                        duration_ms: Some(9_000),
-                    }],
-                    true,
-                ))
+                Ok(vec![super::super::matching::Candidate {
+                    id: "abcdefghijk".into(),
+                    title: "totally unrelated karaoke nightcore mix".into(),
+                    uploader: "RandomChannel".into(),
+                    duration_ms: Some(9_000),
+                }])
             })
         }
 
@@ -1221,7 +1204,7 @@ mod tests {
             &self,
             _id: &str,
         ) -> super::super::provider::LookupFuture<
-            Result<(Vec<super::super::streams::AudioStream>, bool), String>,
+            Result<super::super::provider::StreamLookup, String>,
         > {
             Box::pin(async { Err("streams should not run on a ranked miss".into()) })
         }
@@ -1235,9 +1218,10 @@ mod tests {
     impl MediaLookup for SearchErrLookup {
         fn search(
             &self,
-            _query: &str,
+            _query: &TrackQuery,
+            _min_score: f32,
         ) -> super::super::provider::LookupFuture<
-            Result<(Vec<super::super::matching::Candidate>, bool), String>,
+            Result<Vec<super::super::matching::Candidate>, String>,
         > {
             self.searches.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Err("search provider failed".into()) })
@@ -1247,7 +1231,7 @@ mod tests {
             &self,
             _id: &str,
         ) -> super::super::provider::LookupFuture<
-            Result<(Vec<super::super::streams::AudioStream>, bool), String>,
+            Result<super::super::provider::StreamLookup, String>,
         > {
             self.streams.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Err("no streams".into()) })
@@ -1262,21 +1246,19 @@ mod tests {
     impl MediaLookup for StreamsErrLookup {
         fn search(
             &self,
-            _query: &str,
+            _query: &TrackQuery,
+            _min_score: f32,
         ) -> super::super::provider::LookupFuture<
-            Result<(Vec<super::super::matching::Candidate>, bool), String>,
+            Result<Vec<super::super::matching::Candidate>, String>,
         > {
             self.searches.fetch_add(1, Ordering::SeqCst);
             Box::pin(async {
-                Ok((
-                    vec![super::super::matching::Candidate {
-                        id: "dQw4w9WgXcQ".into(),
-                        title: "Song".into(),
-                        uploader: "Artist - Topic".into(),
-                        duration_ms: Some(1_000),
-                    }],
-                    true,
-                ))
+                Ok(vec![super::super::matching::Candidate {
+                    id: "dQw4w9WgXcQ".into(),
+                    title: "Song".into(),
+                    uploader: "Artist - Topic".into(),
+                    duration_ms: Some(1_000),
+                }])
             })
         }
 
@@ -1284,7 +1266,7 @@ mod tests {
             &self,
             _id: &str,
         ) -> super::super::provider::LookupFuture<
-            Result<(Vec<super::super::streams::AudioStream>, bool), String>,
+            Result<super::super::provider::StreamLookup, String>,
         > {
             self.streams.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Err("stream lookup failed".into()) })
@@ -1425,9 +1407,10 @@ mod tests {
     impl MediaLookup for ScriptLookup {
         fn search(
             &self,
-            _query: &str,
+            _query: &TrackQuery,
+            _min_score: f32,
         ) -> super::super::provider::LookupFuture<
-            Result<(Vec<super::super::matching::Candidate>, bool), String>,
+            Result<Vec<super::super::matching::Candidate>, String>,
         > {
             self.searches.fetch_add(1, Ordering::SeqCst);
             let rx = self.hold.lock().unwrap_or_else(|p| p.into_inner()).take();
@@ -1435,15 +1418,12 @@ mod tests {
                 if let Some(rx) = rx {
                     let _ = rx.await;
                 }
-                Ok((
-                    vec![super::super::matching::Candidate {
-                        id: "dQw4w9WgXcQ".into(),
-                        title: "Song".into(),
-                        uploader: "Artist - Topic".into(),
-                        duration_ms: Some(1_000),
-                    }],
-                    true,
-                ))
+                Ok(vec![super::super::matching::Candidate {
+                    id: "dQw4w9WgXcQ".into(),
+                    title: "Song".into(),
+                    uploader: "Artist - Topic".into(),
+                    duration_ms: Some(1_000),
+                }])
             })
         }
 
@@ -1451,11 +1431,11 @@ mod tests {
             &self,
             _id: &str,
         ) -> super::super::provider::LookupFuture<
-            Result<(Vec<super::super::streams::AudioStream>, bool), String>,
+            Result<super::super::provider::StreamLookup, String>,
         > {
             Box::pin(async {
-                Ok((
-                    vec![super::super::streams::AudioStream {
+                Ok(super::super::provider::StreamLookup {
+                    streams: vec![super::super::streams::AudioStream {
                         url: "https://example.invalid/a.wav".into(),
                         mime: Some("audio/wav".into()),
                         codec: Some("pcm".into()),
@@ -1465,8 +1445,8 @@ mod tests {
                         quality: None,
                         http_headers: Vec::new(),
                     }],
-                    true,
-                ))
+                    provider: super::super::provider::ProviderKind::YtDlpYoutube,
+                })
             })
         }
 

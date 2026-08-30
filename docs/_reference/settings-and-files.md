@@ -76,8 +76,8 @@ main fields are:
 | `check_for_updates` | `true` | Ask GitHub once a day for a newer release |
 | `web_client_id` | none | Optional personal Spotify app id used alongside shared coverage |
 | `playback_backend` | `spotify` | `spotify` (Connect / librespot) or `alternate` |
-| `piped_api_base` | empty | Piped-compatible API base URL you run or choose |
-| `ytdlp_path` | empty | Optional user yt-dlp; used only if strictly newer than the official pin |
+| `piped_api_base` | empty | Optional Piped-compatible YouTube fallback |
+| `ytdlp_path` | empty | Last-resort user yt-dlp; used only if strictly newer than the official pin |
 | `alternate_min_score` | `0.55` | Minimum match score; weaker hits are never played |
 | `alternate_skip_on_miss` | `true` | Skip forward when no match meets the score. Transient network errors retry; terminal transport and decode failures stop instead of skipping. |
 

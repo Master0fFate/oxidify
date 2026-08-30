@@ -43,11 +43,14 @@ shows how to add one.
   Spotify itself has no words for the track, sending the track's artist,
   title, album, and length, and to api.github.com once a day to learn whether
   a newer release exists, which Settings can turn off. Alternate local audio,
-  selected for Free or unconfirmed accounts and available in Settings, also
-  talks to the Piped endpoint you configured and/or a local yt-dlp process
-  (the official pinned build extracted on this computer, or a strictly newer
-  one you installed). Spotify tokens are never sent there. yt-dlp is never
-  downloaded at runtime.
+  selected for Free or unconfirmed accounts and available in Settings, uses a
+  native YouTube resolver and can also contact the Piped endpoint you chose.
+  These searches run concurrently with short timeouts. A strong result cancels
+  slower work. Bounded memory caches keep search results for six hours and
+  resolved stream URLs for ten minutes. A local yt-dlp process (the official
+  pinned build extracted on this computer, or a strictly newer one you
+  installed) is the last fallback. Spotify tokens are never sent to an
+  alternate provider. yt-dlp is never downloaded at runtime.
 
 ## When Spotify pushes back
 
@@ -87,8 +90,11 @@ connections are needed; no inbound ports have to be open.
 
 The opt-in alternate engine is a separate session. It does not announce a
 Connect device, does not use Spirc, and does not run at the same time as
-librespot. It resolves Spotify track metadata to a third-party match and
-decodes AAC/M4A or MP3 locally. Playback starts when container headers and
+librespot. It resolves Spotify track metadata to a third-party match. Native
+YouTube and optional Piped searches share one async HTTP client; the existing
+match score ranks their candidates together. Native YouTube resolves streams
+first, Piped follows when configured, and yt-dlp is the compatibility fallback.
+The engine decodes AAC/M4A or MP3 locally. Playback starts when container headers and
 the first packets are in (a few frames for MP3; fast-start M4A once `moov`
 is present). Fast-start M4A (`moov` before `mdat`) can start while the rest
 downloads; `moov` at the end waits until the file is complete. Alternate

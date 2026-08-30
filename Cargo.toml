@@ -70,6 +70,9 @@ librespot-protocol = { version = "0.8", default-features = false }
 rodio = { version = "0.21", default-features = false, features = ["playback", "wav", "symphonia-isomp4", "symphonia-aac", "symphonia-mp3"] }
 cpal = "0.16"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "http2", "blocking"] }
+# Native YouTube search and stream extraction removes a Python process from
+# the normal alternate-playback path. Piped and bundled yt-dlp remain fallbacks.
+rusty_ytdl = { version = "0.7.4", default-features = false, features = ["search", "rustls-tls"] }
 # `fs` is used by the playlist cache in `backend.rs` and by the bundled
 # yt-dlp flow in `src/alternate`. `process`/`io-util` drive yt-dlp. On Linux
 # the mpris-server dependency happens to turn `fs` on, which is why leaving

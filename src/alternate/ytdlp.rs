@@ -51,7 +51,11 @@ impl YtDlp {
 
     pub async fn streams(&self, video_id: &str) -> Result<Vec<AudioStream>> {
         let id = sanitize_video_id(video_id).ok_or_else(|| anyhow!("invalid video id"))?;
-        let watch = format!("https://www.youtube.com/watch?v={id}");
+        self.streams_for_url(&format!("https://www.youtube.com/watch?v={id}"))
+            .await
+    }
+
+    async fn streams_for_url(&self, url: &str) -> Result<Vec<AudioStream>> {
         let stdout = run(
             &self.binary,
             &[
@@ -63,7 +67,7 @@ impl YtDlp {
                 "--skip-download",
                 "--dump-json",
                 "--",
-                &watch,
+                url,
             ],
             STREAM_TIMEOUT,
         )

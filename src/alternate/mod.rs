@@ -1,9 +1,9 @@
 //! Opt-in alternate local playback: Spotify metadata, third-party audio.
 //!
-//! This is not Spotify Connect and it does not play Spotify audio. A user
-//! who turns it on supplies a Piped-compatible API endpoint and/or yt-dlp
-//! (an official pinned build extracted locally, or a strictly newer binary
-//! they installed). Matches are ranked; low-confidence hits are never played.
+//! This is not Spotify Connect and it does not play Spotify audio. Native
+//! YouTube resolution is the normal path; a user can add a Piped-compatible
+//! fallback, while yt-dlp remains the final compatibility path. Matches are
+//! ranked and low-confidence hits are never played.
 
 mod audio;
 mod buffer;
@@ -13,6 +13,7 @@ mod engine;
 mod fetch;
 mod hydrate;
 mod matching;
+mod native_youtube;
 mod piped;
 mod probe;
 mod provider;
@@ -56,15 +57,7 @@ impl AlternateConfig {
     }
 
     pub fn provider_error(&self) -> Option<String> {
-        let piped_ok = self.piped_api_base.is_some();
-        let ytdlp_ok = ytdlp_binary_available(self.ytdlp_path.as_deref());
-        if piped_ok || ytdlp_ok {
-            None
-        } else {
-            Some(
-                "Alternate playback needs a Piped-compatible API base URL, or a yt-dlp executable on PATH (or a path you set). No public Piped instance is bundled.".into(),
-            )
-        }
+        None
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -74,22 +67,18 @@ impl AlternateConfig {
         if let Some(path) = &self.ytdlp_path {
             validate_ytdlp_path(path)?;
         }
-        match self.provider_error() {
-            Some(message) => Err(message),
-            None => Ok(()),
-        }
+        Ok(())
     }
 
     pub fn source_summary(&self) -> String {
-        match (
-            self.piped_api_base.is_some(),
-            ytdlp_binary_available(self.ytdlp_path.as_deref()),
-        ) {
-            (true, true) => "Piped, yt-dlp fallback".into(),
-            (true, false) => "Piped".into(),
-            (false, true) => "yt-dlp".into(),
-            (false, false) => "not configured".into(),
+        let mut sources = vec!["native YouTube"];
+        if self.piped_api_base.is_some() {
+            sources.push("Piped fallback");
         }
+        if ytdlp_binary_available(self.ytdlp_path.as_deref()) {
+            sources.push("yt-dlp fallback");
+        }
+        sources.join(", ")
     }
 }
 

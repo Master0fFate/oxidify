@@ -74,16 +74,18 @@ Spotify Connect on this computer is the default and needs Premium. Settings
 also has **Alternate local audio**. Oxidify selects it for a Free account,
 or until Spotify confirms Premium; Premium users can select it in Settings.
 The app still uses the Spotify Web API for your library and search, then looks
-up a third-party match (a Piped API you point at, and/or yt-dlp) and plays
-that audio locally.
+up a third-party match. Native YouTube is ready without extra setup. You can
+also add a Piped endpoint in Settings. Those providers search concurrently and
+the existing match score chooses the strongest result. Search and stream
+lookups use bounded memory caches. yt-dlp runs only as the compatibility
+fallback.
 
 That mode is not Spotify Connect, not Spotify audio, and not a way to bypass
-DRM. Oxidify does not ship a Piped instance. It does embed an official
-pinned yt-dlp build in each supported release binary, extracts it into the
-local state directory, and never downloads yt-dlp at runtime. A yt-dlp you
-installed is used only when its version is strictly newer than that pin.
-You are responsible for the Piped endpoint and any yt-dlp you run, and for
-their terms. Podcasts are not supported. A weak match is never played; you
+DRM. Oxidify does not ship a Piped instance. It does embed an official pinned
+yt-dlp build in each supported release binary, extracts it into the local state
+directory, and never downloads yt-dlp at runtime. A yt-dlp you installed is
+used only when its version is strictly newer than that pin. You are responsible
+for provider endpoints, binaries, and terms. Podcasts are not supported. A weak match is never played; you
 can choose to skip to the next track instead. Playback starts after a short
 buffer. An M4A file with metadata at the end may wait until download
 finishes. Network stalls and transient HTTP errors retry and resume from

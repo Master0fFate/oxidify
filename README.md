@@ -153,17 +153,22 @@ For a Free account, or until Spotify confirms Premium, Oxidify selects
 **Alternate local audio** instead of attempting Spotify playback. Premium
 users can also select it under Settings → Playback on this computer. This
 mode still talks to the Spotify Web API for library, search, and metadata,
-then resolves each track against a Piped-compatible API you configure and/or
-`yt-dlp`.
+then searches native YouTube and, if you configured one, a Piped-compatible
+endpoint in parallel. All results use the same title, artist, duration, and
+mismatch score; the higher-scoring source wins. A match at 90% or above ends
+the race early and cancels slower providers.
 
-Oxidify does not bundle Piped and does not ship a public Piped instance.
-Release builds embed one official pinned `yt-dlp` executable for that
-target, extract it into the local state directory, and never download it at
-runtime. A user-installed `yt-dlp` is used only when its version is strictly
-newer than the pin. Spotify tokens are never sent to those tools, and the
-result is not Spotify audio. You are responsible for the endpoint and any
-binary you run, and for their terms of use. Nothing here is approved or
-authorized by Spotify or by YouTube, and Oxidify makes no claim that it is.
+Native asynchronous Rust HTTP is the normal YouTube path. Search results are
+cached for six hours and resolved media URLs for ten minutes, both in bounded
+in-memory caches. Piped is a compatibility fallback. `yt-dlp` runs only after
+native extraction fails or cannot produce a confident match. Release builds
+embed one official pinned `yt-dlp` executable, extract it into the local state
+directory, and never download it at runtime. A user-installed `yt-dlp` is used
+only when its version is strictly newer than the pin. Spotify tokens are never
+sent to those tools, and the result is not Spotify audio. You are responsible
+for the endpoint and any binary you run, and for their terms of use. Nothing
+here is approved or authorized by Spotify or by YouTube, and Oxidify makes no
+claim that it is.
 Podcasts are not supported in that mode. Weak matches are never played.
 Playback starts when audio headers are in, not after a fixed time buffer.
 An M4A file with its `moov` atom at the end may wait until the download
@@ -278,9 +283,10 @@ any time without signing you out.
 
 ## How it is built
 
-- `src/alternate/`: opt-in third-party match playback (Piped / yt-dlp), ranking,
-  and a local engine that is not Spirc. Audio downloads into a bounded buffer
-  and starts before the file finishes. Official yt-dlp is pinned per target.
+- `src/alternate/`: opt-in third-party match playback (native YouTube, optional
+  Piped, and yt-dlp fallback), ranking, bounded lookup caches, and a local
+  engine that is not Spirc. Audio downloads into a bounded buffer and starts
+  before the file finishes. Official yt-dlp is pinned per target.
 - `src/player.rs`: the librespot session, player, mixer, and Spirc (Spotify
   Connect) wrapped into one engine that folds player events into a state
   snapshot for the interface.

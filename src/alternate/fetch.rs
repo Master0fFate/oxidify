@@ -467,8 +467,8 @@ async fn refresh_stream(
 ) -> Result<(String, Vec<(String, String)>), FetchErr> {
     let lookup = lookup.ok_or_else(|| permanent("Matched audio host refused the request."))?;
     let id = video_id.ok_or_else(|| permanent("Matched audio host refused the request."))?;
-    let (streams, _) = lookup.streams(id).await.map_err(transient)?;
-    let stream = select_compatible(&streams, hint).ok_or_else(|| {
+    let resolved = lookup.refresh_streams(id).await.map_err(transient)?;
+    let stream = select_compatible(&resolved.streams, hint).ok_or_else(|| {
         permanent("No playable audio stream (need AAC/M4A or MP3; Opus/WebM is not decoded).")
     })?;
     Ok((stream.url.clone(), stream.http_headers.clone()))
@@ -1940,22 +1940,28 @@ mod tests {
     impl MediaLookup for UrlLookup {
         fn search(
             &self,
-            _query: &str,
-        ) -> crate::alternate::provider::LookupFuture<Result<(Vec<Candidate>, bool), String>>
-        {
+            _query: &crate::alternate::TrackQuery,
+            _min_score: f32,
+        ) -> crate::alternate::provider::LookupFuture<Result<Vec<Candidate>, String>> {
             Box::pin(async { Err("search should not run on URL refresh".into()) })
         }
 
         fn streams(
             &self,
             _id: &str,
-        ) -> crate::alternate::provider::LookupFuture<Result<(Vec<AudioStream>, bool), String>>
-        {
+        ) -> crate::alternate::provider::LookupFuture<
+            Result<crate::alternate::provider::StreamLookup, String>,
+        > {
             self.hits.fetch_add(1, Ordering::SeqCst);
             let url = self.url.clone();
             let format = self.format;
             let mime = self.mime;
-            Box::pin(async move { Ok((vec![playable_stream(&url, format, mime)], true)) })
+            Box::pin(async move {
+                Ok(crate::alternate::provider::StreamLookup {
+                    streams: vec![playable_stream(&url, format, mime)],
+                    provider: crate::alternate::provider::ProviderKind::Piped,
+                })
+            })
         }
     }
 

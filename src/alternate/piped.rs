@@ -3,12 +3,9 @@
 use anyhow::{Context, Result, anyhow};
 use reqwest::Url;
 use serde::Deserialize;
-use std::time::Duration;
 
 use super::matching::Candidate;
 use super::streams::AudioStream;
-
-const SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Clone, Debug)]
 pub struct PipedClient {
@@ -17,18 +14,11 @@ pub struct PipedClient {
 }
 
 impl PipedClient {
-    pub fn new(base: &str) -> Result<Self> {
+    pub fn new(base: &str, http: reqwest::Client) -> Result<Self> {
         let base = Url::parse(base).context("Piped API base URL is not valid")?;
         if base.scheme() != "http" && base.scheme() != "https" {
             anyhow::bail!("Piped API base URL must use http or https");
         }
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("oxidify/", env!("CARGO_PKG_VERSION")))
-            .timeout(SEARCH_TIMEOUT)
-            .connect_timeout(Duration::from_secs(8))
-            .redirect(reqwest::redirect::Policy::limited(4))
-            .build()
-            .context("unable to build the Piped HTTP client")?;
         Ok(Self { http, base })
     }
 

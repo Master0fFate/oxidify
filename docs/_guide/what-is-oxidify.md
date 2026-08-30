@@ -25,11 +25,11 @@ uses a layout similar to Spotify's desktop client.
   Gapless, up to 320 kbps, with optional volume normalisation and an on-disk
   audio cache.
 - **Plays without Premium.** Free and unconfirmed accounts are routed to
-  alternate local playback: Oxidify matches each track against a
-  Piped-compatible instance you choose and plays that third-party audio
-  locally. Those matches are not Spotify audio; the interface labels them as
-  coming from their real source, and you are responsible for using this
-  lawfully under the terms of your account and of the providers you
+  alternate local playback. Oxidify races native YouTube and optional Piped
+  search, then applies one match score across all results. yt-dlp is the final
+  compatibility fallback, not the normal path. Those matches are not Spotify
+  audio; the interface labels their actual route, and you are responsible for
+  using this lawfully under the terms of your account and of the providers you
   configure.
 - **Controls other devices.** Move playback to a speaker, a phone, or
   another computer from the device picker, and keep controlling it: play,

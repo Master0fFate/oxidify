@@ -249,13 +249,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             (crate::backend::LocalPlayback::Unavailable, PlaybackBackend::Alternate)
             | (crate::backend::LocalPlayback::Ready { .. }, PlaybackBackend::Alternate) => (
                 "Not applied",
-                if crate::alternate::has_bundled_ytdlp() {
-                    "Apply playback settings to start alternate local audio. Uses the official pinned yt-dlp extracted locally, or a Piped API URL."
-                        .to_string()
-                } else {
-                    "Apply playback settings to start alternate local audio. Needs a Piped API URL or yt-dlp."
-                        .to_string()
-                },
+                "Apply playback settings to start native alternate audio. Piped and yt-dlp are optional fallbacks."
+                    .to_string(),
                 None,
             ),
             (crate::backend::LocalPlayback::Unavailable, _) => (
@@ -319,7 +314,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 &palette,
                 "Piped API base URL",
                 piped_error.as_deref().unwrap_or(
-                    "Your Piped-compatible instance, for example https://piped.example. No public instance is bundled. Do not put secrets in this URL.",
+                    "Optional YouTube fallback. Use a Piped-compatible instance you trust. Do not put secrets in this URL.",
                 ),
                 |ui| {
                     let response = Frame::new()
@@ -351,9 +346,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 "yt-dlp path",
                 ytdlp_error.as_deref().unwrap_or(
                     if crate::alternate::has_bundled_ytdlp() {
-                        "Optional. Oxidify extracts an official pinned yt-dlp locally and never downloads it at runtime. A strictly newer installed yt-dlp (this path or PATH) wins. Spotify tokens are never sent to it."
+                        "Last-resort fallback. Oxidify extracts an official pinned yt-dlp locally and never downloads it at runtime. A strictly newer installed yt-dlp (this path or PATH) wins. Spotify tokens are never sent to it."
                     } else {
-                        "Optional. Blank uses yt-dlp on PATH. This build has no bundled yt-dlp. Oxidify never downloads yt-dlp at runtime and never sends Spotify tokens to it."
+                        "Last-resort fallback. Blank uses yt-dlp on PATH. This build has no bundled yt-dlp. Oxidify never downloads yt-dlp at runtime and never sends Spotify tokens to it."
                     },
                 ),
                 |ui| {
@@ -423,9 +418,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 ui,
                 &palette,
                 if crate::alternate::has_bundled_ytdlp() {
-                    "You are responsible for the Piped instance and any yt-dlp you run, and for following their terms. The bundled yt-dlp is the official pinned build, extracted into this computer's state directory, never downloaded at runtime. Matches are not Spotify audio. Podcasts are not supported. Playback starts after buffering; an M4A file with moov at the end may wait. Network and decode failures stop rather than skip. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
+                    "Native YouTube and optional Piped searches use one shared HTTP client. yt-dlp runs only after native providers fail. You are responsible for provider endpoints and terms. The bundled yt-dlp is extracted locally and never downloaded at runtime. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
                 } else {
-                    "You are responsible for the Piped instance and yt-dlp you run, and for following their terms. Matches are not Spotify audio. Podcasts are not supported. Playback starts after buffering; an M4A file with moov at the end may wait. Network and decode failures stop rather than skip. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
+                    "Native YouTube and optional Piped searches use one shared HTTP client. yt-dlp runs only after native providers fail. You are responsible for provider endpoints and terms. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
                 },
             );
             ui.add_space(8.0);
