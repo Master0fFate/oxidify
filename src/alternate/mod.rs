@@ -38,6 +38,7 @@ pub struct AlternateConfig {
     pub ytdlp_path: Option<String>,
     pub min_score: f32,
     pub skip_on_miss: bool,
+    pub gapless: bool,
     pub volume: u16,
 }
 
@@ -52,6 +53,7 @@ impl AlternateConfig {
                 DEFAULT_MIN_SCORE
             },
             skip_on_miss: settings.alternate_skip_on_miss,
+            gapless: settings.gapless,
             volume: settings.volume,
         }
     }

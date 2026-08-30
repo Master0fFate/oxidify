@@ -85,6 +85,14 @@ struct CachedMatch {
     video_id: String,
 }
 
+struct Prefetched {
+    uri: String,
+    buffer: SharedAudio,
+    hint: FormatHint,
+    label: String,
+    video_id: String,
+}
+
 pub struct AlternateHandle {
     tx: mpsc::UnboundedSender<Internal>,
     cancel: watch::Sender<bool>,
@@ -177,6 +185,9 @@ struct Engine {
     active_buffer: Option<SharedAudio>,
     active_hint: Option<FormatHint>,
     pending: Option<PendingPlay>,
+    overlap_uri: Option<String>,
+    prefetch: Option<Prefetched>,
+    outgoing: Option<SharedAudio>,
     miss_skips: u32,
     seeded_play: bool,
     device_retry_at: Option<Instant>,
@@ -212,6 +223,9 @@ async fn run(
         active_buffer: None,
         active_hint: None,
         pending: None,
+        overlap_uri: None,
+        prefetch: None,
+        outgoing: None,
         miss_skips: 0,
         seeded_play: false,
         device_retry_at: None,
@@ -274,6 +288,13 @@ impl Engine {
         self.seeded_play = false;
         self.abort_jobs();
         self.active_hint = None;
+        self.overlap_uri = None;
+        if let Some(prefetch) = self.prefetch.take() {
+            prefetch.buffer.cancel();
+        }
+        if let Some(outgoing) = self.outgoing.take() {
+            outgoing.cancel();
+        }
         self.device_retry_at = None;
         self.device_backoff = DEVICE_BACKOFF_INITIAL;
         if let Some(buffer) = self.active_buffer.take() {
@@ -284,6 +305,12 @@ impl Engine {
         {
             decode.stop();
         }
+        self.play_generation = self.play_generation.wrapping_add(1);
+        self.play_generation
+    }
+
+    fn bump_jobs(&mut self) -> u64 {
+        self.abort_jobs();
         self.play_generation = self.play_generation.wrapping_add(1);
         self.play_generation
     }
@@ -306,15 +333,15 @@ impl Engine {
                 }
                 other => self.follow(other),
             },
-            PlayerCommand::Next => {
-                self.bump();
-                let advance = self.session.skip_forward();
-                self.follow(advance);
-            }
+            PlayerCommand::Next => self.skip_keep_audio(true),
             PlayerCommand::Previous => {
-                self.bump();
-                let advance = self.session.previous();
-                self.follow(advance);
+                if self.session.position_now() > 3_000 {
+                    self.session.seek(0);
+                    let _ = self.output.seek(0);
+                    self.emit();
+                    return;
+                }
+                self.skip_keep_audio(false);
             }
             PlayerCommand::Seek(position_ms) => {
                 self.session.seek(position_ms);
@@ -372,7 +399,18 @@ impl Engine {
                 self.output.stop();
                 self.emit();
             }
-            Advance::PlayCurrent => self.start_resolve(),
+            Advance::PlayCurrent => {
+                if let Some(prefetch) = self.prefetch.take() {
+                    if self.session.current().map(|track| track.uri.as_str())
+                        == Some(prefetch.uri.as_str())
+                    {
+                        self.play_ready(prefetch);
+                        return;
+                    }
+                    prefetch.buffer.cancel();
+                }
+                self.start_resolve();
+            }
             Advance::CancelLoad => {
                 self.bump();
                 self.output.stop();
@@ -415,6 +453,42 @@ impl Engine {
         }));
     }
 
+    fn skip_keep_audio(&mut self, forward: bool) {
+        let next = if forward {
+            self.session.peek_next().cloned()
+        } else {
+            self.session.peek_previous().cloned()
+        };
+        let Some(track) = next else {
+            self.bump();
+            let advance = if forward {
+                self.session.skip_forward()
+            } else {
+                self.session.previous()
+            };
+            self.follow(advance);
+            return;
+        };
+        if let Some(prefetch) = self.prefetch.take()
+            && prefetch.uri == track.uri
+        {
+            self.bump_jobs();
+            if forward {
+                self.session.skip_forward();
+            } else {
+                self.session.previous();
+            }
+            self.play_ready(prefetch);
+            return;
+        }
+        if let Some(prefetch) = self.prefetch.take() {
+            prefetch.buffer.cancel();
+        }
+        self.bump_jobs();
+        self.overlap_uri = Some(track.uri.clone());
+        self.start_resolve_track(track, false);
+    }
+
     fn start_resolve(&mut self) {
         let Some(track) = self.session.current().cloned() else {
             self.session.stop();
@@ -422,13 +496,19 @@ impl Engine {
             self.emit();
             return;
         };
+        self.start_resolve_track(track, true);
+    }
+
+    fn start_resolve_track(&mut self, track: LocalTrack, loading: bool) {
         if track.is_episode {
             self.fail_or_skip("Podcasts are not supported in alternate playback.".into());
             return;
         }
         let token = self.play_generation;
-        self.session.set_loading();
-        self.emit();
+        if loading {
+            self.session.set_loading();
+            self.emit();
+        }
         let lookup = Arc::clone(&self.lookup);
         let http = self.media_http.clone();
         let config = self.config.clone();
@@ -513,7 +593,7 @@ impl Engine {
                 label,
                 video_id,
             } => {
-                if !self.job_current(token, &uri) {
+                if !self.job_accepts(token, &uri) {
                     return;
                 }
                 self.cache_match(uri, video_id);
@@ -528,7 +608,13 @@ impl Engine {
                 }
             }
             Job::MatchFailed { token, uri, error } => {
-                if !self.job_current(token, &uri) {
+                if !self.job_accepts(token, &uri) {
+                    return;
+                }
+                if self.overlap_uri.as_deref() == Some(uri.as_str()) {
+                    self.overlap_uri = None;
+                    self.session.set_error(error);
+                    self.emit();
                     return;
                 }
                 self.fail_or_skip(error);
@@ -541,29 +627,47 @@ impl Engine {
                 video_id,
                 hint,
             } => {
-                if !self.job_current(token, &uri) {
+                if !self.job_accepts(token, &uri) {
                     buffer.cancel();
                     return;
                 }
-                self.cache_match(uri, video_id);
-                self.active_buffer = Some(buffer.clone());
-                self.active_hint = Some(hint.clone());
-                let start_ms = self.session.position_now();
-                match spawn_decoder(buffer, hint, start_ms) {
-                    Ok((pcm, decode)) => {
-                        self.pending = Some(PendingPlay {
-                            pcm: Some(pcm),
-                            decode: Some(decode),
-                            label,
-                            start_ms,
-                        });
-                        self.try_start_pending();
-                    }
-                    Err(error) => self.fail_transport(format!("Couldn't decode audio: {error}")),
+                let overlapping = self.overlap_uri.as_deref() == Some(uri.as_str());
+                let prefetching = !overlapping
+                    && self.session.current().map(|track| track.uri.as_str()) != Some(uri.as_str())
+                    && self.config.gapless
+                    && self.session.peek_next().map(|track| track.uri.as_str())
+                        == Some(uri.as_str());
+                if prefetching {
+                    self.cache_match(uri.clone(), video_id.clone());
+                    self.prefetch = Some(Prefetched {
+                        uri,
+                        buffer,
+                        hint,
+                        label,
+                        video_id,
+                    });
+                    return;
                 }
+                if overlapping {
+                    let _ = self.session.select_uri(&uri);
+                    self.overlap_uri = None;
+                }
+                self.play_ready(Prefetched {
+                    uri,
+                    buffer,
+                    hint,
+                    label,
+                    video_id,
+                });
             }
             Job::TransportFailed { token, uri, error } => {
-                if !self.job_current(token, &uri) {
+                if !self.job_accepts(token, &uri) {
+                    return;
+                }
+                if self.overlap_uri.as_deref() == Some(uri.as_str()) {
+                    self.overlap_uri = None;
+                    self.session.set_error(error);
+                    self.emit();
                     return;
                 }
                 self.fail_transport(error);
@@ -571,9 +675,54 @@ impl Engine {
         }
     }
 
-    fn job_current(&self, token: u64, uri: &str) -> bool {
-        token == self.play_generation
-            && self.session.current().map(|track| track.uri.as_str()) == Some(uri)
+    fn job_accepts(&self, token: u64, uri: &str) -> bool {
+        if token != self.play_generation {
+            return false;
+        }
+        if self.session.current().map(|track| track.uri.as_str()) == Some(uri) {
+            return true;
+        }
+        if self.overlap_uri.as_deref() == Some(uri) {
+            return true;
+        }
+        self.config.gapless && self.session.peek_next().map(|track| track.uri.as_str()) == Some(uri)
+    }
+
+    fn play_ready(&mut self, ready: Prefetched) {
+        self.cache_match(ready.uri, ready.video_id);
+        self.outgoing = self.active_buffer.replace(ready.buffer.clone());
+        self.active_hint = Some(ready.hint.clone());
+        let start_ms = self.session.position_now();
+        match spawn_decoder(ready.buffer, ready.hint, start_ms) {
+            Ok((pcm, decode)) => {
+                self.pending = Some(PendingPlay {
+                    pcm: Some(pcm),
+                    decode: Some(decode),
+                    label: ready.label,
+                    start_ms,
+                });
+                self.try_start_pending();
+            }
+            Err(error) => {
+                if let Some(previous) = self.outgoing.take() {
+                    self.active_buffer = Some(previous);
+                }
+                self.fail_transport(format!("Couldn't decode audio: {error}"));
+            }
+        }
+    }
+
+    fn maybe_prefetch_next(&mut self) {
+        if !self.config.gapless || self.overlap_uri.is_some() || self.prefetch.is_some() {
+            return;
+        }
+        let Some(next) = self.session.peek_next().cloned() else {
+            return;
+        };
+        if self.session.current().map(|track| track.uri.as_str()) == Some(next.uri.as_str()) {
+            return;
+        }
+        self.start_resolve_track(next, false);
     }
 
     fn cache_match(&mut self, uri: String, video_id: String) {
@@ -617,8 +766,12 @@ impl Engine {
         match self.output.play_pcm(pcm, decode) {
             Ok(_) => {
                 self.miss_skips = 0;
+                if let Some(previous) = self.outgoing.take() {
+                    previous.cancel();
+                }
                 self.session.set_playing(Some(pending.label));
                 self.emit();
+                self.maybe_prefetch_next();
             }
             Err(error) => self.fail_transport(format!("Couldn't start audio: {error}")),
         }
@@ -1096,6 +1249,7 @@ mod tests {
             ytdlp_path: None,
             min_score: 0.1,
             skip_on_miss: false,
+            gapless: false,
             volume: 1000,
         }
     }

@@ -330,6 +330,46 @@ impl Session {
         self.tracks.get(index)
     }
 
+    pub fn peek_next(&self) -> Option<&LocalTrack> {
+        if self.tracks.is_empty() || self.order.is_empty() {
+            return None;
+        }
+        let next = self.index_in_order + 1;
+        if next < self.order.len() {
+            self.tracks.get(self.order[next])
+        } else if self.repeat == RepeatMode::Context {
+            self.tracks.get(self.order[0])
+        } else {
+            None
+        }
+    }
+
+    pub fn select_uri(&mut self, uri: &str) -> bool {
+        let Some(index) = self.order.iter().position(|&track_index| {
+            self.tracks
+                .get(track_index)
+                .is_some_and(|track| track.uri == uri)
+        }) else {
+            return false;
+        };
+        self.index_in_order = index;
+        self.begin_current();
+        true
+    }
+
+    pub fn peek_previous(&self) -> Option<&LocalTrack> {
+        if self.tracks.is_empty() || self.order.is_empty() {
+            return None;
+        }
+        if self.index_in_order > 0 {
+            self.tracks.get(self.order[self.index_in_order - 1])
+        } else if self.repeat == RepeatMode::Context {
+            self.tracks.get(*self.order.last()?)
+        } else {
+            None
+        }
+    }
+
     pub fn current_index(&self) -> Option<usize> {
         self.order.get(self.index_in_order).copied()
     }
@@ -499,6 +539,17 @@ mod tests {
         let mut session = session_with(&["a", "b"], 1);
         assert_eq!(session.skip_forward(), Advance::Stop);
         assert_eq!(session.playback(), Playback::Stopped);
+    }
+
+    #[test]
+    fn peek_next_does_not_move_current() {
+        let mut session = session_with(&["a", "b", "c"], 0);
+        session.set_repeat(RepeatMode::Off);
+        assert_eq!(session.peek_next().unwrap().title, "b");
+        assert_eq!(session.current().unwrap().title, "a");
+        session.set_repeat(RepeatMode::Context);
+        session.index_in_order = 2;
+        assert_eq!(session.peek_next().unwrap().title, "a");
     }
 
     #[test]

@@ -402,6 +402,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             widgets::setting_row(
                 ui,
                 &palette,
+                "Gapless playback",
+                "Prepare the next track while this one plays, then switch as soon as it is ready. Spotify Connect uses a tighter native gapless path.",
+                |ui| {
+                    if widgets::switch(ui, &palette, &mut app.settings.gapless).changed() {
+                        changed = true;
+                        playback_dirty = true;
+                    }
+                },
+            );
+            widgets::setting_row(
+                ui,
+                &palette,
                 "Skip on miss",
                 "If no match meets the score, skip to the next track. Network and decode failures stop; they do not skip.",
                 |ui| {
