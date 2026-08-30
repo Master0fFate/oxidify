@@ -5,7 +5,9 @@ use egui::{Align, CornerRadius, Layout, Sense, Vec2, pos2, vec2};
 
 use crate::api::models::pick_image;
 use crate::app::App;
+use crate::backend::LocalPlayback;
 use crate::model::{Action, Page};
+use crate::settings::PlaybackBackend;
 use crate::theme::{self, Icon, Palette};
 
 pub(crate) const AVATAR_SIZE: f32 = 36.0;
@@ -210,12 +212,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             .as_ref()
                             .and_then(|user| user.product.clone())
                             .map(|product| capitalize(&product));
-                        let source = app.now_playing().and_then(|now| {
-                            now.local
-                                .then_some(now.source_label.as_deref())
-                                .flatten()
-                                .map(alternate_source_brief)
-                        });
+                        let source = profile_source_brief(app);
                         if product.is_some() || source.is_some() {
                             ui.horizontal(|ui| {
                                 ui.add_space(10.0);
@@ -393,6 +390,20 @@ fn source_chip(
     {
         actions.push(Action::ToggleDevicesPopup);
     }
+}
+
+fn profile_source_brief(app: &App) -> Option<String> {
+    if let Some(now) = app.now_playing() {
+        if !now.local {
+            return None;
+        }
+        if let Some(label) = now.source_label.as_deref() {
+            return Some(alternate_source_brief(label));
+        }
+    }
+    let alternate = app.settings.playback_backend == PlaybackBackend::Alternate
+        || matches!(app.local_playback, LocalPlayback::AlternateReady { .. });
+    alternate.then_some("yt-dlp".to_string())
 }
 
 fn alternate_source_brief(label: &str) -> String {
