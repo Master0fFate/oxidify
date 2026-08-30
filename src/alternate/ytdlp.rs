@@ -72,8 +72,6 @@ impl YtDlp {
                 "--cache-dir",
                 &cache,
                 "--no-check-formats",
-                "--extractor-args",
-                "youtube:player_client=android,ios",
                 "--no-playlist",
                 "--skip-download",
                 "--format",
@@ -104,7 +102,7 @@ async fn run(binary: &Path, args: &[&str], timeout: Duration) -> Result<String> 
     command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .stdin(Stdio::null());
     #[cfg(windows)]
@@ -117,20 +115,44 @@ async fn run(binary: &Path, args: &[&str], timeout: Duration) -> Result<String> 
         .stdout
         .take()
         .ok_or_else(|| anyhow!("yt-dlp stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("yt-dlp stderr"))?;
     let mut reader = BufReader::new(stdout);
+    let mut err_reader = BufReader::new(stderr);
     let mut buf = Vec::new();
+    let mut err_buf = Vec::new();
     let read = async {
-        let mut chunk = [0u8; 8192];
-        loop {
-            let n = reader.read(&mut chunk).await?;
-            if n == 0 {
-                break;
+        let stdout = async {
+            let mut chunk = [0u8; 8192];
+            loop {
+                let n = reader.read(&mut chunk).await?;
+                if n == 0 {
+                    break;
+                }
+                if buf.len() + n > MAX_STDOUT {
+                    anyhow::bail!("yt-dlp output was too large");
+                }
+                buf.extend_from_slice(&chunk[..n]);
             }
-            if buf.len() + n > MAX_STDOUT {
-                anyhow::bail!("yt-dlp output was too large");
+            Ok::<_, anyhow::Error>(())
+        };
+        let stderr = async {
+            let mut chunk = [0u8; 1024];
+            loop {
+                let n = err_reader.read(&mut chunk).await?;
+                if n == 0 {
+                    break;
+                }
+                if err_buf.len() < 4096 {
+                    let take = n.min(4096 - err_buf.len());
+                    err_buf.extend_from_slice(&chunk[..take]);
+                }
             }
-            buf.extend_from_slice(&chunk[..n]);
-        }
+            Ok::<_, anyhow::Error>(())
+        };
+        tokio::try_join!(stdout, stderr)?;
         Ok::<_, anyhow::Error>(())
     };
     tokio::select! {
@@ -142,7 +164,13 @@ async fn run(binary: &Path, args: &[&str], timeout: Duration) -> Result<String> 
     }
     let status = child.wait().await.context("yt-dlp exit")?;
     if !status.success() {
-        anyhow::bail!("yt-dlp exited with {status}");
+        let err = String::from_utf8_lossy(&err_buf);
+        let detail = err
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("no error text");
+        anyhow::bail!("yt-dlp failed: {detail}");
     }
     String::from_utf8(buf).context("yt-dlp output was not UTF-8")
 }
