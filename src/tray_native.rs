@@ -118,7 +118,7 @@ mod host {
     use super::*;
     use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, GetMessageW, MSG, PostThreadMessageW, TranslateMessage, WM_APP,
+        DispatchMessageW, GetMessageW, MSG, PostThreadMessageW, TranslateMessage, WM_APP, WM_QUIT,
     };
 
     /// Runs the item on its own thread. Answers with the thread's id once
@@ -127,7 +127,7 @@ mod host {
         sender: Sender<TrayCommand>,
         wake: Wake,
         playing: Receiver<bool>,
-    ) -> Result<u32, String> {
+    ) -> Result<(u32, std::thread::JoinHandle<()>), String> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("oxidify-tray".to_owned())
@@ -153,19 +153,25 @@ mod host {
                         DispatchMessageW(&message);
                     }
                 }
-            });
-        if let Err(error) = spawned {
-            return Err(error.to_string());
-        }
-        ready_rx
+            })
+            .map_err(|error| error.to_string())?;
+        let thread_id = ready_rx
             .recv_timeout(Duration::from_secs(5))
-            .map_err(|_| "the tray thread did not answer".to_string())?
+            .map_err(|_| "the tray thread did not answer".to_string())??;
+        Ok((thread_id, spawned))
     }
 
     /// Wakes the thread's message loop to read what was sent to it.
     pub fn poke(thread_id: u32) {
         unsafe {
             PostThreadMessageW(thread_id, WM_APP, 0, 0);
+        }
+    }
+
+    /// Ends the message loop so its tray icon and thread can be released.
+    pub fn stop(thread_id: u32) {
+        unsafe {
+            PostThreadMessageW(thread_id, WM_QUIT, 0, 0);
         }
     }
 }
@@ -176,6 +182,19 @@ pub struct TrayService {
     playing: bool,
     playing_tx: Sender<bool>,
     thread_id: u32,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl Drop for TrayService {
+    fn drop(&mut self) {
+        // The tray owns a Windows message-loop thread. Dropping its handle
+        // alone detaches it, keeping oxidify.exe alive after a real quit.
+        host::stop(self.thread_id);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -185,11 +204,12 @@ impl TrayService {
         let (sender, commands) = std::sync::mpsc::channel();
         let (playing_tx, playing_rx) = std::sync::mpsc::channel();
         match host::start(sender, Arc::new(wake), playing_rx) {
-            Ok(thread_id) => Some(Self {
+            Ok((thread_id, thread)) => Some(Self {
                 commands,
                 playing: false,
                 playing_tx,
                 thread_id,
+                thread: Some(thread),
             }),
             Err(error) => {
                 log::info!("no system tray available: {error}");

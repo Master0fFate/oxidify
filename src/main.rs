@@ -117,6 +117,8 @@ enum Control {
     },
     /// Bring the window of the running instance forward
     Show,
+    /// Quit the running instance
+    Quit,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -178,6 +180,7 @@ fn run_control(control: Control) -> i32 {
         Control::Transfer { device_id } => format!("transfer {device_id}"),
         Control::NowPlaying { .. } => "nowplaying".to_owned(),
         Control::Show => "show".to_owned(),
+        Control::Quit => "quit".to_owned(),
     };
     match single_instance::send(&verb) {
         Ok(single_instance::Reply::Ok) => 0,

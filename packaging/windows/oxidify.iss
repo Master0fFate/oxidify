@@ -54,7 +54,10 @@ SetupIconFile=oxidify.ico
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-CloseApplications=yes
+; First ask recent releases to run their orderly shutdown. `force` remains
+; necessary for older releases, which interpret the close request as
+; close-to-tray and therefore keep the executable locked.
+CloseApplications=force
 RestartApplications=no
 UninstallDisplayIcon={app}\{#AppExeName}
 VersionInfoVersion={#Version}.0
@@ -71,6 +74,19 @@ Source: "..\..\NOTICE"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  { New releases acknowledge `quit` and finish their own audio teardown.
+    Older releases reject it; CloseApplications=force below is the fallback. }
+  if FileExists(ExpandConstant('{app}\{#AppExeName}')) then
+    Exec(ExpandConstant('{app}\{#AppExeName}'), 'quit', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode);
+  Result := '';
+end;
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent

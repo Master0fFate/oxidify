@@ -158,7 +158,7 @@ mod host {
     use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, MSG, PostThreadMessageW,
-        RegisterClassW, TranslateMessage, WM_APP, WNDCLASSW, WS_OVERLAPPED,
+        RegisterClassW, TranslateMessage, WM_APP, WM_QUIT, WNDCLASSW, WS_OVERLAPPED,
     };
 
     use super::*;
@@ -216,7 +216,7 @@ mod host {
         sender: Sender<MediaCommand>,
         wake: Wake,
         updates: Receiver<Update>,
-    ) -> Result<u32, String> {
+    ) -> Result<(u32, std::thread::JoinHandle<()>), String> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("oxidify-media".to_owned())
@@ -253,19 +253,25 @@ mod host {
                         DispatchMessageW(&message);
                     }
                 }
-            });
-        if let Err(error) = spawned {
-            return Err(error.to_string());
-        }
-        ready_rx
+            })
+            .map_err(|error| error.to_string())?;
+        let thread_id = ready_rx
             .recv_timeout(Duration::from_secs(5))
-            .map_err(|_| "the media controls thread did not answer".to_string())?
+            .map_err(|_| "the media controls thread did not answer".to_string())??;
+        Ok((thread_id, spawned))
     }
 
     /// Wakes the thread's message loop to read what was sent to it.
     pub fn poke(thread_id: u32) {
         unsafe {
             PostThreadMessageW(thread_id, WM_APP, 0, 0);
+        }
+    }
+
+    /// Ends the message loop so the hidden media-control window is released.
+    pub fn stop(thread_id: u32) {
+        unsafe {
+            PostThreadMessageW(thread_id, WM_QUIT, 0, 0);
         }
     }
 }
@@ -275,7 +281,17 @@ pub struct MediaService {
     commands: Receiver<MediaCommand>,
     /// Where updates go, and the thread to wake for them; `None` when the
     /// controls could not be made.
-    updates: Option<(Sender<Update>, u32)>,
+    updates: Option<(Sender<Update>, u32, std::thread::JoinHandle<()>)>,
+}
+
+#[cfg(windows)]
+impl Drop for MediaService {
+    fn drop(&mut self) {
+        if let Some((_, thread_id, thread)) = self.updates.take() {
+            host::stop(thread_id);
+            let _ = thread.join();
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -284,7 +300,7 @@ impl MediaService {
         let (sender, commands) = std::sync::mpsc::channel();
         let (update_tx, update_rx) = std::sync::mpsc::channel();
         let updates = match host::start(sender, Arc::new(wake), update_rx) {
-            Ok(thread_id) => Some((update_tx, thread_id)),
+            Ok((thread_id, thread)) => Some((update_tx, thread_id, thread)),
             Err(error) => {
                 log::warn!("no media controls: {error}");
                 None
@@ -306,7 +322,7 @@ impl MediaService {
     }
 
     fn send(&self, update: Update) {
-        if let Some((updates, thread_id)) = &self.updates
+        if let Some((updates, thread_id, _)) = &self.updates
             && updates.send(update).is_ok()
         {
             host::poke(*thread_id);

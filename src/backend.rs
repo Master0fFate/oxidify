@@ -696,6 +696,15 @@ impl Backend {
     }
 }
 
+impl Drop for Backend {
+    fn drop(&mut self) {
+        // `eframe::run_native` can fail before `main` reaches App::shutdown.
+        // Do not detach the worker in that path: it owns the local playback
+        // engine, including alternate audio.
+        self.shutdown();
+    }
+}
+
 struct Worker {
     dirs: AppDirs,
     engine_config: EngineConfig,

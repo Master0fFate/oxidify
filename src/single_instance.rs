@@ -66,6 +66,8 @@ pub enum Outcome {
 pub enum ControlCommand {
     /// Bring the window forward, creating it if the app lives in the tray.
     Show,
+    /// Shut down the running application instead of merely hiding its window.
+    Quit,
     PlayPause,
     Play,
     Pause,
@@ -319,6 +321,7 @@ fn parse(line: &str) -> Option<Request> {
     };
     let command = match (verb, argument) {
         ("show", None) => ControlCommand::Show,
+        ("quit", None) => ControlCommand::Quit,
         ("playpause", None) => ControlCommand::PlayPause,
         ("play", None) => ControlCommand::Play,
         ("pause", None) => ControlCommand::Pause,
@@ -486,6 +489,7 @@ mod tests {
     fn parses_every_control_verb() {
         // #given / #when / #then
         assert_eq!(command("oxidify:show\n"), Some(ControlCommand::Show));
+        assert_eq!(command("oxidify:quit"), Some(ControlCommand::Quit));
         assert_eq!(
             command("oxidify:playpause"),
             Some(ControlCommand::PlayPause)
