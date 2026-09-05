@@ -82,6 +82,10 @@ getting started, everyday use, and how it connects to Spotify.
   and macOS); turn the behaviour off in Settings if you prefer close-to-quit.
   On macOS the Dock icon stays present,
   and clicking it opens the window again.
+- **Update notices.** A small **Update available** button opens the official
+  GitHub release page in your browser, with installers for every supported
+  platform. Checks run once a day, or from Settings → About → Check for
+  updates. Automatic checks can be turned off; nothing installs itself.
 - **Visible network activity.** Pages show spinners while they load. An
   indicator appears in the top bar when a Spotify request takes more than a
   moment or is waiting for a rate limit.

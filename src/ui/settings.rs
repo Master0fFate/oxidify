@@ -889,8 +889,34 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             });
         });
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
+            let check_label = if app.update_checking {
+                "Checking…"
+            } else {
+                "Check for updates"
+            };
+            if ui
+                .add_enabled_ui(!app.update_checking && !app.offline, |ui| {
+                    theme::soft_button(ui, &palette, Some(Icon::Refresh), check_label, false)
+                })
+                .inner
+                .clicked()
+            {
+                app.actions.push(Action::CheckForUpdates);
+            }
+            if let Some(update) = &app.update
+                && theme::soft_button(
+                    ui,
+                    &palette,
+                    Some(Icon::ExternalLink),
+                    "Download update",
+                    false,
+                )
+                .clicked()
+            {
+                app.actions.push(Action::OpenUrl(update.url.clone()));
+            }
             if theme::soft_button(ui, &palette, Some(Icon::Info), "Keyboard shortcuts", false)
                 .clicked()
             {

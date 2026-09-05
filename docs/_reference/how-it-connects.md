@@ -44,7 +44,11 @@ shows how to add one.
   [lrclib.net](https://lrclib.net) while the lyrics panel is open and
   Spotify itself has no words for the track, sending the track's artist,
   title, album, and length, and to api.github.com once a day to learn whether
-  a newer release exists, which Settings can turn off. Alternate local audio,
+  a newer stable Oxidify release exists. Settings can turn off automatic
+  checks or request a check immediately. Checks time out after 15 seconds;
+  manual failures are reported, and daily failures do not interrupt playback.
+  Clicking **Update available** opens that release in the default browser.
+  The app never downloads or installs an update itself. Alternate local audio,
   selected for Free or unconfirmed accounts and available in Settings, uses a
   native YouTube resolver and can also contact the Piped endpoint you chose.
   These searches run concurrently with short timeouts. A strong result cancels

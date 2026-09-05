@@ -295,6 +295,7 @@ pub struct App {
     /// A newer release than this build, once GitHub has said so.
     pub update: Option<crate::updates::Release>,
     last_update_check: Option<Instant>,
+    pub update_checking: bool,
     /// Free-account (or Premium-required) switch to Alternate already applied.
     free_alternate_applied: bool,
     /// Local engine started once after `/me` selected the effective mode.
@@ -477,6 +478,7 @@ impl App {
             resume_position_ms: session.last_position_ms,
             update: None,
             last_update_check: None,
+            update_checking: false,
             free_alternate_applied: false,
             profile_playback_applied: false,
             loading_account_toasted: false,
@@ -913,6 +915,41 @@ impl App {
         None
     }
 
+    fn check_for_updates(&mut self, manual: bool) {
+        if self.update_checking || self.offline {
+            return;
+        }
+        self.update_checking = true;
+        self.last_update_check = Some(Instant::now());
+        self.backend.send(Command::CheckForUpdates { manual });
+    }
+
+    fn finish_update_check(
+        &mut self,
+        manual: bool,
+        result: Result<Option<crate::updates::Release>, String>,
+    ) {
+        self.update_checking = false;
+        match result {
+            Ok(Some(notice)) => {
+                if manual || self.update.as_ref() != Some(&notice) {
+                    self.toast(format!("Oxidify {} is available", notice.version));
+                }
+                self.update = Some(notice);
+            }
+            Ok(None) => {
+                self.update = None;
+                if manual {
+                    self.toast("Oxidify is up to date");
+                }
+            }
+            Err(error) if manual => {
+                self.toast_error(format!("Couldn't check for updates: {error}"))
+            }
+            Err(error) => log::debug!("could not check for updates: {error}"),
+        }
+    }
+
     // ---- frame ---------------------------------------------------------------
 
     fn handle_events(&mut self) {
@@ -971,12 +1008,8 @@ impl App {
                     self.set_user_name(id, name);
                 }
                 Event::WebApp { client_id } => self.web_app = client_id,
-                Event::UpdateAvailable { version, url } => {
-                    let notice = crate::updates::Release { version, url };
-                    if self.update.as_ref() != Some(&notice) {
-                        self.toast(format!("Oxidify {} is out", notice.version));
-                    }
-                    self.update = Some(notice);
+                Event::UpdateChecked { manual, result } => {
+                    self.finish_update_check(manual, result);
                 }
             }
         }
@@ -1256,8 +1289,7 @@ impl App {
                 .last_update_check
                 .is_none_or(|at| at.elapsed() >= crate::updates::CHECK_INTERVAL)
         {
-            self.last_update_check = Some(now);
-            self.backend.send(Command::CheckForUpdates);
+            self.check_for_updates(false);
         }
 
         if self.is_connected() && !self.offline {
@@ -4078,6 +4110,7 @@ impl App {
                     self.backend.send(Command::DiscoverReceivers);
                 }
             }
+            Action::CheckForUpdates => self.check_for_updates(true),
             Action::SettingsChanged => {
                 self.settings_dirty = true;
                 ctx.set_theme(match self.settings.theme {
@@ -4801,6 +4834,49 @@ mod tests {
             status: 403,
             message: "Player command failed: Premium required".into(),
         }
+    }
+
+    #[test]
+    fn update_checks_report_manual_results_and_keep_daily_checks_quiet() {
+        let mut app = test_app();
+        app.finish_update_check(false, Ok(None));
+        assert!(app.toasts.is_empty());
+        app.finish_update_check(false, Err("offline".into()));
+        assert!(app.toasts.is_empty());
+
+        let release = crate::updates::Release {
+            version: "1.2.3".into(),
+            url: "https://github.com/Master0fFate/oxidify/releases/tag/v1.2.3".into(),
+        };
+        app.update_checking = true;
+        app.finish_update_check(false, Ok(Some(release.clone())));
+        assert!(!app.update_checking);
+        assert_eq!(app.update, Some(release.clone()));
+        assert_eq!(app.toasts.len(), 1);
+        app.finish_update_check(false, Ok(Some(release.clone())));
+        assert_eq!(app.toasts.len(), 1);
+        app.finish_update_check(true, Err("GitHub is unavailable".into()));
+        assert_eq!(app.update, Some(release));
+        assert_eq!(
+            app.toasts.last().unwrap().message,
+            "Couldn't check for updates: GitHub is unavailable"
+        );
+        app.finish_update_check(true, Ok(None));
+        assert!(app.update.is_none());
+        assert_eq!(app.toasts.last().unwrap().message, "Oxidify is up to date");
+
+        app.check_for_updates(true);
+        assert!(app.update_checking);
+        let started = app.last_update_check;
+        app.check_for_updates(true);
+        assert_eq!(app.last_update_check, started);
+        app.update_checking = false;
+        app.offline = true;
+        app.check_for_updates(true);
+        assert!(!app.update_checking);
+        let root = app.dirs.state.parent().unwrap().to_path_buf();
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

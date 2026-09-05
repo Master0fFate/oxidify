@@ -579,6 +579,12 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
             "queue" => app.show_queue_panel = true,
             "devices" => app.show_devices = true,
             "shortcuts" => app.dialog = Some(Dialog::Shortcuts),
+            "update" => {
+                app.update = Some(crate::updates::Release {
+                    version: "1.0.0".into(),
+                    url: "https://github.com/Master0fFate/oxidify/releases/latest".into(),
+                });
+            }
             "create" => {
                 app.dialog = Some(Dialog::CreatePlaylist {
                     name: "Autumn drives".into(),

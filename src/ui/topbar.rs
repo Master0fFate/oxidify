@@ -15,12 +15,13 @@ const SETTINGS_HIT: f32 = 31.0;
 const CONTROL_GAP: f32 = 4.0;
 const SPINNER_SIZE: f32 = 15.0;
 const SOURCE_MIN: f32 = 48.0;
+const UPDATE_WIDTH: f32 = 140.0;
 
-/// Right-edge cluster: inset, avatar, gap, settings, optional spinner.
+/// Right-edge cluster: inset, avatar, settings, mini player, and optional spinner.
 /// Search and the source label must yield before this width is stolen.
 pub(crate) fn topbar_right_reserved(spinner: bool) -> f32 {
     let spinner_w = if spinner { SPINNER_SIZE + 8.0 } else { 0.0 };
-    super::widgets::PAGE_PADDING + AVATAR_SIZE + CONTROL_GAP + SETTINGS_HIT + spinner_w
+    super::widgets::PAGE_PADDING + AVATAR_SIZE + 2.0 * (CONTROL_GAP + SETTINGS_HIT) + spinner_w
 }
 
 pub(crate) fn topbar_search_width(available_after_nav: f32, spinner: bool) -> f32 {
@@ -111,7 +112,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 .backend
                 .activity()
                 .busy(std::time::Duration::from_millis(1000));
-            let search_width = topbar_search_width(ui.available_width(), spinner);
+            let update_reserved = if app.update.is_some() {
+                UPDATE_WIDTH + 8.0
+            } else {
+                0.0
+            };
+            let search_width =
+                topbar_search_width((ui.available_width() - update_reserved).max(0.0), spinner);
             let id = egui::Id::new("global-search");
             let before = app.search.query.clone();
             let response = super::widgets::search_field(
@@ -289,6 +296,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     theme::spinner(ui, SPINNER_SIZE, palette.secondary)
                         .on_hover_text("Talking to Spotify…");
                 }
+                if let Some(update) = &app.update {
+                    update_notice(ui, &palette, update, &mut app.actions);
+                }
                 if let Some(now) = app.now_playing()
                     && !now.local
                 {
@@ -301,46 +311,37 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         source_chip(ui, &palette, &label, max_w, &mut app.actions);
                     }
                 }
-                // A newer release. Most people never visit a releases page,
-                // so the app says so, quietly, until they do.
-                if let Some(update) = app.update.clone() {
-                    let label = format!("Update to {}", update.version);
-                    let galley =
-                        ui.painter()
-                            .layout_no_wrap(label, theme::medium(12.5), palette.accent);
-                    let size = galley.size() + vec2(28.0, 12.0);
-                    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-                    ui.painter().rect_filled(
-                        rect,
-                        CornerRadius::same(14),
-                        palette.accent.gamma_multiply(0.16),
-                    );
-                    let icon_rect = egui::Rect::from_center_size(
-                        pos2(rect.left() + 14.0, rect.center().y),
-                        Vec2::splat(13.0),
-                    );
-                    Icon::Info
-                        .image(palette.accent, 13.0)
-                        .paint_at(ui, icon_rect);
-                    ui.painter().galley(
-                        pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0),
-                        galley,
-                        palette.accent,
-                    );
-                    if response
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(format!(
-                            "Oxidify {} is out. Opens the download page.",
-                            update.version
-                        ))
-                        .clicked()
-                    {
-                        app.actions.push(Action::OpenUrl(update.url));
-                    }
-                }
             });
         },
     );
+}
+
+fn update_notice(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    update: &crate::updates::Release,
+    actions: &mut Vec<Action>,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(UPDATE_WIDTH, 30.0), Sense::click());
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::same(14),
+        palette.accent.gamma_multiply(0.16),
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Update available",
+        theme::medium(12.5),
+        palette.accent,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Update available")
+    });
+    if response.clicked() {
+        actions.push(Action::OpenUrl(update.url.clone()));
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn source_chip(
@@ -430,6 +431,52 @@ fn capitalize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_notice_opens_the_release_page_only_when_clicked() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let release = crate::updates::Release {
+            version: "1.2.3".into(),
+            url: "https://github.com/Master0fFate/oxidify/releases/tag/v1.2.3".into(),
+        };
+        let mut actions = Vec::new();
+        let mut rect = egui::Rect::NOTHING;
+        let mut frame = |events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    rect = update_notice(ui, &Palette::dark(), &release, &mut actions).rect;
+                },
+            );
+            output.textures_delta.clear();
+            rect.center()
+        };
+        let pos = frame(Vec::new());
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        assert!(matches!(actions.as_slice(), [Action::OpenUrl(url)] if url == &release.url));
+    }
+
+    #[test]
+    fn update_notice_leaves_room_for_search_and_account_controls() {
+        for available in [340.0, 500.0, 1000.0] {
+            let search = topbar_search_width(available - UPDATE_WIDTH - 8.0, true);
+            assert!(search + UPDATE_WIDTH + 8.0 + topbar_right_reserved(true) <= available + 0.5);
+        }
+    }
 
     #[test]
     fn right_cluster_keeps_avatar_inset() {
