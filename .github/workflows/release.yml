@@ -3,16 +3,23 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   validate:
@@ -21,6 +28,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - name: Match tag, manifest, lockfile, and notes
         shell: python
         run: |
@@ -31,7 +40,7 @@ jobs:
 
           version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
           assert re.fullmatch(r"\d+\.\d+\.\d+", version), "Expected a stable release version"
-          assert os.environ["GITHUB_REF_NAME"] == f"v{version}", "Tag and Cargo.toml disagree"
+          assert os.environ["RELEASE_TAG"] == f"v{version}", "Tag and Cargo.toml disagree"
           packages = tomllib.loads(pathlib.Path("Cargo.lock").read_text())["package"]
           assert next(p["version"] for p in packages if p["name"] == "oxidify") == version
           notes = pathlib.Path(f"packaging/release-notes/v{version}.md")
@@ -45,6 +54,8 @@ jobs:
     name: Release checks
     needs: validate
     uses: ./.github/workflows/ci.yml
+    with:
+      ref: refs/tags/${{ inputs.tag || github.ref_name }}
 
   build:
     name: build (${{ matrix.target }})
@@ -69,6 +80,8 @@ jobs:
             target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -96,12 +109,12 @@ jobs:
         shell: bash
         run: |
           actual="$(target/${{ matrix.target }}/release/oxidify --version)"
-          test "$actual" = "oxidify ${GITHUB_REF_NAME#v}"
+          test "$actual" = "oxidify ${RELEASE_TAG#v}"
 
       - name: Package
         shell: bash
         run: |
-          name="oxidify-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="oxidify-${RELEASE_TAG}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/oxidify.exe" "dist/$name/"
@@ -129,7 +142,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $version = $env:RELEASE_TAG.TrimStart("v")
           $arch = "${{ matrix.target }}".Split("-")[0]
           $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
           if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
@@ -142,7 +155,7 @@ jobs:
         if: matrix.target == 'x86_64-pc-windows-msvc'
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $version = $env:RELEASE_TAG.TrimStart("v")
           $destination = Join-Path $env:RUNNER_TEMP 'oxidify-install-test'
           $setup = Join-Path $PWD "dist/oxidify-v$version-x86_64-pc-windows-msvc-setup.exe"
           $install = Start-Process $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$destination`"") -Wait -PassThru
@@ -183,6 +196,8 @@ jobs:
       APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -211,12 +226,12 @@ jobs:
 
       - name: Check universal binary
         run: |
-          lipo -verify_arch arm64 x86_64 universal/oxidify
-          test "$(universal/oxidify --version)" = "oxidify ${GITHUB_REF_NAME#v}"
+          lipo universal/oxidify -verify_arch arm64 x86_64
+          test "$(universal/oxidify --version)" = "oxidify ${RELEASE_TAG#v}"
 
       - name: App bundle
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           bash packaging/macos/bundle.sh universal/oxidify Oxidify.app "$version"
 
       - name: Import signing certificate
@@ -240,7 +255,7 @@ jobs:
 
       - name: DMG
         run: |
-          name="oxidify-${GITHUB_REF_NAME}-macos-universal"
+          name="oxidify-${RELEASE_TAG}-macos-universal"
           stage="$RUNNER_TEMP/dmg"
           mkdir -p "$stage"
           cp -R Oxidify.app "$stage/"
@@ -255,7 +270,7 @@ jobs:
       - name: Notarize
         if: env.APPLE_CERTIFICATE_P12 != ''
         run: |
-          name="oxidify-${GITHUB_REF_NAME}-macos-universal"
+          name="oxidify-${RELEASE_TAG}-macos-universal"
           xcrun notarytool submit "dist/$name.dmg" --wait \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD"
@@ -276,6 +291,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - uses: actions/download-artifact@v7
         with:
           path: dist
@@ -290,7 +307,7 @@ jobs:
           import os
           import pathlib
 
-          tag = os.environ["GITHUB_REF_NAME"]
+          tag = os.environ["RELEASE_TAG"]
           expected = {"checksums.txt", f"oxidify-{tag}-macos-universal.dmg"}
           for arch in ("x86_64", "aarch64"):
               expected.add(f"oxidify-{tag}-{arch}-unknown-linux-gnu.tar.gz")
@@ -301,8 +318,9 @@ jobs:
           assert all(p.stat().st_size for p in pathlib.Path("dist").iterdir()), "Empty release file"
       - uses: softprops/action-gh-release@v2
         with:
-          name: Oxidify ${{ github.ref_name }}
+          name: Oxidify ${{ env.RELEASE_TAG }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: dist/*
-          body_path: packaging/release-notes/${{ github.ref_name }}.md
+          body_path: packaging/release-notes/${{ env.RELEASE_TAG }}.md
           draft: true
           fail_on_unmatched_files: true
