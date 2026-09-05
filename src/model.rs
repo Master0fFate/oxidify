@@ -132,6 +132,12 @@ impl<T> Loadable<T> {
     }
 }
 
+// Recreated lists must not reuse the revision of a cached view of the old list.
+pub(crate) fn next_view_revision() -> u64 {
+    static REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// An offset-paginated list that loads on demand as the user scrolls.
 #[derive(Clone, Debug)]
 pub struct PagedList<T> {
@@ -141,6 +147,7 @@ pub struct PagedList<T> {
     pub loading: bool,
     pub error: Option<String>,
     pub loaded_once: bool,
+    pub revision: u64,
 }
 
 impl<T> Default for PagedList<T> {
@@ -152,6 +159,7 @@ impl<T> Default for PagedList<T> {
             loading: false,
             error: None,
             loaded_once: false,
+            revision: next_view_revision(),
         }
     }
 }
@@ -183,6 +191,34 @@ impl<T> PagedList<T> {
         self.loading = false;
         self.error = None;
         self.loaded_once = true;
+        self.revision = next_view_revision();
+    }
+
+    pub fn retain<F>(&mut self, f: F)
+    where
+        F: FnMut(&T) -> bool,
+    {
+        self.items.retain(f);
+        self.revision = next_view_revision();
+    }
+
+    pub fn reorder(&mut self, from: usize, to: usize) {
+        if from < self.items.len() && to <= self.items.len() {
+            let item = self.items.remove(from);
+            let insert_at = if to > from { to - 1 } else { to };
+            self.items.insert(insert_at.min(self.items.len()), item);
+            self.revision = next_view_revision();
+        }
+    }
+
+    pub fn set_cached(&mut self, items: Vec<T>) {
+        self.total = Some(items.len() as u32);
+        self.items = items;
+        self.next_offset = None;
+        self.loading = false;
+        self.loaded_once = true;
+        self.error = None;
+        self.revision = next_view_revision();
     }
 
     pub fn fail(&mut self, error: String) {
@@ -255,6 +291,7 @@ pub struct HomeData {
     pub discover_pending: HashMap<String, Loadable<Vec<Playlist>>>,
     pub generation: u64,
     pub top_songs_generation: u64,
+    pub top_songs_revision: u64,
     pub requested: bool,
     pub loaded_at: Option<Instant>,
 }

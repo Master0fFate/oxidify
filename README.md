@@ -22,7 +22,9 @@ getting started, everyday use, and how it connects to Spotify.
 
 - **Plays music on this computer.** Oxidify is a Spotify Connect device by
   default. Pick it from your phone, or press play here. Gapless, up to 320
-  kbps, with optional volume normalisation and an on-disk audio cache. An
+  kbps, with optional volume normalisation and an on-disk audio cache.
+  Sample-rate conversion stays continuous across packets when the output
+  cannot use Spotify's native 44.1 kHz rate. An
   **alternate local audio** mode keeps Spotify metadata and plays a
   third-party match instead; that is not Spotify audio and not Spotify
   Connect.
@@ -47,6 +49,9 @@ getting started, everyday use, and how it connects to Spotify.
 - **Artist pages** with popular songs, a filterable discography, and related
   artists. **Album**, **playlist**, and **podcast** pages support playback
   from any row.
+- **Responsive track tables.** Sorted and filtered views are cached between
+  frames and refreshed when their inputs change. Sorted Liked Songs also
+  plays in its displayed order from the page's play button.
 - **Playlists you own** can be created, renamed, described, reordered, and
   edited: add from any row's menu or by dragging a song onto the playlist in
   the sidebar, remove from the playlist page.
@@ -63,8 +68,10 @@ getting started, everyday use, and how it connects to Spotify.
   they did; the logo in the skin brings the big window back. Drop a skin
   from the [Winamp Skin Museum](https://skins.webamp.org) on either window
   to add it.
-- **Equalizer.** Winamp's ten bands and presets over the music played on
-  this computer, in Settings and in the skin.
+- **Equalizer.** Winamp's ten bands and presets for local Spotify playback,
+  in Settings and in the skin. The bands compensate for their overlap so
+  their combined response meets the sliders; the graph uses the same digital
+  filters as playback. Alternate audio does not yet use the equalizer.
 - **Keyboard-first.** Every common action has a shortcut (`Ctrl+/` or `?` lists
   them).
 - **Keeps playing when you close the window.** The window closes for real,
@@ -209,11 +216,12 @@ responsibility; see the section above.
 | `Shift+←` / `Shift+→` | Seek 10 seconds |
 | `Ctrl+↑` / `Ctrl+↓` | Volume |
 | `M` | Mute |
+| `B` | Like or unlike the playing song |
 | `S` / `R` | Shuffle / cycle repeat |
 | `Q` | Queue panel |
 | `Ctrl+F` or `/` | Search |
 | `Ctrl+B` | Show or hide the sidebar |
-| `Alt+←` / `Alt+→` | Back or forward |
+| `Alt+←` / `Alt+→`, or mouse side buttons | Back or forward |
 | `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
 | `Ctrl+M` | Winamp mini player |

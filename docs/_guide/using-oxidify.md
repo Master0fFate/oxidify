@@ -15,6 +15,9 @@ The player bar shows what is playing locally or on another device. Click the
 title to open its album, the artist name to open the artist, or the heart to
 save the track.
 
+Local Spotify playback keeps sample-rate conversion continuous between audio
+packets when the output uses a different rate, such as 48 kHz on Windows.
+
 ## Home
 
 Home previews your most-played songs. Select **Your top songs** or **Show
@@ -22,7 +25,9 @@ more top songs** to open the complete ranked list.
 
 Track tables sort by their column headings: click **Title**, **Album**,
 **Date added**, or the clock to sort by it, again to reverse, and a third
-time to return to the list's own order.
+time to return to the list's own order. Sorted and filtered views are reused
+until the list, filter, sort, or contributor names change, rather than sorted
+again on every frame. The play button in Liked Songs follows the sorted view.
 
 ## Your Library
 
@@ -140,7 +145,9 @@ through the marquee here. **EQ** opens the equalizer between the player and the 
 ten bands and its presets, shaping the music played on this computer (a
 speaker across the room plays what Spotify sends it). The preamp only
 turns down, and AUTO, which loaded a preset per song, stays off. The same
-equalizer is in Settings with its curve drawn out. The X and both logos
+equalizer is in Settings with its curve drawn from the same digital filters
+used for local Spotify playback. The bands compensate for their overlap;
+alternate local audio does not yet use this equalizer. The X and both logos
 of the main window bring back the big window; its shade button, or a
 double-click on the title bar, rolls it up to a bar with the time, a small
 transport, and a seek bar, as Winamp's shade mode did. Skins that are not
@@ -179,11 +186,12 @@ Connect devices and conflicting media-key handlers.
 | `Shift+←` / `Shift+→` | Seek 10 seconds |
 | `Ctrl+↑` / `Ctrl+↓` | Volume |
 | `M` | Mute |
+| `B` | Like or unlike the playing song |
 | `S` / `R` | Shuffle / cycle repeat |
 | `Q` | Queue panel |
 | `Ctrl+F` or `/` | Search |
 | `Ctrl+B` | Show or hide the sidebar |
-| `Alt+←` / `Alt+→` | Back or forward |
+| `Alt+←` / `Alt+→`, or mouse side buttons | Back or forward |
 | `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
 | `Ctrl+M` | Winamp mini player |

@@ -22,6 +22,8 @@ use librespot_playback::decoder::AudioPacket;
 use librespot_playback::mixer::VolumeGetter;
 use librespot_playback::{NUM_CHANNELS, SAMPLE_RATE};
 
+use crate::resample::Resampler;
+
 /// The backend name Settings uses for this sink.
 pub const NAME: &str = "rodio";
 
@@ -53,6 +55,8 @@ struct Output {
     _stream: rodio::OutputStream,
     /// Set from the audio thread when the stream dies (device unplugged).
     failed: Arc<AtomicBool>,
+    sample_rate: u32,
+    resampler: Option<Resampler>,
 }
 
 impl Output {
@@ -140,16 +144,22 @@ impl Sink for RodioSink {
         let samples = converter.f64_to_f32(samples);
         self.ensure_open()?;
         self.apply_volume();
-        let Some(output) = &self.output else {
+        let Some(output) = &mut self.output else {
             return Err(SinkError::NotConnected(
                 "the audio output is not open".into(),
             ));
         };
-        output.sink.append(rodio::buffer::SamplesBuffer::new(
-            NUM_CHANNELS as rodio::ChannelCount,
-            SAMPLE_RATE as rodio::SampleRate,
-            samples,
-        ));
+        let samples = match &mut output.resampler {
+            Some(resampler) => resampler.process(&samples),
+            None => samples,
+        };
+        if !samples.is_empty() {
+            output.sink.append(rodio::buffer::SamplesBuffer::new(
+                NUM_CHANNELS as rodio::ChannelCount,
+                output.sample_rate as rodio::SampleRate,
+                samples,
+            ));
+        }
         // Let rodio drain a little; without this the whole track would be
         // decoded into memory at once.
         while output.sink.len() > QUEUE_LIMIT {
@@ -209,11 +219,15 @@ fn open_output(preferred: Option<&str>) -> Result<Output, OpenError> {
         })
         .open_stream_or_fallback()?;
     stream.log_on_drop(false);
+    let sample_rate = stream.config().sample_rate();
+    let resampler = Resampler::new(SAMPLE_RATE, sample_rate, NUM_CHANNELS as usize);
     let sink = rodio::Sink::connect_new(stream.mixer());
     Ok(Output {
         sink,
         _stream: stream,
         failed,
+        sample_rate,
+        resampler,
     })
 }
 

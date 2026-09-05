@@ -93,6 +93,23 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             key(Modifiers::NONE, Key::Slash, Action::FocusSearch);
         }
     });
+    if !typing
+        && ctx.input_mut(|input| {
+            let pressed = input.events.iter().any(|event| {
+                matches!(event, egui::Event::Key {
+                    key: Key::B,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } if *modifiers == Modifiers::NONE)
+            });
+            pressed && input.consume_key(Modifiers::NONE, Key::B)
+        })
+        && let Some(now) = app.now_playing().filter(|now| !now.is_episode)
+    {
+        actions.push(Action::ToggleSaved(now.uri));
+    }
     // Resolve the "open current artist/album" placeholders.
     for action in actions {
         match action {
@@ -116,6 +133,18 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             other => app.actions.push(other),
         }
     }
+    let (back, forward) = ctx.input(|input| {
+        (
+            input.pointer.button_pressed(egui::PointerButton::Extra1),
+            input.pointer.button_pressed(egui::PointerButton::Extra2),
+        )
+    });
+    if back {
+        app.actions.push(Action::Back);
+    }
+    if forward {
+        app.actions.push(Action::Forward);
+    }
     if ctx.input(|input| input.key_pressed(Key::Escape)) {
         if app.dialog.is_some() {
             app.actions.push(Action::CloseDialog);
@@ -131,6 +160,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Shift+←  /  Shift+→", "Seek 10 seconds"),
     ("Ctrl+↑  /  Ctrl+↓", "Volume up or down"),
     ("M", "Mute or unmute"),
+    ("B", "Like or unlike the playing song"),
     ("S", "Toggle shuffle"),
     ("R", "Cycle repeat"),
     ("Q", "Show the queue"),
@@ -161,3 +191,138 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+/ or ?", "Keyboard shortcuts"),
     ("Ctrl+Q", "Quit"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::AppOptions;
+    use crate::paths::AppDirs;
+    use crate::settings::Settings;
+
+    fn with_app(name: &str, check: impl FnOnce(&mut App)) {
+        let root = std::env::temp_dir().join(format!("oxidify-keys-{name}-{}", std::process::id()));
+        let mut app = App::new(
+            &crate::backend::Waker::default(),
+            AppDirs {
+                config: root.join("config"),
+                state: root.join("state"),
+                cache: root.join("cache"),
+            },
+            Settings::default(),
+            AppOptions {
+                media_controls: false,
+                tray: false,
+            },
+        );
+        crate::demo::populate(&mut app);
+        check(&mut app);
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn key_event(key: Key, modifiers: Modifiers, repeat: bool) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers,
+        }
+    }
+
+    fn dispatch(app: &mut App, events: Vec<egui::Event>, typing: bool) {
+        app.actions.clear();
+        let ctx = egui::Context::default();
+        if events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Key { repeat: true, .. }))
+        {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events: vec![key_event(Key::B, Modifiers::NONE, false)],
+                    ..Default::default()
+                },
+                |_| {},
+            );
+            output.textures_delta.clear();
+        }
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                if typing {
+                    ui.text_edit_singleline(&mut String::new()).request_focus();
+                }
+                handle(app, &ctx);
+            },
+        );
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn b_likes_the_playing_track_but_not_typing_or_key_repeat() {
+        with_app("like", |app| {
+            dispatch(app, vec![key_event(Key::B, Modifiers::NONE, false)], false);
+            assert!(matches!(
+                app.actions.as_slice(),
+                [Action::ToggleSaved(uri)] if uri == "spotify:track:trk0"
+            ));
+            dispatch(app, vec![key_event(Key::B, Modifiers::NONE, false)], true);
+            assert!(app.actions.is_empty());
+            dispatch(app, vec![key_event(Key::B, Modifiers::NONE, true)], false);
+            assert!(app.actions.is_empty());
+            dispatch(
+                app,
+                vec![key_event(Key::B, Modifiers::COMMAND, false)],
+                false,
+            );
+            assert!(matches!(app.actions.as_slice(), [Action::ToggleSidebar]));
+        });
+    }
+
+    #[test]
+    fn b_does_not_like_episodes_or_an_empty_player() {
+        with_app("episode", |app| {
+            app.remote.as_mut().unwrap().state.item = Some(
+                crate::api::models::PlayableItem::Episode(crate::api::models::Episode {
+                    uri: "spotify:episode:test".into(),
+                    ..Default::default()
+                }),
+            );
+            dispatch(app, vec![key_event(Key::B, Modifiers::NONE, false)], false);
+            assert!(app.actions.is_empty());
+            app.remote = None;
+            dispatch(app, vec![key_event(Key::B, Modifiers::NONE, false)], false);
+            assert!(app.actions.is_empty());
+        });
+    }
+
+    #[test]
+    fn mouse_buttons_navigate_on_press_not_release() {
+        with_app("mouse", |app| {
+            for button in [egui::PointerButton::Extra1, egui::PointerButton::Extra2] {
+                for pressed in [true, false] {
+                    dispatch(
+                        app,
+                        vec![egui::Event::PointerButton {
+                            pos: egui::Pos2::ZERO,
+                            button,
+                            pressed,
+                            modifiers: Modifiers::NONE,
+                        }],
+                        false,
+                    );
+                    if !pressed {
+                        assert!(app.actions.is_empty());
+                    } else if button == egui::PointerButton::Extra1 {
+                        assert!(matches!(app.actions.as_slice(), [Action::Back]));
+                    } else {
+                        assert!(matches!(app.actions.as_slice(), [Action::Forward]));
+                    }
+                }
+            }
+        });
+    }
+}

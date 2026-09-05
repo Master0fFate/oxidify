@@ -302,8 +302,8 @@ pub fn populate(app: &mut App) {
     playlist_page.contributors.insert("kasia".into());
     playlist_page.contributors.insert("sam".into());
     app.playlist_pages.insert("pl1".into(), playlist_page);
-    app.user_names.insert("kasia".into(), Some("Kasia".into()));
-    app.user_names.insert("sam".into(), Some("Sam".into()));
+    app.set_user_name("kasia".into(), Some("Kasia".into()));
+    app.set_user_name("sam".into(), Some("Sam".into()));
     let mut discover_page = PlaylistPage {
         playlist: Loadable::Loaded(playlists[0].clone()),
         ..PlaylistPage::default()
@@ -432,6 +432,7 @@ pub fn populate(app: &mut App) {
     app.home.top_artists = Loadable::Loaded((0..8).map(artist).collect());
     app.home.top_tracks = Loadable::Loaded(tracks.iter().skip(10).take(10).cloned().collect());
     app.home.top_songs = Loadable::Loaded(tracks.iter().skip(10).cloned().collect());
+    app.home.top_songs_revision = crate::model::next_view_revision();
     app.home.top_songs_complete = true;
     app.home.recommendations = Loadable::Loaded(tracks.iter().skip(20).take(10).cloned().collect());
     for term in DISCOVER_TERMS {
@@ -670,6 +671,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                             rename(track, names);
                         }
                     }
+                    page.items.revision = crate::model::next_view_revision();
                 }
                 if let Loadable::Loaded(queue) = &mut app.queue {
                     for (item, names) in queue.queue.iter_mut().zip(titles) {
