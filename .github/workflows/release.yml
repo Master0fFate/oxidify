@@ -5,15 +5,52 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  validate:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Match tag, manifest, lockfile, and notes
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import re
+          import tomllib
+
+          version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
+          assert re.fullmatch(r"\d+\.\d+\.\d+", version), "Expected a stable release version"
+          assert os.environ["GITHUB_REF_NAME"] == f"v{version}", "Tag and Cargo.toml disagree"
+          packages = tomllib.loads(pathlib.Path("Cargo.lock").read_text())["package"]
+          assert next(p["version"] for p in packages if p["name"] == "oxidify") == version
+          notes = pathlib.Path(f"packaging/release-notes/v{version}.md")
+          assert notes.is_file() and notes.read_text().strip(), "Written release notes are missing"
+          config = pathlib.Path("docs/_config.yml").read_text()
+          assert f'oxidify_version: "{version}"' in config.splitlines(), "Download page version differs"
+          versions = pathlib.Path("docs/_data/versions.yml").read_text()
+          assert f"current: v{version}" in versions.splitlines(), "Version dropdown differs"
+
+  checks:
+    name: Release checks
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: build (${{ matrix.target }})
+    needs: checks
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -52,7 +89,14 @@ jobs:
         shell: bash
         run: bash third_party/yt-dlp/vendor.sh --target ${{ matrix.target }} --require
 
-      - run: cargo build --release --target ${{ matrix.target }}
+      - run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Check Linux binary version
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          actual="$(target/${{ matrix.target }}/release/oxidify --version)"
+          test "$actual" = "oxidify ${GITHUB_REF_NAME#v}"
 
       - name: Package
         shell: bash
@@ -64,7 +108,9 @@ jobs:
           else
             cp "target/${{ matrix.target }}/release/oxidify" "dist/$name/"
           fi
-          cp README.md LICENSE third_party/yt-dlp/NOTICE "dist/$name/"
+          cp README.md LICENSE NOTICE "dist/$name/"
+          cp third_party/yt-dlp/NOTICE "dist/$name/yt-dlp-NOTICE.txt"
+          cp third_party/yt-dlp/LICENSE "dist/$name/yt-dlp-LICENSE.txt"
           if [ "${{ runner.os }}" = "Linux" ]; then
             # Desktop integration for package builds and hand-installs.
             cp -r packaging "dist/$name/"
@@ -92,6 +138,25 @@ jobs:
             "/DOutputDir=$PWD\dist" packaging\windows\oxidify.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Smoke-test Windows x64 installer
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $destination = Join-Path $env:RUNNER_TEMP 'oxidify-install-test'
+          $setup = Join-Path $PWD "dist/oxidify-v$version-x86_64-pc-windows-msvc-setup.exe"
+          $install = Start-Process $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$destination`"") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
+          $binary = Join-Path $destination 'oxidify.exe'
+          $actual = (Get-Item $binary).VersionInfo.ProductVersion
+          if ($actual -notmatch "^$([regex]::Escape($version))(\.0)?$") { throw "Installed version is $actual, expected $version" }
+          foreach ($notice in @('LICENSE', 'NOTICE', 'yt-dlp-NOTICE.txt', 'yt-dlp-LICENSE.txt')) {
+            if (-not (Test-Path (Join-Path $destination $notice))) { throw "Missing $notice" }
+          }
+          $uninstall = Start-Process (Join-Path $destination 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstall.ExitCode)" }
+          if (Test-Path $binary) { throw 'Uninstaller left the binary behind' }
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
@@ -103,7 +168,9 @@ jobs:
 
   macos:
     name: macOS universal app
+    needs: checks
     runs-on: macos-latest
+    timeout-minutes: 45
     env:
       # Signing and notarization run only when the Apple credentials exist as
       # repository secrets; without them the DMG ships unsigned and the
@@ -131,8 +198,8 @@ jobs:
 
       - name: Build both architectures
         run: |
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
+          cargo build --locked --release --target aarch64-apple-darwin
+          cargo build --locked --release --target x86_64-apple-darwin
 
       - name: Universal binary
         run: |
@@ -141,6 +208,11 @@ jobs:
             target/aarch64-apple-darwin/release/oxidify \
             target/x86_64-apple-darwin/release/oxidify \
             -output universal/oxidify
+
+      - name: Check universal binary
+        run: |
+          lipo -verify_arch arm64 x86_64 universal/oxidify
+          test "$(universal/oxidify --version)" = "oxidify ${GITHUB_REF_NAME#v}"
 
       - name: App bundle
         run: |
@@ -172,7 +244,9 @@ jobs:
           stage="$RUNNER_TEMP/dmg"
           mkdir -p "$stage"
           cp -R Oxidify.app "$stage/"
-          cp README.md LICENSE third_party/yt-dlp/NOTICE "$stage/"
+          cp README.md LICENSE NOTICE "$stage/"
+          cp third_party/yt-dlp/NOTICE "$stage/yt-dlp-NOTICE.txt"
+          cp third_party/yt-dlp/LICENSE "$stage/yt-dlp-LICENSE.txt"
           ln -s /Applications "$stage/Applications"
           mkdir -p dist
           hdiutil create -volname Oxidify -srcfolder "$stage" -ov \
@@ -197,7 +271,11 @@ jobs:
     name: GitHub release
     needs: [build, macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
         with:
           path: dist
@@ -206,7 +284,25 @@ jobs:
         run: |
           cd dist
           sha256sum * > checksums.txt
+      - name: Verify complete artifact set
+        shell: python
+        run: |
+          import os
+          import pathlib
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          expected = {"checksums.txt", f"oxidify-{tag}-macos-universal.dmg"}
+          for arch in ("x86_64", "aarch64"):
+              expected.add(f"oxidify-{tag}-{arch}-unknown-linux-gnu.tar.gz")
+              expected.add(f"oxidify-{tag}-{arch}-pc-windows-msvc.zip")
+              expected.add(f"oxidify-{tag}-{arch}-pc-windows-msvc-setup.exe")
+          actual = {p.name for p in pathlib.Path("dist").iterdir() if p.is_file()}
+          assert actual == expected, f"Release files differ: {actual ^ expected}"
+          assert all(p.stat().st_size for p in pathlib.Path("dist").iterdir()), "Empty release file"
       - uses: softprops/action-gh-release@v2
         with:
+          name: Oxidify ${{ github.ref_name }}
           files: dist/*
-          generate_release_notes: true
+          body_path: packaging/release-notes/${{ github.ref_name }}.md
+          draft: true
+          fail_on_unmatched_files: true

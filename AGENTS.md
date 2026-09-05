@@ -62,8 +62,12 @@ A release is not the tag alone. Every one of these moves together:
 
 - `Cargo.toml` version (and the lockfile via a build), committed before
   the tag so the binaries report the right version.
-- The `v*` tag, which triggers the release workflow; replace its
-  generated notes with written ones.
+- The `v*` tag, which runs CI and builds the release into a draft. Write
+  its notes in `packaging/release-notes/<tag>.md` before tagging, and publish
+  only after the checks and the complete installer/archive set pass.
+- The documentation version in `docs/_config.yml` and
+  `docs/_data/versions.yml`. The site waits to deploy until that version is
+  publicly available; publishing the release triggers the deployment.
 - The Homebrew cask in the maintainer's tap and the AUR package, both
   from the release's `checksums.txt`, when they exist.
 

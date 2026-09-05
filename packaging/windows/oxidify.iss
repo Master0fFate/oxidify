@@ -70,6 +70,8 @@ Source: "{#Binary}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\NOTICE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\third_party\yt-dlp\NOTICE"; DestDir: "{app}"; DestName: "yt-dlp-NOTICE.txt"; Flags: ignoreversion
+Source: "..\..\third_party\yt-dlp\LICENSE"; DestDir: "{app}"; DestName: "yt-dlp-LICENSE.txt"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"

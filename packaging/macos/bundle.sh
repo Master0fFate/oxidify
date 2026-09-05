@@ -20,6 +20,9 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 cp "$binary" "$app/Contents/MacOS/oxidify"
 chmod 755 "$app/Contents/MacOS/oxidify"
+cp "$here/../../LICENSE" "$here/../../NOTICE" "$app/Contents/Resources/"
+cp "$here/../../third_party/yt-dlp/NOTICE" "$app/Contents/Resources/yt-dlp-NOTICE.txt"
+cp "$here/../../third_party/yt-dlp/LICENSE" "$app/Contents/Resources/yt-dlp-LICENSE.txt"
 sed "s/__VERSION__/$version/g" "$here/Info.plist" > "$app/Contents/Info.plist"
 
 iconset="$(mktemp -d)/oxidify.iconset"

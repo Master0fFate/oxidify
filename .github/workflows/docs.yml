@@ -8,6 +8,8 @@ on:
       - docs/**
       - .github/workflows/docs.yml
   workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -15,14 +17,47 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  published:
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Deploy the published version from main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run docs.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+  build:
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    outputs:
+      version_published: ${{ steps.release.outputs.published }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Keep unpublished versions off the download page
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import subprocess
+
+          lines = pathlib.Path("docs/_config.yml").read_text().splitlines()
+          version = next(line.split(":", 1)[1].strip().strip('"') for line in lines if line.startswith("oxidify_version:"))
+          latest = subprocess.check_output([
+              "gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/releases/latest", "--jq", ".tag_name"
+          ], text=True).strip()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"published={str(latest == 'v' + version).lower()}\n")
 
       - uses: actions/configure-pages@v6
 
@@ -50,6 +85,7 @@ jobs:
 
   deploy:
     needs: build
+    if: needs.build.outputs.version_published == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
