@@ -45,10 +45,14 @@ getting started, everyday use, and how it connects to Spotify.
 - **Search** across songs, artists, albums, playlists, podcasts, and episodes,
   with a top result and per-type views.
 - **Home** with Made for you, Recently played, your top artists and songs, and
-  recommendations.
+  recommendations. The full Top songs page restores its first 50 songs from
+  an account-scoped cache (up to six hours old), then refreshes from Spotify.
 - **Artist pages** with popular songs, a filterable discography, and related
   artists. **Album**, **playlist**, and **podcast** pages support playback
   from any row.
+- **Refresh the current page** with the circular arrow beside the Winamp
+  mini player button. It requests fresh Spotify data, bypassing the page's
+  metadata cache while still respecting Spotify rate limits.
 - **Responsive track tables.** Sorted and filtered views are cached between
   frames and refreshed when their inputs change. Sorted Liked Songs also
   plays in its displayed order from the page's play button.
@@ -160,10 +164,6 @@ Account; supported requests use its separate quota while complete playlist
 views, playlist-bearing search, external playlists, and unavailable operations
 continue through the shared app.
 
-## Alternate local audio
-
-For a Free account, or until Spotify confirms Premium, Oxidify selects
-**Alternate local audio** instead of attempting Spotify playback. Premium
 ### Personal Web API app (optional)
 
 Settings → Account → **Show me how** opens an in-app setup tutorial.
@@ -185,6 +185,10 @@ ID: use `127.0.0.1`, not `localhost`, keep `/login`, omit any trailing slash,
 and save before retrying. Oxidify cannot register the URI on your behalf.
 See the [full setup guide](docs/_guide/make-it-even-faster.md).
 
+## Alternate local audio
+
+For a Free account, or until Spotify confirms Premium, Oxidify selects
+**Alternate local audio** instead of attempting Spotify playback. Premium
 users can also select it under Settings → Playback on this computer. This
 mode still talks to the Spotify Web API for library, search, and metadata,
 then searches native YouTube and, if you configured one, a Piped-compatible

@@ -6,6 +6,8 @@
 //! the interface with `request_repaint`, so the app stays event-driven and
 //! idle when nothing is happening.
 
+mod top_tracks_cache;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -65,6 +67,7 @@ pub enum ApiRequest {
         offset: u32,
         full: bool,
         generation: u64,
+        read_cache: bool,
     },
     TopArtists {
         generation: u64,
@@ -217,7 +220,7 @@ impl ApiRequest {
             self,
             Self::PlaybackState { .. }
                 | Self::RecentlyPlayed { .. }
-                | Self::TopTracks { .. }
+                | Self::TopTracks { full: false, .. }
                 | Self::TopArtists { .. }
                 | Self::Recommendations { .. }
                 | Self::Discover { .. }
@@ -449,6 +452,7 @@ pub enum Command {
     /// Read a playlist's cached items from disk.
     LoadPlaylistCache {
         id: String,
+        generation: u64,
     },
     /// Remember a fully loaded playlist on disk under its snapshot.
     StorePlaylistCache {
@@ -477,6 +481,11 @@ pub enum Event {
     },
     Local(Box<LocalState>),
     Api(Box<ApiResponse>),
+    TopSongsCache {
+        account_id: String,
+        generation: u64,
+        tracks: Vec<Track>,
+    },
     Accent {
         url: String,
         color: [u8; 3],
@@ -496,6 +505,7 @@ pub enum Event {
     PlaylistCache {
         account_id: String,
         id: String,
+        generation: u64,
         snapshot: String,
         items: Vec<PlaylistItem>,
     },
@@ -504,6 +514,7 @@ pub enum Event {
         id: String,
         name: Option<String>,
     },
+    PersonalWebAuthorizing(bool),
     /// The verified personal Web API app, or `None` when it is disabled.
     WebApp {
         client_id: Option<String>,
@@ -514,7 +525,6 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq)]
 pub enum LocalPlayback {
     /// Not authorized; local playback is unavailable but the app still works.
-    PersonalWebAuthorizing(bool),
     Unavailable,
     /// The browser is open for the playback grant.
     Authorizing,
@@ -715,6 +725,7 @@ struct Worker {
     http: reqwest::Client,
     api: Arc<ApiGateway>,
     background_api: Arc<tokio::sync::Semaphore>,
+    top_tracks_writes: Arc<top_tracks_cache::Writes>,
     art: ArtLoader,
     events: std::sync::mpsc::Sender<Event>,
     commands: mpsc::UnboundedSender<Command>,
@@ -759,6 +770,7 @@ impl Worker {
             web_client_id,
             api: Arc::new(ApiGateway::new(http.clone(), activity)),
             background_api: Arc::new(tokio::sync::Semaphore::new(4)),
+            top_tracks_writes: Arc::default(),
             http,
             art,
             events,
@@ -868,7 +880,9 @@ impl Worker {
                 Command::ActivateReceiver(receiver) => self.activate_receiver(*receiver),
                 Command::CheckForUpdates { manual } => self.check_for_updates(manual),
                 Command::Lyrics(request) => self.fetch_lyrics(*request),
-                Command::LoadPlaylistCache { id } => self.load_playlist_cache(id),
+                Command::LoadPlaylistCache { id, generation } => {
+                    self.load_playlist_cache(id, generation)
+                }
                 Command::StorePlaylistCache {
                     id,
                     snapshot,
@@ -1061,6 +1075,9 @@ impl Worker {
         if self.authorizing_source != Some(source) {
             return;
         }
+        if source == ApiSource::Personal {
+            self.emit(Event::PersonalWebAuthorizing(false));
+        }
         self.cancel_signin = None;
         self.authorizing_source = None;
         if let Some(pending) = self.pending_authorization.take() {
@@ -1075,9 +1092,6 @@ impl Worker {
     fn sign_in_source(&mut self, source: ApiSource) {
         if self.cancel_signin.is_some() {
             return;
-        if source == ApiSource::Personal {
-            self.emit(Event::PersonalWebAuthorizing(false));
-        }
         }
         let grant = match source {
             ApiSource::Shared => crate::auth::Grant::shared_web_api(),
@@ -1099,6 +1113,9 @@ impl Worker {
         self.cancel_signin = Some(cancel_tx);
         self.authorizing_source = Some(source);
         self.api.set_state(source, SessionState::Authorizing);
+        if source == ApiSource::Personal {
+            self.emit(Event::PersonalWebAuthorizing(true));
+        }
         let http = self.http.clone();
         let events = self.events.clone();
         let waker = self.waker.clone();
@@ -1113,9 +1130,6 @@ impl Worker {
                     waker.wake();
                 }
                 if let Err(error) = open::that_detached(&flow.url) {
-        if source == ApiSource::Personal {
-            self.emit(Event::PersonalWebAuthorizing(true));
-        }
                     log::warn!("unable to open a browser: {error}");
                 }
                 let code = crate::auth::wait_for_code(listener, &flow.state, cancel_rx).await?;
@@ -1154,6 +1168,7 @@ impl Worker {
             false
         };
         self.web_client_id = client_id;
+        self.emit(Event::PersonalWebAuthorizing(self.web_client_id.is_some()));
         self.api.clear(ApiSource::Personal);
         if self.web_client_id.is_none() {
             crate::auth::StoredToken::remove(&self.dirs.personal_web_token_file());
@@ -1168,7 +1183,6 @@ impl Worker {
         } else {
             self.pending_authorization = None;
         }
-        self.emit(Event::PersonalWebAuthorizing(self.web_client_id.is_some()));
     }
 
     async fn sign_out(&mut self) {
@@ -1557,7 +1571,7 @@ impl Worker {
     /// Hand the interface a playlist's cached items, if any are on disk.
     /// Whether they are still true is the interface's call: it compares
     /// the snapshot against the live playlist before adopting them.
-    fn load_playlist_cache(&self, id: String) {
+    fn load_playlist_cache(&self, id: String, generation: u64) {
         let Some(account) = self.api.account() else {
             return;
         };
@@ -1576,6 +1590,7 @@ impl Worker {
                 return;
             };
             let _ = events.send(Event::PlaylistCache {
+                generation,
                 account_id,
                 id,
                 snapshot: cached.snapshot,
@@ -1632,13 +1647,63 @@ impl Worker {
         let events = self.events.clone();
         let waker = self.waker.clone();
         let commands = self.commands.clone();
+        let cache_dir = self.dirs.cache.clone();
+        let cache_account = match &request {
+            ApiRequest::TopTracks {
+                offset: 0,
+                full: true,
+                ..
+            } => api.account(),
+            _ => None,
+        };
+        let cache_writes = Arc::clone(&self.top_tracks_writes);
+        let cache_epoch = cache_account.as_ref().map(|_| cache_writes.begin());
         tokio::spawn(async move {
+            if let (
+                Some(account),
+                ApiRequest::TopTracks {
+                    generation,
+                    read_cache: true,
+                    ..
+                },
+            ) = (&cache_account, &request)
+                && let Some(page) = top_tracks_cache::load(&cache_dir, account.as_str()).await
+                && api.account().as_ref() == Some(account)
+            {
+                let _ = events.send(Event::TopSongsCache {
+                    account_id: account.as_str().to_owned(),
+                    generation: *generation,
+                    tracks: page.items,
+                });
+                waker.wake();
+            }
             let _background_permit = if background {
                 background_api.acquire_owned().await.ok()
             } else {
                 None
             };
+            if cache_account.is_some() && api.account() != cache_account {
+                return;
+            }
             let (response, expired) = handle(&api, request).await;
+            if cache_account.is_some() && api.account() != cache_account {
+                return;
+            }
+            if let (
+                Some(account),
+                Some(epoch),
+                ApiResponse::TopTracks {
+                    result: Ok(page), ..
+                },
+            ) = (&cache_account, cache_epoch, &response)
+            {
+                let root = cache_dir;
+                let account = account.as_str().to_owned();
+                let page = page.clone();
+                tokio::spawn(async move {
+                    cache_writes.store(epoch, &root, &account, page).await;
+                });
+            }
             if let Some(api_source) = expired {
                 api.clear(api_source);
                 if api_source == ApiSource::Personal {
@@ -1843,6 +1908,7 @@ async fn handle(api: &ApiGateway, request: ApiRequest) -> (ApiResponse, Option<A
             offset,
             full,
             generation,
+            ..
         } => ApiResponse::TopTracks {
             result: routed!(top_tracks("short_term", if full { 50 } else { 20 }, offset)),
             offset,
@@ -2130,6 +2196,31 @@ struct CachedPlaylist {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_top_songs_use_foreground_while_home_preview_stays_background() {
+        for offset in [0, 50] {
+            assert!(
+                !ApiRequest::TopTracks {
+                    offset,
+                    full: true,
+                    generation: 1,
+                    read_cache: false,
+                }
+                .background()
+            );
+            assert!(
+                ApiRequest::TopTracks {
+                    offset,
+                    full: false,
+                    generation: 1,
+                    read_cache: false,
+                }
+                .background()
+            );
+        }
+        assert!(ApiRequest::MyPlaylists { offset: 0 }.background());
+    }
 
     #[test]
     fn spotify_switch_without_engine_is_unavailable() {

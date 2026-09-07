@@ -39,6 +39,14 @@ shows how to add one.
 - Downloaded audio and artwork, in the cache directory, within the budget
   you set.
 - Lyrics, in the cache directory, for a month.
+- The first page of full Top songs (up to 50 tracks), in `top-tracks.json` in
+  the cache directory. This single file stores one account's metadata, at
+  most 1 MiB; another account's refresh replaces it. Entries expire after
+  six hours and are read only
+  after the Web API gateway verifies the Spotify account. Cached metadata
+  appears before the normal Spotify refresh; no requests are skipped and
+  no tokens are stored in this cache. Home previews and later pages are not
+  cached.
 - Oxidify has no telemetry, analytics, or hosted service. Besides Spotify
   and its album art CDN, the app contacts
   [lrclib.net](https://lrclib.net) while the lyrics panel is open and
@@ -58,7 +66,27 @@ shows how to add one.
   installed) is the last fallback. Spotify tokens are never sent to an
   alternate provider. yt-dlp is never downloaded at runtime.
 
+## Refreshing a page
+
+The circular arrow immediately left of the Winamp mini player button reloads
+only the current page. Top songs skips its disk-cache read and starts a new
+live request even if an older load is still running; older responses cannot
+replace the refreshed view or overwrite a newer cache write. Playlist refresh requests both current metadata
+and items instead of restoring snapshot-cached items, and ignores cache reads
+from before the refresh. Successful loads can update those metadata caches.
+Audio, artwork, lyrics, and credentials are untouched. Other pages reuse their
+existing reload behaviour. Search repeats the current query; refresh is disabled
+in Settings, which has no page data to reload.
+
+Refresh uses the normal API gateway and honours its concurrency limits and
+`Retry-After` cooldowns. It does not bypass Spotify's rate limits.
+
 ## When Spotify pushes back
+
+The full Top songs page uses the foreground request lane rather than
+waiting behind the four-request background queue used by Home previews and
+sidebar loading. It still shares the API's six-request concurrency limit
+and rate-limit cooldown; foreground priority does not bypass Spotify limits.
 
 Each Web API session has its own concurrency and cooldown. Oxidify honours
 `Retry-After` without pausing the other session and treats Development Mode

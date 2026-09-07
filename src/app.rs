@@ -978,6 +978,11 @@ impl App {
                 }
                 Event::Local(state) => self.handle_local(*state),
                 Event::Api(response) => self.handle_api(*response),
+                Event::TopSongsCache {
+                    account_id,
+                    generation,
+                    tracks,
+                } => self.adopt_top_songs_cache(&account_id, generation, tracks),
                 Event::Accent { url, color } => {
                     self.accent_pending.remove(&url);
                     let tint = self.palette.tint_from_art(color);
@@ -995,16 +1000,11 @@ impl App {
                 Event::PlaylistCache {
                     account_id,
                     id,
+                    generation,
                     snapshot,
                     items,
                 } => {
-                    if self.user_id() != Some(account_id.as_str()) {
-                        continue;
-                    }
-                    if let Some(page) = self.playlist_pages.get_mut(&id) {
-                        page.pending_cache = Some((snapshot, items));
-                    }
-                    self.try_adopt_playlist_cache(&id);
+                    self.adopt_playlist_cache(&account_id, &id, generation, snapshot, items);
                 }
                 Event::UserName { id, name } => {
                     self.set_user_name(id, name);
@@ -1020,6 +1020,18 @@ impl App {
         }
     }
 
+    fn adopt_top_songs_cache(&mut self, account_id: &str, generation: u64, tracks: Vec<Track>) {
+        if self.user_id() != Some(account_id)
+            || generation != self.home.top_songs_generation
+            || !self.home.top_songs_loading
+            || self.home.top_songs.get().is_some()
+        {
+            return;
+        }
+        self.home.top_songs = Loadable::Loaded(tracks);
+        self.home.top_songs_revision = crate::model::next_view_revision();
+    }
+
     fn handle_web_app(&mut self, client_id: Option<String>) {
         if client_id.is_some() {
             self.personal_web_authorizing = false;
@@ -1032,13 +1044,14 @@ impl App {
             AuthStatus::Connected { .. } => {
                 self.sign_in_url = None;
                 self.reset_data();
-                self.load_playlists();
                 self.ensure_loaded(self.page().clone());
+                self.load_playlists();
             }
             AuthStatus::WaitingForBrowser { url } => self.sign_in_url = Some(url.clone()),
             AuthStatus::SignedOut => {
                 self.sign_in_url = None;
                 self.web_app = None;
+                self.personal_web_authorizing = false;
                 self.user = None;
                 self.free_alternate_applied = false;
                 self.profile_playback_applied = false;
@@ -1051,7 +1064,6 @@ impl App {
                 self.reset_data();
             }
             AuthStatus::Failed(message) => {
-                self.personal_web_authorizing = false;
                 self.sign_in_url = None;
                 self.toast_error(message.clone());
             }
@@ -1760,8 +1772,10 @@ impl App {
                     });
                     // The disk may hold the whole list already; it is
                     // adopted only if Spotify's snapshot still matches.
-                    self.backend
-                        .send(Command::LoadPlaylistCache { id: id.clone() });
+                    self.backend.send(Command::LoadPlaylistCache {
+                        id: id.clone(),
+                        generation,
+                    });
                 }
                 self.request_contains(vec![format!("spotify:playlist:{id}")]);
             }
@@ -1847,6 +1861,7 @@ impl App {
             offset: 0,
             full: false,
             generation,
+            read_cache: false,
         });
         self.home.discover_pending.clear();
         for term in DISCOVER_TERMS {
@@ -1866,7 +1881,7 @@ impl App {
     }
 
     fn load_top_songs(&mut self, force: bool) {
-        if self.home.top_songs_loading || (!force && self.home.top_songs_complete) {
+        if !force && (self.home.top_songs_loading || self.home.top_songs_complete) {
             return;
         }
         self.home.top_songs = Loadable::Loading;
@@ -1877,6 +1892,7 @@ impl App {
             offset: 0,
             full: true,
             generation: self.home.top_songs_generation,
+            read_cache: !force,
         });
     }
 
@@ -1963,6 +1979,11 @@ impl App {
         match &page {
             Page::Home => self.load_home(true),
             Page::TopSongs => self.load_top_songs(true),
+            Page::Search => {
+                self.search.typed_at = None;
+                self.search.committed.clear();
+                self.run_search(self.search.query.trim().to_string());
+            }
             Page::LikedSongs => self.library.liked.reset(),
             Page::Albums => self.library.albums.reset(),
             Page::Artists => self.library.artists.reset(),
@@ -2321,6 +2342,7 @@ impl App {
                                     offset: offset + received,
                                     full: true,
                                     generation,
+                                    read_cache: false,
                                 });
                             } else {
                                 self.home.top_songs_loading = false;
@@ -3380,6 +3402,25 @@ impl App {
         }
     }
 
+    fn adopt_playlist_cache(
+        &mut self,
+        account_id: &str,
+        id: &str,
+        generation: u64,
+        snapshot: String,
+        items: Vec<crate::api::models::PlaylistItem>,
+    ) {
+        if self.user_id() != Some(account_id) {
+            return;
+        }
+        if let Some(page) = self.playlist_pages.get_mut(id)
+            && page.generation == generation
+        {
+            page.pending_cache = Some((snapshot, items));
+            self.try_adopt_playlist_cache(id);
+        }
+    }
+
     /// Adopt a playlist's disk cache once both it and the live playlist
     /// are here and Spotify's snapshot still matches; a stale cache is
     /// discarded, never shown.
@@ -4085,6 +4126,7 @@ impl App {
                 self.auth = AuthStatus::SignedOut;
             }
             Action::ConfigurePersonalWebApp => {
+                self.personal_web_authorizing = self.settings.web_client_id.is_some();
                 self.save_settings();
                 self.backend.send(Command::ConfigurePersonalWebApp(
                     self.settings.web_client_id.clone(),
@@ -4126,7 +4168,6 @@ impl App {
             Action::CheckForUpdates => self.check_for_updates(true),
             Action::SettingsChanged => {
                 self.settings_dirty = true;
-                self.personal_web_authorizing = self.settings.web_client_id.is_some();
                 ctx.set_theme(match self.settings.theme {
                     ThemeChoice::Dark => egui::ThemePreference::Dark,
                     ThemeChoice::Light => egui::ThemePreference::Light,
@@ -4834,6 +4875,124 @@ mod tests {
         app
     }
 
+    #[test]
+    fn top_songs_cache_requires_account_generation_and_pending_live_result() {
+        let mut app = test_app();
+        app.user = Some(user_with_product("premium"));
+        app.home.top_songs_generation = 7;
+        app.home.top_songs_loading = true;
+        app.adopt_top_songs_cache("other", 7, vec![Track::default()]);
+        assert!(app.home.top_songs.get().is_none());
+        app.adopt_top_songs_cache("user", 6, vec![Track::default()]);
+        assert!(app.home.top_songs.get().is_none());
+        app.adopt_top_songs_cache("user", 7, vec![Track::default()]);
+        assert_eq!(app.home.top_songs.get().unwrap().len(), 1);
+        assert!(app.home.top_songs_loading);
+        assert!(!app.home.top_songs_complete);
+        app.adopt_top_songs_cache("user", 7, Vec::new());
+        assert_eq!(app.home.top_songs.get().unwrap().len(), 1);
+        app.handle_api(ApiResponse::TopTracks {
+            offset: 0,
+            full: true,
+            generation: 7,
+            result: Err(premium_required()),
+        });
+        assert_eq!(app.home.top_songs.get().unwrap().len(), 1);
+        assert!(!app.home.top_songs_loading);
+        assert!(!app.home.top_songs_complete);
+    }
+
+    #[test]
+    fn refresh_top_songs_supersedes_loading_and_rejects_old_results() {
+        let mut app = test_app();
+        app.user = Some(user_with_product("premium"));
+        app.load_top_songs(false);
+        let old = app.home.top_songs_generation;
+        app.load_top_songs(false);
+        assert_eq!(app.home.top_songs_generation, old);
+        app.reload(Page::TopSongs);
+        assert_eq!(app.home.top_songs_generation, old + 1);
+        app.adopt_top_songs_cache("user", old, vec![Track::default()]);
+        app.handle_api(ApiResponse::TopTracks {
+            offset: 0,
+            full: true,
+            generation: old,
+            result: Ok(crate::api::models::Page::default()),
+        });
+        assert!(app.home.top_songs.get().is_none());
+        assert!(app.home.top_songs_loading);
+        app.handle_api(ApiResponse::TopTracks {
+            offset: 0,
+            full: true,
+            generation: old + 1,
+            result: Ok(crate::api::models::Page::default()),
+        });
+        assert!(app.home.top_songs_complete);
+    }
+
+    #[test]
+    fn search_refresh_repeats_current_query_and_advances_serial() {
+        let mut app = test_app();
+        app.search.query = "Bonobo".into();
+        app.run_search("Bonobo".into());
+        let serial = app.search.serial;
+        app.reload(Page::Search);
+        assert_eq!(app.search.serial, serial + 1);
+        assert_eq!(app.search.committed, "Bonobo");
+        assert!(app.search.typed_at.is_none());
+    }
+
+    #[test]
+    fn playlist_refresh_rejects_in_flight_disk_cache() {
+        let mut app = test_app();
+        app.user = Some(user_with_product("premium"));
+        let id = "playlist".to_string();
+        app.ensure_loaded(Page::Playlist(id.clone()));
+        let old = app.playlist_pages[&id].generation;
+        app.reload(Page::Playlist(id.clone()));
+        assert_ne!(app.playlist_pages[&id].generation, old);
+        app.adopt_playlist_cache("user", &id, old, "snapshot".into(), Vec::new());
+        let page = &app.playlist_pages[&id];
+        assert!(page.pending_cache.is_none());
+        assert!(!page.cache_complete);
+        assert!(page.items.loading);
+    }
+
+    #[test]
+    fn late_top_songs_cache_cannot_replace_live_tracks() {
+        let mut app = test_app();
+        app.user = Some(user_with_product("premium"));
+        app.home.top_songs_generation = 7;
+        app.home.top_songs_loading = true;
+        app.handle_api(ApiResponse::TopTracks {
+            offset: 0,
+            full: true,
+            generation: 7,
+            result: Ok(crate::api::models::Page::default()),
+        });
+        app.adopt_top_songs_cache("user", 7, vec![Track::default()]);
+        assert!(app.home.top_songs.get().unwrap().is_empty());
+        assert!(!app.home.top_songs_loading);
+        assert!(app.home.top_songs_complete);
+    }
+
+    #[test]
+    fn verified_personal_app_finishes_authorizing() {
+        let mut app = test_app();
+        app.personal_web_authorizing = true;
+        app.handle_web_app(None);
+        assert!(app.personal_web_authorizing);
+        let client_id = "5542003f03a9432ead9d90bd0e45822b".to_string();
+        app.settings.web_client_id = Some(client_id.clone());
+        app.handle_web_app(Some(client_id.clone()));
+        assert!(!app.personal_web_authorizing);
+        assert_eq!(app.web_app.as_deref(), Some(client_id.as_str()));
+        app.handle_auth(AuthStatus::SignedOut);
+        assert!(app.web_app.is_none());
+        assert!(!app.personal_web_authorizing);
+        app.backend.shutdown();
+    }
+
     fn user_with_product(product: &str) -> User {
         User {
             id: "user".into(),
@@ -4875,23 +5034,6 @@ mod tests {
             app.toasts.last().unwrap().message,
             "Couldn't check for updates: GitHub is unavailable"
         );
-    #[test]
-    fn verified_personal_app_finishes_authorizing() {
-        let mut app = test_app();
-        app.personal_web_authorizing = true;
-        app.handle_web_app(None);
-        assert!(app.personal_web_authorizing);
-        let client_id = "5542003f03a9432ead9d90bd0e45822b".to_string();
-        app.settings.web_client_id = Some(client_id.clone());
-        app.handle_web_app(Some(client_id.clone()));
-        assert!(!app.personal_web_authorizing);
-        assert_eq!(app.web_app.as_deref(), Some(client_id.as_str()));
-        app.handle_auth(AuthStatus::SignedOut);
-        assert!(app.web_app.is_none());
-        assert!(!app.personal_web_authorizing);
-        app.backend.shutdown();
-    }
-
         app.finish_update_check(true, Ok(None));
         assert!(app.update.is_none());
         assert_eq!(app.toasts.last().unwrap().message, "Oxidify is up to date");

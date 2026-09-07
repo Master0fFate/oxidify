@@ -17,11 +17,11 @@ const SPINNER_SIZE: f32 = 15.0;
 const SOURCE_MIN: f32 = 48.0;
 const UPDATE_WIDTH: f32 = 140.0;
 
-/// Right-edge cluster: inset, avatar, settings, mini player, and optional spinner.
+/// Right-edge cluster: inset, avatar, settings, mini player, refresh, and optional spinner.
 /// Search and the source label must yield before this width is stolen.
 pub(crate) fn topbar_right_reserved(spinner: bool) -> f32 {
     let spinner_w = if spinner { SPINNER_SIZE + 8.0 } else { 0.0 };
-    super::widgets::PAGE_PADDING + AVATAR_SIZE + 2.0 * (CONTROL_GAP + SETTINGS_HIT) + spinner_w
+    super::widgets::PAGE_PADDING + AVATAR_SIZE + 3.0 * (CONTROL_GAP + SETTINGS_HIT) + spinner_w
 }
 
 pub(crate) fn topbar_search_width(available_after_nav: f32, spinner: bool) -> f32 {
@@ -289,6 +289,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 .clicked()
                 {
                     app.actions.push(Action::ToggleWinampWindow);
+                }
+                let can_refresh = !matches!(app.page(), Page::Settings);
+                if ui
+                    .add_enabled_ui(can_refresh, |ui| {
+                        theme::icon_button(
+                            ui,
+                            Icon::Refresh,
+                            19.0,
+                            palette.secondary,
+                            palette.text,
+                            "Refresh current page",
+                        )
+                    })
+                    .inner
+                    .clicked()
+                {
+                    app.actions.push(Action::Reload(app.page().clone()));
                 }
                 // A quiet spinner once the app has been talking to Spotify for a
                 // while, long enough that fast requests never flash it.
