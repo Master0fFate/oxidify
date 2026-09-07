@@ -514,6 +514,7 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq)]
 pub enum LocalPlayback {
     /// Not authorized; local playback is unavailable but the app still works.
+    PersonalWebAuthorizing(bool),
     Unavailable,
     /// The browser is open for the playback grant.
     Authorizing,
@@ -849,14 +850,10 @@ impl Worker {
                 }
                 Command::SignInEnded { source } => {
                     if self.authorizing_source == Some(source) {
-                        self.cancel_signin = None;
-                        self.authorizing_source = None;
                         if matches!(self.api.state(source), SessionState::Authorizing) {
                             self.api.clear(source);
                         }
-                        if let Some(pending) = self.pending_authorization.take() {
-                            self.sign_in_source(pending);
-                        }
+                        self.finish_authorization(source);
                     }
                 }
                 Command::PlaybackAuthEnded => {
@@ -1078,6 +1075,9 @@ impl Worker {
     fn sign_in_source(&mut self, source: ApiSource) {
         if self.cancel_signin.is_some() {
             return;
+        if source == ApiSource::Personal {
+            self.emit(Event::PersonalWebAuthorizing(false));
+        }
         }
         let grant = match source {
             ApiSource::Shared => crate::auth::Grant::shared_web_api(),
@@ -1113,6 +1113,9 @@ impl Worker {
                     waker.wake();
                 }
                 if let Err(error) = open::that_detached(&flow.url) {
+        if source == ApiSource::Personal {
+            self.emit(Event::PersonalWebAuthorizing(true));
+        }
                     log::warn!("unable to open a browser: {error}");
                 }
                 let code = crate::auth::wait_for_code(listener, &flow.state, cancel_rx).await?;
@@ -1165,6 +1168,7 @@ impl Worker {
         } else {
             self.pending_authorization = None;
         }
+        self.emit(Event::PersonalWebAuthorizing(self.web_client_id.is_some()));
     }
 
     async fn sign_out(&mut self) {

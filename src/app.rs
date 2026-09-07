@@ -242,6 +242,7 @@ pub struct App {
     pub sign_in_url: Option<String>,
     /// The verified personal Web API application, when acceleration is ready.
     pub web_app: Option<String>,
+    pub personal_web_authorizing: bool,
     pending_remote_position: Option<(u32, Instant)>,
     pending_remote_volume: Option<(u8, Instant)>,
     /// A local volume set here that the engine has not echoed back yet. It
@@ -446,6 +447,7 @@ impl App {
             last_eviction: Instant::now(),
             sign_in_url: None,
             web_app: None,
+            personal_web_authorizing: false,
             pending_remote_position: None,
             pending_remote_volume: None,
             pending_local_volume: None,
@@ -1007,12 +1009,22 @@ impl App {
                 Event::UserName { id, name } => {
                     self.set_user_name(id, name);
                 }
-                Event::WebApp { client_id } => self.web_app = client_id,
+                Event::PersonalWebAuthorizing(authorizing) => {
+                    self.personal_web_authorizing = authorizing;
+                }
+                Event::WebApp { client_id } => self.handle_web_app(client_id),
                 Event::UpdateChecked { manual, result } => {
                     self.finish_update_check(manual, result);
                 }
             }
         }
+    }
+
+    fn handle_web_app(&mut self, client_id: Option<String>) {
+        if client_id.is_some() {
+            self.personal_web_authorizing = false;
+        }
+        self.web_app = client_id;
     }
 
     fn handle_auth(&mut self, status: AuthStatus) {
@@ -1039,6 +1051,7 @@ impl App {
                 self.reset_data();
             }
             AuthStatus::Failed(message) => {
+                self.personal_web_authorizing = false;
                 self.sign_in_url = None;
                 self.toast_error(message.clone());
             }
@@ -4113,6 +4126,7 @@ impl App {
             Action::CheckForUpdates => self.check_for_updates(true),
             Action::SettingsChanged => {
                 self.settings_dirty = true;
+                self.personal_web_authorizing = self.settings.web_client_id.is_some();
                 ctx.set_theme(match self.settings.theme {
                     ThemeChoice::Dark => egui::ThemePreference::Dark,
                     ThemeChoice::Light => egui::ThemePreference::Light,
@@ -4861,6 +4875,23 @@ mod tests {
             app.toasts.last().unwrap().message,
             "Couldn't check for updates: GitHub is unavailable"
         );
+    #[test]
+    fn verified_personal_app_finishes_authorizing() {
+        let mut app = test_app();
+        app.personal_web_authorizing = true;
+        app.handle_web_app(None);
+        assert!(app.personal_web_authorizing);
+        let client_id = "5542003f03a9432ead9d90bd0e45822b".to_string();
+        app.settings.web_client_id = Some(client_id.clone());
+        app.handle_web_app(Some(client_id.clone()));
+        assert!(!app.personal_web_authorizing);
+        assert_eq!(app.web_app.as_deref(), Some(client_id.as_str()));
+        app.handle_auth(AuthStatus::SignedOut);
+        assert!(app.web_app.is_none());
+        assert!(!app.personal_web_authorizing);
+        app.backend.shutdown();
+    }
+
         app.finish_update_check(true, Ok(None));
         assert!(app.update.is_none());
         assert_eq!(app.toasts.last().unwrap().message, "Oxidify is up to date");

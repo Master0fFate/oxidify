@@ -128,20 +128,54 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             },
         );
+        let help_id = egui::Id::new("personal-web-app-help");
+        let mut show_help = ui
+            .data(|data| data.get_temp::<bool>(help_id))
+            .unwrap_or(false);
         widgets::setting_row(
             ui,
             &palette,
             "Don't have one?",
-            "It's free and takes five minutes in Spotify's developer dashboard.",
+            "Set up a personal app in Spotify's developer dashboard. App owners need Premium.",
             |ui| {
                 if theme::pill_button(ui, &palette, "Show me how", false).clicked() {
-                    app.actions.push(Action::OpenUrl(
-                        "https://github.com/Master0fFate/oxidify#personal-web-api-app-optional"
-                            .into(),
-                    ));
+                    show_help = !show_help;
+                    ui.data_mut(|data| data.insert_temp(help_id, show_help));
                 }
             },
         );
+        let redirect_uri = crate::auth::Grant::shared_web_api().redirect_uri();
+        widgets::setting_row(ui, &palette, "Required Redirect URI", &redirect_uri, |ui| {
+            if theme::pill_button(ui, &palette, "Copy URI", false).clicked() {
+                ui.ctx().copy_text(redirect_uri.clone());
+            }
+        });
+        ui.add(egui::Label::new(egui::RichText::new("In your Spotify app's Settings, add this exact Redirect URI and save before authorizing. Use 127.0.0.1, not localhost; no trailing slash.").font(theme::regular(13.0)).color(palette.secondary)).wrap());
+        if show_help {
+            ui.add_space(8.0);
+            for step in [
+                "1. Open the developer dashboard and sign in with your Spotify Premium account.",
+                "2. Create an app (or open your existing app). Enter a name and description, select Web API, and accept Spotify's terms.",
+                "3. In the app's Settings, add the Required Redirect URI shown above, then save.",
+                "4. Copy the Client ID (not the Client Secret) and paste it into Oxidify's Client ID field.",
+                "5. Click Authorize below and sign in with the same Spotify account you use in Oxidify. If another account uses your app, add it under User Management first.",
+            ] {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(step)
+                            .font(theme::regular(13.0))
+                            .color(palette.secondary),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(4.0);
+            }
+            if theme::pill_button(ui, &palette, "Open developer dashboard", false).clicked() {
+                app.actions.push(Action::OpenUrl(
+                    "https://developer.spotify.com/dashboard".into(),
+                ));
+            }
+        }
         let wanted = app
             .settings
             .web_client_id
@@ -156,13 +190,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             widgets::setting_row(
                 ui,
                 &palette,
-                "Personal acceleration is ready",
+                "Authorized",
                 "Supported requests use your app. Shared catalog coverage stays available.",
                 |ui| {
                     if theme::pill_button(ui, &palette, "Remove", false).clicked() {
                         app.settings.web_client_id = None;
                         app.actions.push(Action::ConfigurePersonalWebApp);
                     }
+                },
+            );
+        } else if app.personal_web_authorizing {
+            widgets::setting_row(
+                ui,
+                &palette,
+                "Authorizing…",
+                "Finish in your browser, then wait while Oxidify verifies your Spotify account.",
+                |ui| {
+                    ui.spinner();
                 },
             );
         } else if wanted.is_some() {

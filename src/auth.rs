@@ -507,6 +507,25 @@ mod tests {
     }
 
     #[test]
+    fn personal_redirect_matches_setup_instructions_and_authorization_url() {
+        let grant = Grant::personal_web_api("0123456789abcdef0123456789abcdef").unwrap();
+        let redirect = grant.redirect_uri();
+        assert_eq!(redirect, "http://127.0.0.1:8989/login");
+        assert_eq!(redirect, Grant::shared_web_api().redirect_uri());
+        let flow = begin(grant);
+        let url = reqwest::Url::parse(&flow.url).unwrap();
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key == "redirect_uri")
+                .unwrap()
+                .1,
+            redirect
+        );
+        assert!(include_str!("../README.md").contains(&redirect));
+        assert!(include_str!("../docs/_guide/make-it-even-faster.md").contains(&redirect));
+    }
+
+    #[test]
     fn request_line_parsing() {
         let code =
             parse_request_line("GET /login?code=abc%20d&state=s1 HTTP/1.1\r\n", "s1").unwrap();

@@ -790,6 +790,18 @@ mod tests {
             }
             assert_eq!(app.page(), &page);
         }
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("personal-web-app-help"), true));
+        app.open(Page::Settings);
+        for _ in 0..3 {
+            frame(&ctx, &mut app);
+        }
+        app.settings.web_client_id = Some("personal-demo-app".into());
+        app.web_app = None;
+        app.personal_web_authorizing = true;
+        frame(&ctx, &mut app);
+        app.personal_web_authorizing = false;
+        app.web_app = app.settings.web_client_id.clone();
+        frame(&ctx, &mut app);
         app.settings.sidebar_visible = false;
         frame(&ctx, &mut app);
         app.settings.sidebar_visible = true;

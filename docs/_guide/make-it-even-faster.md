@@ -46,10 +46,26 @@ app accelerates supported work without replacing shared coverage.
 ## Use it in Oxidify
 
 1. Open **Settings**, find **Make it even faster**, and paste the
-   Client ID.
+   Client ID (not the Client Secret). **Show me how** expands the tutorial
+   inside Oxidify; **Copy URI** copies the callback used by authorization.
 2. Click **Authorize**. Your browser opens Spotify's sign-in for your app.
-   Oxidify verifies that it belongs to the same Spotify account, then shows
-   **Personal acceleration is ready**.
+   Oxidify shows **Authorizing…** while waiting for browser approval and account
+   verification. Once it verifies the same Spotify account, the button is
+   replaced by **Authorized** and a separate **Remove** control. A failed
+   authorization shows an error and makes **Authorize** available again.
+
+### If Spotify reports a redirect mismatch
+
+For `redirect_uri: Not matching configuration`, open the developer dashboard,
+select the app whose Client ID you pasted, and edit its **Settings**. Add
+`http://127.0.0.1:8989/login` to **Redirect URIs** and **save**. `localhost`,
+a different path, HTTPS, or a trailing slash will not match. Return to
+Oxidify and click **Authorize** again. Oxidify cannot change your dashboard
+configuration automatically.
+
+Authorize with the same Spotify account already signed into Oxidify. If it
+is not the app owner, add that account in the dashboard's **User Management**
+first, subject to Spotify's Development Mode restrictions.
 
 That is all. Playing music on this computer is unaffected. Select **Remove**
 to delete only the personal grant; the shared session stays signed in.

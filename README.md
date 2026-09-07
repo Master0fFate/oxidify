@@ -164,6 +164,27 @@ continue through the shared app.
 
 For a Free account, or until Spotify confirms Premium, Oxidify selects
 **Alternate local audio** instead of attempting Spotify playback. Premium
+### Personal Web API app (optional)
+
+Settings → Account → **Show me how** opens an in-app setup tutorial.
+Create an app in the [Spotify developer dashboard](https://developer.spotify.com/dashboard)
+(app owners need Premium), select **Web API**, and register this exact
+**Redirect URI** in the app's Settings:
+
+```text
+http://127.0.0.1:8989/login
+```
+
+Save the dashboard settings, paste the **Client ID** (not the Client Secret)
+into Oxidify, then click **Authorize** using the same Spotify account.
+Settings shows **Authorizing…** during approval and verification, then
+**Authorized** with a separate **Remove** control once verified.
+Settings also has a **Copy URI** button. If Spotify says
+`redirect_uri: Not matching configuration`, check the app matching that Client
+ID: use `127.0.0.1`, not `localhost`, keep `/login`, omit any trailing slash,
+and save before retrying. Oxidify cannot register the URI on your behalf.
+See the [full setup guide](docs/_guide/make-it-even-faster.md).
+
 users can also select it under Settings → Playback on this computer. This
 mode still talks to the Spotify Web API for library, search, and metadata,
 then searches native YouTube and, if you configured one, a Piped-compatible
