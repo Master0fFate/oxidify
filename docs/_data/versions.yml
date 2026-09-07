@@ -1,7 +1,7 @@
-current: v0.3.4
+current: v0.3.5
 items:
-  - id: v0.3.4
-    title: v0.3.4 (latest)
+  - id: v0.3.5
+    title: v0.3.5 (latest)
     url: /download/
   - title: All releases
     url: https://github.com/Master0fFate/oxidify/releases
