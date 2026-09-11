@@ -11,3 +11,4 @@ docs/.bundle/
 # Official yt-dlp binaries, fetched by third_party/yt-dlp/vendor.*
 /third_party/yt-dlp/bin/
 .claude/
+.sync-memo.md

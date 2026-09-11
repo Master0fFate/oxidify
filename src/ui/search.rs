@@ -323,11 +323,13 @@ fn top_result(
             }
         }
     }
-    if response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
-        && page != Page::Search
-    {
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if let Some(uri) = &play_uri {
+        egui::Popup::context_menu(&response)
+            .frame(widgets::menu_frame(&palette))
+            .show(|ui| widgets::context_menu_items(ui, app, uri, title, None));
+    }
+    if response.clicked() && page != Page::Search {
         app.actions.push(Action::Open(page));
     }
 }
@@ -381,6 +383,7 @@ fn artist_card(app: &mut App, ui: &mut egui::Ui, artist: &Artist) {
         true,
         true,
     );
+    widgets::card_context_menu(app, &card, &artist.uri, &artist.name);
     if card.play {
         app.actions.push(Action::PlayContext {
             uri: artist.uri.clone(),
@@ -431,6 +434,7 @@ fn album_card(app: &mut App, ui: &mut egui::Ui, album: &crate::api::models::Albu
         false,
         true,
     );
+    widgets::card_context_menu(app, &card, &album.uri, &album.name);
     if card.play {
         app.actions.push(Action::PlayContext {
             uri: album.uri.clone(),
@@ -476,6 +480,7 @@ fn playlist_card(app: &mut App, ui: &mut egui::Ui, playlist: &crate::api::models
         false,
         true,
     );
+    widgets::card_context_menu(app, &card, &playlist.uri, &playlist.name);
     if card.play {
         app.actions.push(Action::PlayContext {
             uri: playlist.uri.clone(),
@@ -525,6 +530,7 @@ fn show_card(app: &mut App, ui: &mut egui::Ui, show: &crate::api::models::Show) 
         false,
         false,
     );
+    widgets::card_context_menu(app, &card, &show.uri, &show.name);
     if card.clicked {
         app.actions.push(Action::Open(Page::Show(show.id.clone())));
     }

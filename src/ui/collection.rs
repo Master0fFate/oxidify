@@ -410,6 +410,12 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
         table.context.clone()
     };
     let sorted = sort.is_some();
+    let compact = app.settings.compact_tracks;
+    let row_height = if compact {
+        theme::COMPACT_ROW_HEIGHT
+    } else {
+        theme::ROW_HEIGHT
+    };
     // Dragging a row within an owned playlist moves it, but only while
     // the rows on screen sit at their server positions: no sort and no
     // filter, the same rule the menu's move items live by.
@@ -422,33 +428,54 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
             _ => None,
         })
         .flatten();
+    let insert_playlist = (sort.is_none() && needle.is_empty())
+        .then(|| match &table.context {
+            RowContext::Context {
+                editable_playlist: Some((id, _)),
+                uri,
+            } => Some((id.clone(), uri.clone())),
+            _ => None,
+        })
+        .flatten();
     // While one of this table's own rows is in hand, the slot nearest the
     // pointer: neighbours shift before that row draws, so the spot cannot
     // be discovered row by row, but the fixed row height makes it
     // arithmetic even through the virtualised rows.
     let list_top = ui.cursor().top();
+    let clip = ui.clip_rect();
+    let visible_len = entry.visible.len();
+    let pointer_slot = |ctx: &egui::Context| {
+        let pos = ctx.pointer_latest_pos().filter(|pos| clip.contains(*pos))?;
+        let row = (pos.y - list_top) / row_height;
+        (row >= 0.0 && row <= visible_len as f32).then(|| (row.round() as usize).min(visible_len))
+    };
     let move_slot = move_playlist.as_ref().and_then(|playlist_id| {
         let track = egui::DragAndDrop::payload::<DragTrack>(ui.ctx())?;
         let (origin, _) = track.from.as_ref()?;
         if origin != playlist_id {
             return None;
         }
-        let pos = ui
-            .ctx()
-            .pointer_latest_pos()
-            .filter(|pos| ui.clip_rect().contains(*pos))?;
-        let row = (pos.y - list_top) / theme::ROW_HEIGHT;
-        (row >= 0.0 && row <= entry.visible.len() as f32)
-            .then(|| (row.round() as usize).min(entry.visible.len()))
+        pointer_slot(ui.ctx())
     });
-    widgets::virtual_rows(ui, entry.visible.len(), theme::ROW_HEIGHT, |ui, row| {
+    let insert_slot = insert_playlist.as_ref().and_then(|(playlist_id, _)| {
+        let track = egui::DragAndDrop::payload::<DragTrack>(ui.ctx())?;
+        if track
+            .from
+            .as_ref()
+            .is_some_and(|(origin, _)| origin == playlist_id)
+        {
+            return None;
+        }
+        pointer_slot(ui.ctx())
+    });
+    widgets::virtual_rows(ui, entry.visible.len(), row_height, |ui, row| {
         let index = entry.visible[row];
         let (item, added_at, added_by) = &table.items[index];
         // Neighbours part at the slot the dragged row would land in, the
         // same eased few pixels the sidebar uses, and ease back after.
         let shift = ui.ctx().animate_value_with_time(
             ui.id().with(("table-move-shift", row)),
-            match move_slot {
+            match move_slot.or(insert_slot) {
                 Some(slot) if row < slot => -4.0,
                 Some(_) => 4.0,
                 None => 0.0,
@@ -463,20 +490,20 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
                 number: Some(if sorted { row + 1 } else { index + 1 }),
                 item,
                 context: &context,
-                show_cover: table.show_cover,
-                show_album: table.show_album,
+                show_cover: table.show_cover && !compact,
+                show_album: table.show_album && !compact,
                 added_at: added_at.as_deref(),
                 added_by: added_by.as_deref(),
                 show_added_by: table.show_added_by,
-                compact: false,
+                compact,
                 shift,
             },
         );
     });
-    if let Some(slot) = move_slot {
+    if let Some(slot) = move_slot.or(insert_slot) {
         // A line in the gap the rows opened, so the eye lands where the
         // row will.
-        let y = list_top + slot as f32 * theme::ROW_HEIGHT;
+        let y = list_top + slot as f32 * row_height;
         ui.painter().hline(
             ui.max_rect().x_range().shrink(8.0),
             y,
@@ -486,17 +513,35 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
         // wrong type, or another list's row, would silently discard it.
         if ui.input(|input| input.pointer.any_released())
             && let Some(track) = egui::DragAndDrop::take_payload::<DragTrack>(ui.ctx())
-            && let Some((playlist_id, from)) = track.from.clone()
         {
-            let to = slot as u32;
-            // The slot is Spotify's insert_before, exactly what the
-            // action's handler sends; a row dropped back on its own
-            // edges moves nothing.
-            if to != from && to != from + 1 {
-                app.actions.push(Action::MoveInPlaylist {
+            if let Some((playlist_id, from)) = track
+                .from
+                .clone()
+                .filter(|(origin, _)| move_playlist.as_ref().is_some_and(|id| id == origin))
+            {
+                let to = slot as u32;
+                // The slot is Spotify's insert_before, exactly what the
+                // action's handler sends; a row dropped back on its own
+                // edges moves nothing.
+                if to != from && to != from + 1 {
+                    app.actions.push(Action::MoveInPlaylist {
+                        playlist_id,
+                        from,
+                        to,
+                    });
+                }
+            } else if let Some((playlist_id, _)) = insert_playlist.clone() {
+                let playlist_name = app
+                    .playlist_pages
+                    .get(&playlist_id)
+                    .and_then(|page| page.playlist.get().map(|playlist| playlist.name.clone()))
+                    .unwrap_or_else(|| "playlist".into());
+                app.actions.push(Action::AddToPlaylist {
                     playlist_id,
-                    from,
-                    to,
+                    playlist_name,
+                    uris: vec![track.uri.clone()],
+                    position: Some(slot as u32),
+                    confirmed: false,
                 });
             }
         }

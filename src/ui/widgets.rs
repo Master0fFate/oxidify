@@ -283,6 +283,26 @@ pub fn item_menu(
         ui.menu_button("Add to playlist", |ui| {
             ui.set_min_width(220.0);
             ui.set_max_width(300.0);
+            let filter_id = ui.id().with("playlist-filter");
+            let mut filter = ui
+                .data(|data| data.get_temp::<String>(filter_id))
+                .unwrap_or_default();
+            let search = ui.add(
+                egui::TextEdit::singleline(&mut filter)
+                    .hint_text("Find a playlist")
+                    .desired_width(220.0),
+            );
+            if search.changed() {
+                ui.data_mut(|data| data.insert_temp(filter_id, filter.clone()));
+            }
+            let focused_id = ui.id().with("playlist-filter-focus");
+            if !ui
+                .data(|data| data.get_temp::<bool>(focused_id))
+                .unwrap_or(false)
+            {
+                search.request_focus();
+                ui.data_mut(|data| data.insert_temp(focused_id, true));
+            }
             if menu_item(ui, &palette, Some(Icon::Plus), "New playlist") {
                 app.actions.push(Action::ShowDialog(Dialog::CreatePlaylist {
                     name: String::new(),
@@ -293,15 +313,21 @@ pub fn item_menu(
             if !playlists.is_empty() {
                 menu_separator(ui, &palette);
             }
+            let needle = filter.trim().to_lowercase();
             egui::ScrollArea::vertical()
                 .max_height(320.0)
                 .show(ui, |ui| {
                     for (id, name) in &playlists {
+                        if !needle.is_empty() && !name.to_lowercase().contains(&needle) {
+                            continue;
+                        }
                         if menu_item(ui, &palette, Some(Icon::ListMusic), name) {
                             app.actions.push(Action::AddToPlaylist {
                                 playlist_id: id.clone(),
                                 playlist_name: name.clone(),
                                 uris: vec![uri.clone()],
+                                position: None,
+                                confirmed: false,
                             });
                         }
                     }
@@ -531,6 +557,26 @@ fn play_from_row(app: &mut App, row: &TrackRow<'_>) {
     });
 }
 
+fn artist_links(
+    ui: &mut Ui,
+    app: &mut App,
+    artists: &[ArtistRef],
+    font: egui::FontId,
+    color: Color32,
+) {
+    for (index, artist) in artists.iter().enumerate() {
+        if index > 0 {
+            theme::text(ui, ", ", font.clone(), color);
+        }
+        let response = theme::link(ui, artist.name.clone(), font.clone(), color);
+        if response.clicked()
+            && let Some(id) = artist.id.clone()
+        {
+            app.actions.push(Action::Open(Page::Artist(id)));
+        }
+    }
+}
+
 /// Draws a track row; pushes actions for what the user did.
 pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
     let palette = app.palette;
@@ -688,14 +734,13 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
                 if track.explicit {
                     explicit_badge(ui, &palette);
                 }
-                let names = track.artist_names();
-                let first_artist = track.artists.iter().find_map(|artist| artist.id.clone());
-                let response = theme::link(ui, names, theme::regular(12.5), subtitle_color);
-                if response.clicked()
-                    && let Some(id) = first_artist
-                {
-                    app.actions.push(Action::Open(Page::Artist(id)));
-                }
+                artist_links(
+                    ui,
+                    app,
+                    &track.artists,
+                    theme::regular(12.5),
+                    subtitle_color,
+                );
             }
             PlayableItem::Episode(episode) => {
                 let subtitle = episode
@@ -773,7 +818,7 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
             painter.text(
                 pos2(cell.left(), cell.center().y),
                 egui::Align2::LEFT_CENTER,
-                util::format_date(added),
+                util::format_added_at(added),
                 theme::regular(13.0),
                 palette.secondary,
             );
@@ -1158,6 +1203,7 @@ pub fn ellipsized(
 pub struct CardResponse {
     pub clicked: bool,
     pub play: bool,
+    pub response: egui::Response,
 }
 
 /// A cover-and-title card for grids and shelves.
@@ -1273,7 +1319,15 @@ pub fn card(
     CardResponse {
         clicked: response.clicked() && !play,
         play,
+        response,
     }
+}
+
+/// Right-click actions for a library card.
+pub fn card_context_menu(app: &mut App, card: &CardResponse, uri: &str, name: &str) {
+    egui::Popup::context_menu(&card.response)
+        .frame(menu_frame(&app.palette))
+        .show(|ui| context_menu_items(ui, app, uri, name, None));
 }
 
 /// A horizontal shelf of cards with a title.
@@ -1356,6 +1410,19 @@ pub fn thin_slider(
     width: f32,
     accent: Color32,
 ) -> SliderEvent {
+    thin_slider_with_scroll(ui, palette, id, value, width, accent, false)
+}
+
+/// A thin slider; when `scroll` is set, the wheel moves it in five-percent steps.
+pub fn thin_slider_with_scroll(
+    ui: &mut Ui,
+    palette: &Palette,
+    id: egui::Id,
+    value: f32,
+    width: f32,
+    accent: Color32,
+    scroll: bool,
+) -> SliderEvent {
     let (rect, response) = ui.allocate_exact_size(vec2(width, 16.0), Sense::click_and_drag());
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     let dragging_value = ui.data(|data| data.get_temp::<f32>(id));
@@ -1363,6 +1430,14 @@ pub fn thin_slider(
         .interact_pointer_pos()
         .map(|pos| ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0));
     let mut event = SliderEvent::None;
+    if scroll && response.hovered() && !response.dragged() {
+        let delta = ui.input(|input| input.smooth_scroll_delta.y);
+        if delta.abs() > 0.1 {
+            ui.input_mut(|input| input.smooth_scroll_delta.y = 0.0);
+            let step = if delta > 0.0 { 0.05 } else { -0.05 };
+            event = SliderEvent::Committed((value + step).clamp(0.0, 1.0));
+        }
+    }
     if (response.drag_started() || response.dragged())
         && let Some(v) = pointer_value
     {

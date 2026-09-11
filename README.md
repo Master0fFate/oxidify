@@ -42,6 +42,7 @@ getting started, everyday use, and how it connects to Spotify.
 - **Library access.** Playlists, Liked Songs, saved albums, followed
   artists, podcasts, and saved episodes, filterable in the sidebar and as
   full pages. Sidebar rows pin to the top and drag into your own order.
+  Appearance can switch the sidebar and track tables to compact rows.
 - **Search** across songs, artists, albums, playlists, podcasts, and episodes,
   with a top result and per-type views.
 - **Home** with Made for you, Recently played, your top artists and songs, and
@@ -57,9 +58,12 @@ getting started, everyday use, and how it connects to Spotify.
   frames and refreshed when their inputs change. Sorted Liked Songs also
   plays in its displayed order from the page's play button.
 - **Playlists you own** can be created, renamed, described, reordered, and
-  edited: add from any row's menu or by dragging a song onto the playlist in
-  the sidebar, remove from the playlist page.
-- **Queue** as a side panel or a page; add anything to it from a row menu.
+  edited: add from any row's menu (type to find the destination) or by dragging
+  a song, including the one that is playing, onto a playlist in the sidebar or
+  between rows of an open playlist. Adding a song that is already there asks
+  first. Remove from the playlist page.
+- **Queue** as a side panel or a page; it names what is playing from, and
+  anything can be added to it from a row menu.
 - **Lyrics** beside whatever is playing, timed lines that follow the song,
   from Spotify or [LRCLIB](https://lrclib.net).
 - **Album-art colour.** Pages and the player bar can take a tint from the
@@ -73,9 +77,10 @@ getting started, everyday use, and how it connects to Spotify.
   from the [Winamp Skin Museum](https://skins.webamp.org) on either window
   to add it.
 - **Equalizer.** Winamp's ten bands and presets for local Spotify playback,
-  in Settings and in the skin. The bands compensate for their overlap so
-  their combined response meets the sliders; the graph uses the same digital
-  filters as playback. Alternate audio does not yet use the equalizer.
+  in Settings and in the skin. AUTO on the skin lays the bands flat. The bands
+  compensate for their overlap so their combined response meets the sliders;
+  the graph uses the same digital filters as playback. Alternate audio does
+  not yet use the equalizer.
 - **Keyboard-first.** Every common action has a shortcut (`Ctrl+/` or `?` lists
   them).
 - **Keeps playing when you close the window.** The window closes for real,

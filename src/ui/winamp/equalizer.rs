@@ -2,8 +2,7 @@
 //!
 //! Winamp's graphic equalizer: a preamp and ten bands on sliders cut from
 //! `eqmain.bmp`, the ON switch, a PRESETS button, and the little graph of
-//! the curve. AUTO loaded a preset per song from a file Oxidify has no
-//! equivalent of, so it stays painted and off. The sound itself is shaped
+//! the curve. AUTO here lays the bands flat. The sound itself is shaped
 //! in `eq`, on the player's thread; this only moves the numbers.
 
 use egui::Sense;
@@ -64,7 +63,18 @@ pub(super) fn show(app: &mut App, view: &mut View, focused: bool) {
     {
         app.actions.push(Action::ToggleEq);
     }
-    view.sprite(sprites::EQ_AUTO_OFF, layout::EQ_AUTO);
+    let flat = settings.bands_db.iter().all(|gain| gain.abs() < 0.05);
+    let (auto_normal, auto_pressed) = if flat {
+        (sprites::EQ_AUTO_ON, sprites::EQ_AUTO_ON_PRESSED)
+    } else {
+        (sprites::EQ_AUTO_OFF, sprites::EQ_AUTO_OFF_PRESSED)
+    };
+    if view
+        .button(layout::EQ_AUTO, auto_normal, auto_pressed, "eq-auto")
+        .clicked()
+    {
+        app.actions.push(Action::FlattenEq);
+    }
     let presets = view.button(
         layout::EQ_PRESETS_BUTTON,
         sprites::EQ_PRESETS,

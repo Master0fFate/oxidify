@@ -12,8 +12,10 @@ from that song within its playlist or album. The shuffle button next to a
 page's play button starts the page in shuffled order.
 
 The player bar shows what is playing locally or on another device. Click the
-title to open its album, the artist name to open the artist, or the heart to
-save the track.
+title to open its album, an artist name to open that artist, or the heart to
+save the track. Drag the cover or title onto a playlist in the sidebar, or
+between rows of an open playlist, to add it. The wheel over the volume slider
+moves it five percent at a time.
 
 Local Spotify playback keeps sample-rate conversion continuous between audio
 packets when the output uses a different rate, such as 48 kHz on Windows.
@@ -51,12 +53,16 @@ or use the magnifier to search it. Liked Songs stays at the top. The current
 page is highlighted, and the playing playlist has a small speaker icon.
 
 **Playlists you own** are fully editable: create one with the **+** button,
-add songs from any row's menu or by dragging them onto a playlist in the
-sidebar, remove and reorder from the playlist page, and rename or delete
-from its context menu. Reordering works by dragging a row to its new
-place, or from its menu; while the table is sorted or filtered, rows
-keep their place. Dropping a song on Liked Songs saves it. Playlists
-you follow can be followed and unfollowed.
+add songs from any row's menu (the list filters as you type) or by dragging
+them onto a playlist in the sidebar or onto a gap in an open playlist page,
+remove and reorder from the playlist page, and rename or delete from its
+context menu. Reordering works by dragging a row to its new place, or from
+its menu; while the table is sorted or filtered, rows keep their place.
+Adding a song that is already in the playlist asks first. Dropping a song on
+Liked Songs saves it. Playlists you follow can be followed and unfollowed.
+
+Settings → Appearance can show the library as names only and track tables as
+one-line rows without covers. Date added is relative for the first month.
 
 ## Search
 
@@ -67,8 +73,8 @@ chips to show one type. The empty search page lists recent searches.
 ## Devices and the queue
 
 The speaker icon in the player bar lists every Spotify Connect device on
-your account. Click one and the music moves there mid-song; the same
-controls keep working. "Playing on …" in the top bar reminds you when sound
+your account; long lists scroll. Click one and the music moves there
+mid-song; the same controls keep working. "Playing on …" in the top bar reminds you when sound
 is coming out of something across the room. If you turned on alternate local
 audio, this computer is listed as a local player with that limitation, not as
 a Connect device, and the top bar names the match source. Playback starts as
@@ -76,8 +82,10 @@ soon as the audio headers are in; some M4A files wait until download finishes.
 Network stalls and transient HTTP errors retry and resume. A terminal
 transport or decode failure stops the track instead of skipping.
 
-The queue lives behind the list icon, as a side panel or a full page. Add
-anything to it from a row's context menu.
+The queue lives behind the list icon, as a side panel or a full page. It
+names the album or playlist the current song came from. Add anything to it
+from a row's context menu. Right-click Home and Search cards for the same
+actions as elsewhere.
 
 ### Receivers on the local network
 

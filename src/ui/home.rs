@@ -150,10 +150,15 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
                         }
                     }
                 }
-                if response
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
+                let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                if let Some(uri) = uri {
+                    egui::Popup::context_menu(&response)
+                        .frame(widgets::menu_frame(&palette))
+                        .show(|ui| {
+                            widgets::context_menu_items(ui, app, uri, name, None);
+                        });
+                }
+                if response.clicked() {
                     app.actions.push(Action::Open(page.clone()));
                 }
             }
@@ -209,6 +214,7 @@ fn made_for_you(app: &mut App, ui: &mut egui::Ui) {
                 false,
                 true,
             );
+            widgets::card_context_menu(app, &card, &playlist.uri, &playlist.name);
             if card.play {
                 app.actions.push(Action::PlayContext {
                     uri: playlist.uri.clone(),
@@ -268,6 +274,7 @@ fn recently_played(app: &mut App, ui: &mut egui::Ui) {
                 false,
                 true,
             );
+            widgets::card_context_menu(app, &card, &track.uri, &track.name);
             if card.play {
                 app.remember_track(track);
                 app.actions.push(Action::PlayUris {
@@ -317,6 +324,7 @@ fn top_artists(app: &mut App, ui: &mut egui::Ui) {
                 true,
                 true,
             );
+            widgets::card_context_menu(app, &card, &artist.uri, &artist.name);
             if card.play {
                 app.actions.push(Action::PlayContext {
                     uri: artist.uri.clone(),
@@ -391,7 +399,7 @@ fn track_list(
                 added_at: None,
                 added_by: None,
                 show_added_by: false,
-                compact: false,
+                compact: app.settings.compact_tracks,
                 shift: 0.0,
             },
         );

@@ -80,6 +80,70 @@ pub fn format_date(iso: &str) -> String {
     }
 }
 
+/// `Today`, `Yesterday`, or `N days ago` for the last 29 days, then a date.
+pub fn format_added_at(iso: &str) -> String {
+    format_added_at_from(iso, utc_today())
+}
+
+fn utc_today() -> (i32, u32, u32) {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    ymd_from_unix_days((secs / 86_400) as i32)
+}
+
+fn parse_ymd(iso: &str) -> Option<(i32, u32, u32)> {
+    let date = iso.get(..10)?;
+    let mut parts = date.split('-');
+    let year = parts.next()?.parse().ok()?;
+    let month = parts.next()?.parse().ok()?;
+    let day = parts.next()?.parse().ok()?;
+    ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some((year, month, day))
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> i32 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year.rem_euclid(400) as u32;
+    let month_prime = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era as i32 - 719_468
+}
+
+fn ymd_from_unix_days(days: i32) -> (i32, u32, u32) {
+    let serial = days + 719_468;
+    let era = serial.div_euclid(146_097);
+    let day_of_era = serial.rem_euclid(146_097) as u32;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = era * 400 + year_of_era as i32;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = if month_prime < 10 {
+        month_prime + 3
+    } else {
+        month_prime - 9
+    };
+    let year = if month <= 2 { year + 1 } else { year };
+    (year, month, day)
+}
+
+fn format_added_at_from(iso: &str, today: (i32, u32, u32)) -> String {
+    let Some((year, month, day)) = parse_ymd(iso) else {
+        return format_date(iso);
+    };
+    let delta = days_from_civil(today.0, today.1, today.2) - days_from_civil(year, month, day);
+    match delta {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        2..=29 => format!("{delta} days ago"),
+        _ => format_date(iso),
+    }
+}
+
 /// Tears the id out of `spotify:track:abc` and friends.
 pub fn uri_id(uri: &str) -> Option<&str> {
     uri.rsplit(':').next().filter(|id| !id.is_empty())
@@ -256,6 +320,24 @@ mod tests {
         assert_eq!(format_date("2024-01-05T10:00:00Z"), "Jan 5, 2024");
         assert_eq!(format_date("2024-03"), "Mar 2024");
         assert_eq!(format_date("2024"), "2024");
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(ymd_from_unix_days(0), (1970, 1, 1));
+        assert_eq!(
+            format_added_at_from("2026-09-11T08:00:00Z", (2026, 9, 11)),
+            "Today"
+        );
+        assert_eq!(
+            format_added_at_from("2026-09-10", (2026, 9, 11)),
+            "Yesterday"
+        );
+        assert_eq!(
+            format_added_at_from("2026-08-20", (2026, 9, 11)),
+            "22 days ago"
+        );
+        assert_eq!(
+            format_added_at_from("2026-01-05", (2026, 9, 11)),
+            "Jan 5, 2026"
+        );
     }
 
     #[test]

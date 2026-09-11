@@ -904,7 +904,8 @@ mod tests {
                 }],
             );
             assert!(!egui::DragAndDrop::has_any_payload(&ctx));
-            if app.playlist_busy {
+            if app.playlist_busy || matches!(app.dialog, Some(Dialog::ConfirmAddToPlaylist { .. }))
+            {
                 dropped = true;
                 break;
             }

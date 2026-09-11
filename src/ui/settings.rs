@@ -697,6 +697,28 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         widgets::setting_row(
             ui,
             &palette,
+            "Compact library",
+            "Names only in the sidebar, without covers.",
+            |ui| {
+                if widgets::switch(ui, &palette, &mut app.settings.compact_library).changed() {
+                    changed = true;
+                }
+            },
+        );
+        widgets::setting_row(
+            ui,
+            &palette,
+            "Compact tracks",
+            "One-line rows without covers in track tables.",
+            |ui| {
+                if widgets::switch(ui, &palette, &mut app.settings.compact_tracks).changed() {
+                    changed = true;
+                }
+            },
+        );
+        widgets::setting_row(
+            ui,
+            &palette,
             "Interface zoom",
             "Ctrl+Plus and Ctrl+Minus work anywhere; Ctrl+0 resets.",
             |ui| {

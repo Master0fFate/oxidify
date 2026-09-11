@@ -3,12 +3,12 @@
 use egui::{Align, Frame, Layout, Margin, Rect, Sense, UiBuilder, Vec2, pos2, vec2};
 
 use crate::app::{App, NowPlaying};
-use crate::model::{Action, Page};
+use crate::model::{Action, DragTrack, Page};
 use crate::player::RepeatMode;
 use crate::theme::{self, Icon};
 use crate::util;
 
-use super::widgets::{SliderEvent, thin_slider};
+use super::widgets::{SliderEvent, thin_slider, thin_slider_with_scroll};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
@@ -106,9 +106,20 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
         .interact(
             cover_rect,
             egui::Id::new("now-playing-cover"),
-            Sense::click(),
+            Sense::click_and_drag(),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if !now.is_episode && cover_response.drag_started_by(egui::PointerButton::Primary) {
+        egui::DragAndDrop::set_payload(
+            ui.ctx(),
+            DragTrack {
+                uri: now.uri.clone(),
+                title: now.title.clone(),
+                image: now.art_small.clone().or_else(|| now.art_url.clone()),
+                from: None,
+            },
+        );
+    }
     if cover_response.clicked() {
         if let Some(id) = &now.album_id {
             app.actions.push(Action::Open(Page::Album(id.clone())));
@@ -120,7 +131,22 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
     let text_left = cover_rect.right() + 12.0;
     let text_width = (region.right() - text_left - heart_width).max(40.0);
     let text_rect = Rect::from_min_size(pos2(text_left, cy - 18.0), vec2(text_width, 36.0));
-    let info_response = ui.interact(text_rect, egui::Id::new("now-playing-info"), Sense::click());
+    let info_response = ui.interact(
+        text_rect,
+        egui::Id::new("now-playing-info"),
+        Sense::click_and_drag(),
+    );
+    if !now.is_episode && info_response.drag_started_by(egui::PointerButton::Primary) {
+        egui::DragAndDrop::set_payload(
+            ui.ctx(),
+            DragTrack {
+                uri: now.uri.clone(),
+                title: now.title.clone(),
+                image: now.art_small.clone().or_else(|| now.art_url.clone()),
+                from: None,
+            },
+        );
+    }
     let mut text_ui = ui.new_child(
         UiBuilder::new()
             .max_rect(text_rect)
@@ -136,19 +162,43 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
             app.actions.push(Action::Open(Page::Show(id.clone())));
         }
     }
-    let subtitle_response = theme::link(
-        &mut text_ui,
-        &now.subtitle,
-        theme::regular(12.0),
-        palette.secondary,
-    );
-    if subtitle_response.clicked() {
-        if let Some(id) = now.artists.first().and_then(|artist| artist.id.clone()) {
-            app.actions.push(Action::Open(Page::Artist(id)));
-        } else if let Some(id) = &now.show_id {
+    let subtitle_response = if now.is_episode {
+        let response = theme::link(
+            &mut text_ui,
+            &now.subtitle,
+            theme::regular(12.0),
+            palette.secondary,
+        );
+        if response.clicked()
+            && let Some(id) = &now.show_id
+        {
             app.actions.push(Action::Open(Page::Show(id.clone())));
         }
-    }
+        response
+    } else {
+        text_ui
+            .horizontal(|ui| {
+                ui.set_max_width(text_width);
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for (index, artist) in now.artists.iter().enumerate() {
+                    if index > 0 {
+                        theme::text(ui, ", ", theme::regular(12.0), palette.secondary);
+                    }
+                    let response = theme::link(
+                        ui,
+                        artist.name.clone(),
+                        theme::regular(12.0),
+                        palette.secondary,
+                    );
+                    if response.clicked()
+                        && let Some(id) = artist.id.clone()
+                    {
+                        app.actions.push(Action::Open(Page::Artist(id)));
+                    }
+                }
+            })
+            .response
+    };
     // The playing thing answers the same right-click menu as a table row,
     // from the cover, the empty space around the words, or the words.
     if let Some(item) = app.now_playing_item() {
@@ -414,13 +464,14 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
         Some(fraction) => (fraction * 100.0).round() as u8,
         None => volume,
     };
-    match thin_slider(
+    match thin_slider_with_scroll(
         ui,
         &palette,
         egui::Id::new("volume-slider"),
         shown as f32 / 100.0,
         92.0,
         palette.accent,
+        true,
     ) {
         SliderEvent::Dragging(value) => {
             app.volume_preview = Some(value);

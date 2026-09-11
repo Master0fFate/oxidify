@@ -295,84 +295,91 @@ pub fn popup(app: &mut App, ctx: &egui::Context) {
                 } else if !app.local_ready {
                     enable_playback_row(app, ui);
                 }
-                if devices.is_empty() && waiting.is_empty() && app.local_ready {
-                    ui.add_space(8.0);
-                    theme::subtle(
-                        ui,
-                        &palette,
-                        "No devices found. Open Spotify on another device to see it here.",
-                    );
-                    ui.add_space(8.0);
-                }
+                egui::ScrollArea::vertical()
+                    .id_salt("devices-list")
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        if devices.is_empty() && waiting.is_empty() && app.local_ready {
+                            ui.add_space(8.0);
+                            theme::subtle(
+                                ui,
+                                &palette,
+                                "No devices found. Open Spotify on another device to see it here.",
+                            );
+                            ui.add_space(8.0);
+                        }
 
-                for device in &devices {
-                    let is_local = device.id.is_some() && device.id == local_id;
-                    let active = device.id.is_some() && device.id == active_id;
-                    let name = if is_local && !device.name.contains("this computer") {
-                        format!("{} (this computer)", device.name)
-                    } else {
-                        device.name.clone()
-                    };
-                    let (rect, response) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::click());
-                    if response.hovered() {
-                        ui.painter().rect_filled(
-                            rect,
-                            CornerRadius::same(6),
-                            palette.surface_hover,
-                        );
-                    }
-                    let color = if active { palette.accent } else { palette.text };
-                    let icon_rect = Rect::from_center_size(
-                        pos2(rect.left() + 24.0, rect.center().y),
-                        egui::Vec2::splat(22.0),
-                    );
-                    device_icon(&device.kind)
-                        .image(color, 22.0)
-                        .paint_at(ui, icon_rect);
-                    let painter = ui.painter().with_clip_rect(rect);
-                    painter.text(
-                        pos2(rect.left() + 48.0, rect.center().y - 9.0),
-                        egui::Align2::LEFT_CENTER,
-                        name,
-                        theme::medium(14.0),
-                        color,
-                    );
-                    let status = if active {
-                        "Listening on this device".to_string()
-                    } else if device.is_restricted {
-                        "Restricted".to_string()
-                    } else if is_local {
-                        "Play here".to_string()
-                    } else {
-                        device.kind.replace('_', " ")
-                    };
-                    painter.text(
-                        pos2(rect.left() + 48.0, rect.center().y + 10.0),
-                        egui::Align2::LEFT_CENTER,
-                        status,
-                        theme::regular(12.0),
-                        if active {
-                            palette.accent
-                        } else {
-                            palette.secondary
-                        },
-                    );
-                    if active {
-                        let dot = pos2(rect.right() - 16.0, rect.center().y);
-                        ui.painter().circle_filled(dot, 4.0, palette.accent);
-                    }
-                    if response.clicked()
-                        && !active
-                        && let Some(id) = &device.id
-                    {
-                        app.actions.push(Action::Transfer(id.clone()));
-                    }
-                    response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                }
-                for receiver in &waiting {
-                    receiver_row(app, ui, receiver);
-                }
+                        for device in &devices {
+                            let is_local = device.id.is_some() && device.id == local_id;
+                            let active = device.id.is_some() && device.id == active_id;
+                            let name = if is_local && !device.name.contains("this computer") {
+                                format!("{} (this computer)", device.name)
+                            } else {
+                                device.name.clone()
+                            };
+                            let (rect, response) = ui.allocate_exact_size(
+                                vec2(ui.available_width(), 52.0),
+                                Sense::click(),
+                            );
+                            if response.hovered() {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    CornerRadius::same(6),
+                                    palette.surface_hover,
+                                );
+                            }
+                            let color = if active { palette.accent } else { palette.text };
+                            let icon_rect = Rect::from_center_size(
+                                pos2(rect.left() + 24.0, rect.center().y),
+                                egui::Vec2::splat(22.0),
+                            );
+                            device_icon(&device.kind)
+                                .image(color, 22.0)
+                                .paint_at(ui, icon_rect);
+                            let painter = ui.painter().with_clip_rect(rect);
+                            painter.text(
+                                pos2(rect.left() + 48.0, rect.center().y - 9.0),
+                                egui::Align2::LEFT_CENTER,
+                                name,
+                                theme::medium(14.0),
+                                color,
+                            );
+                            let status = if active {
+                                "Listening on this device".to_string()
+                            } else if device.is_restricted {
+                                "Restricted".to_string()
+                            } else if is_local {
+                                "Play here".to_string()
+                            } else {
+                                device.kind.replace('_', " ")
+                            };
+                            painter.text(
+                                pos2(rect.left() + 48.0, rect.center().y + 10.0),
+                                egui::Align2::LEFT_CENTER,
+                                status,
+                                theme::regular(12.0),
+                                if active {
+                                    palette.accent
+                                } else {
+                                    palette.secondary
+                                },
+                            );
+                            if active {
+                                let dot = pos2(rect.right() - 16.0, rect.center().y);
+                                ui.painter().circle_filled(dot, 4.0, palette.accent);
+                            }
+                            if response.clicked()
+                                && !active
+                                && let Some(id) = &device.id
+                            {
+                                app.actions.push(Action::Transfer(id.clone()));
+                            }
+                            response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        }
+                        for receiver in &waiting {
+                            receiver_row(app, ui, receiver);
+                        }
+                    });
             });
         });
     let popup_rect = area.response.rect;

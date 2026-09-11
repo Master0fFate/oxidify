@@ -164,6 +164,10 @@ pub struct Settings {
     pub playlist_shaded: bool,
     /// The main window is rolled up to its title bar.
     pub winamp_shaded: bool,
+    /// Library sidebar rows show a name only, without covers.
+    pub compact_library: bool,
+    /// Track tables use one-line rows without covers.
+    pub compact_tracks: bool,
 }
 
 impl Default for Settings {
@@ -214,6 +218,8 @@ impl Default for Settings {
             mono: false,
             playlist_shaded: false,
             winamp_shaded: false,
+            compact_library: false,
+            compact_tracks: false,
         }
     }
 }
@@ -317,6 +323,21 @@ mod tests {
         assert!(!settings.mono);
         assert!(!settings.playlist_shaded);
         assert!(!settings.winamp_shaded);
+        assert!(!settings.compact_library);
+        assert!(!settings.compact_tracks);
+    }
+
+    #[test]
+    fn compact_rows_round_trip() {
+        let settings = Settings {
+            compact_library: true,
+            compact_tracks: true,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert!(restored.compact_library);
+        assert!(restored.compact_tracks);
     }
 
     #[test]

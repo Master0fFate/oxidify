@@ -97,6 +97,16 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
         }
     };
     let now = app.now_playing();
+    if let Some((name, page)) = app.playing_context_heading() {
+        ui.horizontal(|ui| {
+            theme::text(ui, "Playing from", theme::regular(13.0), palette.secondary);
+            ui.add_space(6.0);
+            if theme::link(ui, name, theme::semibold(13.0), palette.text).clicked() {
+                app.actions.push(Action::Open(page));
+            }
+        });
+        ui.add_space(10.0);
+    }
     let current: Option<PlayableItem> = queue.currently_playing.clone().or_else(|| {
         now.as_ref().and_then(|now| {
             now.id

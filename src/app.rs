@@ -2602,6 +2602,7 @@ impl App {
                                 playlist_id: playlist.id.clone(),
                                 playlist_name: playlist.name.clone(),
                                 uris: add_uris,
+                                position: None,
                             });
                         }
                         self.open(Page::Playlist(playlist.id));
@@ -3956,14 +3957,9 @@ impl App {
                 playlist_id,
                 playlist_name,
                 uris,
-            } => {
-                self.playlist_busy = true;
-                self.backend.api(ApiRequest::AddToPlaylist {
-                    playlist_id,
-                    playlist_name,
-                    uris,
-                });
-            }
+                position,
+                confirmed,
+            } => self.add_to_playlist(playlist_id, playlist_name, uris, position, confirmed),
             Action::RemoveFromPlaylist { playlist_id, uris } => {
                 let snapshot_id = self
                     .playlist_pages
@@ -4312,6 +4308,10 @@ impl App {
                     self.push_eq();
                 }
             }
+            Action::FlattenEq => {
+                self.settings.eq_bands_db = [0.0; 10];
+                self.push_eq();
+            }
             Action::SetEqPreamp(gain_db) => {
                 self.settings.eq_preamp_db = gain_db.clamp(-crate::eq::RANGE_DB, 0.0);
                 self.push_eq();
@@ -4393,6 +4393,113 @@ impl App {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The album, playlist, or Liked Songs the interface treats as playing.
+    pub fn playing_context_heading(&self) -> Option<(String, Page)> {
+        let uri = self.playing_context_uri()?;
+        if uri.ends_with(":collection") {
+            return Some(("Liked Songs".into(), Page::LikedSongs));
+        }
+        if let Some(id) = uri.strip_prefix("spotify:playlist:") {
+            let name = self
+                .library
+                .playlists
+                .get()
+                .and_then(|playlists| {
+                    playlists
+                        .iter()
+                        .find(|playlist| playlist.id == id)
+                        .map(|playlist| playlist.name.clone())
+                })
+                .or_else(|| {
+                    self.playlist_pages
+                        .get(id)
+                        .and_then(|page| page.playlist.get().map(|playlist| playlist.name.clone()))
+                })
+                .unwrap_or_else(|| "Playlist".into());
+            return Some((name, Page::Playlist(id.to_string())));
+        }
+        if let Some(id) = uri.strip_prefix("spotify:album:") {
+            let name = self
+                .album_pages
+                .get(id)
+                .and_then(|page| page.album.get().map(|album| album.name.clone()))
+                .or_else(|| {
+                    self.now_playing()
+                        .filter(|now| now.album_id.as_deref() == Some(id))
+                        .map(|now| now.album_name.clone())
+                })
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "Album".into());
+            return Some((name, Page::Album(id.to_string())));
+        }
+        if let Some(id) = uri.strip_prefix("spotify:artist:") {
+            let name = self
+                .now_playing()
+                .and_then(|now| {
+                    now.artists
+                        .iter()
+                        .find(|artist| artist.id.as_deref() == Some(id))
+                        .map(|artist| artist.name.clone())
+                })
+                .unwrap_or_else(|| "Artist".into());
+            return Some((name, Page::Artist(id.to_string())));
+        }
+        if let Some(id) = uri.strip_prefix("spotify:show:") {
+            return Some(("Podcast".into(), Page::Show(id.to_string())));
+        }
+        None
+    }
+
+    fn playlist_contains_any(&self, playlist_id: &str, uris: &[String]) -> bool {
+        let Some(page) = self.playlist_pages.get(playlist_id) else {
+            return false;
+        };
+        page.items.items.iter().any(|item| {
+            item.playable()
+                .is_some_and(|playable| uris.iter().any(|uri| uri == playable.uri()))
+        })
+    }
+
+    fn add_to_playlist(
+        &mut self,
+        playlist_id: String,
+        playlist_name: String,
+        uris: Vec<String>,
+        position: Option<u32>,
+        confirmed: bool,
+    ) {
+        if !confirmed && self.playlist_contains_any(&playlist_id, &uris) {
+            let title = uris
+                .first()
+                .and_then(|uri| crate::util::uri_id(uri))
+                .and_then(|id| self.track_cache.get(id))
+                .map(|track| track.name.clone())
+                .unwrap_or_else(|| {
+                    if uris.len() > 1 {
+                        "these songs".into()
+                    } else {
+                        "this song".into()
+                    }
+                });
+            self.dialog = Some(Dialog::ConfirmAddToPlaylist {
+                playlist_id,
+                playlist_name,
+                uris,
+                title,
+                position,
+            });
+            return;
+        }
+        self.dialog = None;
+        self.playlist_busy = true;
+        self.backend.api(ApiRequest::AddToPlaylist {
+            playlist_id,
+            playlist_name,
+            uris,
+            position,
+        });
     }
 }
 

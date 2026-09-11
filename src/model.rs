@@ -494,6 +494,13 @@ pub enum Dialog {
         name: String,
         owned: bool,
     },
+    ConfirmAddToPlaylist {
+        playlist_id: String,
+        playlist_name: String,
+        uris: Vec<String>,
+        title: String,
+        position: Option<u32>,
+    },
     Shortcuts,
 }
 
@@ -557,6 +564,8 @@ pub enum Action {
         playlist_id: String,
         playlist_name: String,
         uris: Vec<String>,
+        position: Option<u32>,
+        confirmed: bool,
     },
     RemoveFromPlaylist {
         playlist_id: String,
@@ -639,6 +648,8 @@ pub enum Action {
     /// Switch the equalizer's effect on the sound on or off.
     ToggleEq,
     SetEqBand(usize, f32),
+    /// Lay every equalizer band flat.
+    FlattenEq,
     SetEqPreamp(f32),
     /// One of Winamp's presets, by its place in the list.
     ApplyEqPreset(usize),

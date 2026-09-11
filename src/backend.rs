@@ -115,6 +115,7 @@ pub enum ApiRequest {
         playlist_id: String,
         playlist_name: String,
         uris: Vec<String>,
+        position: Option<u32>,
     },
     RemoveFromPlaylist {
         playlist_id: String,
@@ -1987,8 +1988,9 @@ async fn handle(api: &ApiGateway, request: ApiRequest) -> (ApiResponse, Option<A
             playlist_id,
             playlist_name,
             uris,
+            position,
         } => ApiResponse::PlaylistItemsChanged {
-            result: routed!(add_playlist_items(&playlist_id, &uris, None)),
+            result: routed!(add_playlist_items(&playlist_id, &uris, position)),
             id: playlist_id,
             message: format!("Added to {playlist_name}"),
         },

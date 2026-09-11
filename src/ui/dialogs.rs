@@ -30,6 +30,35 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             match dialog {
                 Dialog::CreatePlaylist { .. } => create_playlist(app, ui),
                 Dialog::EditPlaylist { .. } => edit_playlist(app, ui),
+                Dialog::ConfirmAddToPlaylist {
+                    playlist_id,
+                    playlist_name,
+                    uris,
+                    title,
+                    position,
+                } => {
+                    theme::text(ui, "Already in this playlist", theme::bold(20.0), palette.text);
+                    ui.add_space(8.0);
+                    let body = format!(
+                        "“{title}” is already in “{playlist_name}”. Add it anyway?"
+                    );
+                    ui.add(egui::Label::new(egui::RichText::new(body).font(theme::regular(14.0)).color(palette.secondary)).wrap());
+                    ui.add_space(20.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if theme::pill_button(ui, &palette, "Add anyway", true).clicked() {
+                            app.actions.push(Action::AddToPlaylist {
+                                playlist_id,
+                                playlist_name,
+                                uris,
+                                position,
+                                confirmed: true,
+                            });
+                        }
+                        if theme::pill_button(ui, &palette, "Cancel", false).clicked() {
+                            app.actions.push(Action::CloseDialog);
+                        }
+                    });
+                }
                 Dialog::ConfirmDeletePlaylist { id, name, owned } => {
                     theme::text(ui, if owned { "Delete playlist?" } else { "Remove from Your Library?" }, theme::bold(20.0), palette.text);
                     ui.add_space(8.0);

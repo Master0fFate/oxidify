@@ -431,6 +431,8 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
             // neighbours shift before that row draws, so the spot cannot
             // be discovered row by row. The fixed row height makes it
             // arithmetic.
+            let compact = app.settings.compact_library;
+            let row_height = if compact { 44.0 } else { ROW_HEIGHT };
             let list_top = ui.cursor().top();
             let pointer = ui
                 .ctx()
@@ -441,7 +443,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
             let drop_target = dragging_song
                 .then_some(pointer)
                 .flatten()
-                .map(|pos| ((pos.y - list_top) / ROW_HEIGHT).floor())
+                .map(|pos| ((pos.y - list_top) / row_height).floor())
                 .filter(|row| *row >= 0.0 && *row < entries.len() as f32)
                 .map(|row| row as usize)
                 .filter(|row| entries[*row].liked || entries[*row].owned);
@@ -449,10 +451,10 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
             // the pointer, never above Liked Songs.
             let reordering = egui::DragAndDrop::has_payload_of_type::<DragEntry>(ui.ctx());
             let reorder_slot = reordering.then_some(pointer).flatten().map(|pos| {
-                (((pos.y - list_top) / ROW_HEIGHT).round().max(0.0) as usize)
+                (((pos.y - list_top) / row_height).round().max(0.0) as usize)
                     .clamp(liked_rows, entries.len())
             });
-            super::widgets::virtual_rows(ui, entries.len(), ROW_HEIGHT, |ui, index| {
+            super::widgets::virtual_rows(ui, entries.len(), row_height, |ui, index| {
                 let entry = &entries[index];
                 let droppable = entry.liked || entry.owned;
                 let drop_hover = drop_target == Some(index);
@@ -463,7 +465,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                 let pinned =
                     !entry.uri.is_empty() && app.settings.pinned_contexts.contains(&entry.uri);
                 let (rect, response) = ui.allocate_exact_size(
-                    vec2(ui.available_width(), ROW_HEIGHT),
+                    vec2(ui.available_width(), row_height),
                     Sense::click_and_drag(),
                 );
                 // Past the drag threshold the row itself is in hand, to be
@@ -524,9 +526,10 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                             egui::StrokeKind::Inside,
                         );
                     }
+                    let cover_size = if compact { 28.0 } else { 44.0 };
                     let cover_rect = Rect::from_center_size(
-                        pos2(rect.left() + 8.0 + 22.0, rect.center().y),
-                        Vec2::splat(44.0),
+                        pos2(rect.left() + 8.0 + cover_size / 2.0, rect.center().y),
+                        Vec2::splat(cover_size),
                     );
                     if entry.liked {
                         liked_cover(ui, cover_rect, 6.0);
@@ -536,7 +539,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                             &palette,
                             entry.image.as_deref(),
                             cover_rect,
-                            if entry.round { 22.0 } else { 6.0 },
+                            if entry.round { cover_size / 2.0 } else { 6.0 },
                             if entry.round { Icon::User } else { Icon::Music },
                         );
                     }
@@ -551,20 +554,30 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                     } else {
                         palette.text
                     };
-                    painter.text(
-                        pos2(text_left, rect.center().y - 9.0),
-                        egui::Align2::LEFT_CENTER,
-                        &entry.name,
-                        theme::medium(14.0),
-                        name_color,
-                    );
-                    painter.text(
-                        pos2(text_left, rect.center().y + 10.0),
-                        egui::Align2::LEFT_CENTER,
-                        &entry.subtitle,
-                        theme::regular(12.5),
-                        palette.secondary,
-                    );
+                    if compact {
+                        painter.text(
+                            pos2(text_left, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            &entry.name,
+                            theme::medium(13.5),
+                            name_color,
+                        );
+                    } else {
+                        painter.text(
+                            pos2(text_left, rect.center().y - 9.0),
+                            egui::Align2::LEFT_CENTER,
+                            &entry.name,
+                            theme::medium(14.0),
+                            name_color,
+                        );
+                        painter.text(
+                            pos2(text_left, rect.center().y + 10.0),
+                            egui::Align2::LEFT_CENTER,
+                            &entry.subtitle,
+                            theme::regular(12.5),
+                            palette.secondary,
+                        );
+                    }
                     if playing {
                         let icon_rect = Rect::from_center_size(
                             pos2(rect.right() - 16.0, rect.center().y),
@@ -659,6 +672,8 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                             playlist_id: id.clone(),
                             playlist_name: entry.name.clone(),
                             uris: vec![track.uri.clone()],
+                            position: None,
+                            confirmed: false,
                         });
                     }
                 }
@@ -738,7 +753,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
             if let Some(slot) = reorder_slot {
                 // A line in the gap the rows opened, so the eye lands
                 // where the row will.
-                let y = list_top + slot as f32 * ROW_HEIGHT;
+                let y = list_top + slot as f32 * row_height;
                 ui.painter().hline(
                     ui.max_rect().x_range().shrink(6.0),
                     y,
