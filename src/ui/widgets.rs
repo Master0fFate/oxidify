@@ -226,6 +226,26 @@ pub fn menu_item_enabled(
     clicked
 }
 
+/// A menu containing a text field must stay open for clicks in that field.
+/// Its explicit entries still close it through `menu_item`.
+fn menu_with_field<R>(
+    ui: &mut Ui,
+    label: &str,
+    contents: impl FnOnce(&mut Ui) -> R,
+) -> (egui::Response, Option<egui::InnerResponse<R>>) {
+    let config = egui::menu::MenuConfig::find(ui)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    if egui::menu::is_in_menu(ui) {
+        egui::menu::SubMenuButton::new(label)
+            .config(config)
+            .ui(ui, contents)
+    } else {
+        egui::menu::MenuButton::new(label)
+            .config(config)
+            .ui(ui, contents)
+    }
+}
+
 pub fn menu_separator(ui: &mut Ui, palette: &Palette) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
     ui.painter().hline(
@@ -280,7 +300,7 @@ pub fn item_menu(
             app.actions.push(Action::ToggleSaved(uri.clone()));
         }
         let playlists = app.editable_playlists();
-        ui.menu_button("Add to playlist", |ui| {
+        menu_with_field(ui, "Add to playlist", |ui| {
             ui.set_min_width(220.0);
             ui.set_max_width(300.0);
             let filter_id = ui.id().with("playlist-filter");
@@ -314,8 +334,11 @@ pub fn item_menu(
                 menu_separator(ui, &palette);
             }
             let needle = filter.trim().to_lowercase();
+            // A popup starts layout at its previous size. Ask for the full
+            // list height so clearing a filter can grow a shrunken menu.
             egui::ScrollArea::vertical()
                 .max_height(320.0)
+                .min_scrolled_height(320.0)
                 .show(ui, |ui| {
                     for (id, name) in &playlists {
                         if !needle.is_empty() && !name.to_lowercase().contains(&needle) {
@@ -336,12 +359,21 @@ pub fn item_menu(
     } else if menu_item(ui, &palette, Some(Icon::Bookmark), "Save episode") {
         app.actions.push(Action::ToggleSaved(uri.clone()));
     }
-    if let Some(RowContext::Context {
-        editable_playlist: Some((playlist_id, _)),
-        ..
-    }) = context
-    {
-        if let Some(index) = index {
+    // Removal uses URIs; moves use server positions and only belong on
+    // the unfiltered context, never on a sorted or filtered view.
+    let editable = match context {
+        Some(RowContext::Context {
+            editable_playlist: Some((playlist_id, _)),
+            ..
+        }) => Some((playlist_id, true)),
+        Some(RowContext::View {
+            editable_playlist: Some((playlist_id, _)),
+            ..
+        }) => Some((playlist_id, false)),
+        _ => None,
+    };
+    if let Some((playlist_id, can_move)) = editable {
+        if can_move && let Some(index) = index {
             if index > 0 && menu_item(ui, &palette, Some(Icon::ChevronUp), "Move up") {
                 app.actions.push(Action::MoveInPlaylist {
                     playlist_id: playlist_id.clone(),
@@ -547,13 +579,18 @@ fn columns(width: f32, row: &TrackRow<'_>) -> Columns {
 }
 
 fn play_from_row(app: &mut App, row: &TrackRow<'_>) {
-    if let PlayableItem::Track(track) = row.item {
-        app.remember_track(track);
-    }
+    let resume_ms = match row.item {
+        PlayableItem::Episode(episode) => episode.resume_ms(),
+        PlayableItem::Track(track) => {
+            app.remember_track(track);
+            None
+        }
+    };
     app.actions.push(Action::PlayFromRow {
         context: row.context.clone(),
         uri: row.item.uri().to_string(),
         index: row.index as u32,
+        resume_ms,
     });
 }
 
@@ -812,7 +849,7 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
         // cell is truer than January 1970.
         if let Some(added) = row
             .added_at
-            .filter(|added| !added.starts_with("1970-01-01"))
+            .filter(|added| !added.is_empty() && !added.starts_with("1970-01-01"))
         {
             let cell = Rect::from_min_size(pos2(x, rect.top()), vec2(cols.added, row_height));
             painter.text(
@@ -1628,4 +1665,287 @@ pub fn setting_row(
         ui.with_layout(Layout::right_to_left(Align::Center), control);
     });
     ui.add_space(10.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::AppOptions;
+    use crate::paths::AppDirs;
+    use crate::settings::Settings;
+
+    fn with_app(name: &str, check: impl FnOnce(&mut App)) {
+        let root =
+            std::env::temp_dir().join(format!("oxidify-widgets-{name}-{}", std::process::id()));
+        let mut app = App::new(
+            &crate::backend::Waker::default(),
+            AppDirs {
+                config: root.join("config"),
+                state: root.join("state"),
+                cache: root.join("cache"),
+            },
+            Settings::default(),
+            AppOptions {
+                media_controls: false,
+                tray: false,
+            },
+        );
+        crate::demo::populate(&mut app);
+        check(&mut app);
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn painted_text(shape: &egui::Shape, text: &mut Vec<(String, Rect)>) {
+        match shape {
+            egui::Shape::Text(shape) => text.push((
+                shape.galley.text().to_string(),
+                shape.galley.rect.translate(shape.pos.to_vec2()),
+            )),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    painted_text(shape, text);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn menu_frame_for_test(
+        ctx: &egui::Context,
+        app: &mut App,
+        item: &PlayableItem,
+        context: Option<&RowContext>,
+        nested: bool,
+        events: Vec<egui::Event>,
+    ) -> (Rect, Vec<(String, Rect)>) {
+        let mut root = Rect::NOTHING;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                if nested {
+                    root = ui
+                        .menu_button("Track menu", |ui| {
+                            item_menu(ui, app, item, context, Some(2));
+                        })
+                        .response
+                        .rect;
+                } else {
+                    item_menu(ui, app, item, context, Some(2));
+                }
+            },
+        );
+        let mut painted = Vec::new();
+        for shape in &output.shapes {
+            painted_text(&shape.shape, &mut painted);
+        }
+        output.textures_delta.clear();
+        (root, painted)
+    }
+
+    fn click(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    #[test]
+    fn playlist_view_menu_can_remove_but_cannot_move_by_display_index() {
+        with_app("view-menu", |app| {
+            let item = PlayableItem::Track(app.track_cache["trk0"].clone());
+            for editable in [false, true] {
+                let ctx = egui::Context::default();
+                theme::install(&ctx);
+                let context = RowContext::View {
+                    uris: vec![item.uri().to_string()],
+                    context_uri: "spotify:playlist:pl1".into(),
+                    editable_playlist: editable.then(|| ("pl1".into(), None)),
+                };
+                let (_, painted) =
+                    menu_frame_for_test(&ctx, app, &item, Some(&context), false, vec![]);
+                assert!(
+                    !painted
+                        .iter()
+                        .any(|(text, _)| text == "Move up" || text == "Move down")
+                );
+                let remove = painted
+                    .iter()
+                    .find(|(text, _)| text == "Remove from this playlist");
+                assert_eq!(remove.is_some(), editable);
+                if let Some((_, rect)) = remove {
+                    for pressed in [true, false] {
+                        menu_frame_for_test(
+                            &ctx,
+                            app,
+                            &item,
+                            Some(&context),
+                            false,
+                            click(rect.center(), pressed),
+                        );
+                    }
+                    assert!(matches!(app.actions.as_slice(),
+                        [Action::RemoveFromPlaylist { playlist_id, uris }]
+                        if playlist_id == "pl1" && uris == &["spotify:track:trk0"]));
+                    app.actions.clear();
+                }
+            }
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            let context = RowContext::Context {
+                uri: "spotify:playlist:pl1".into(),
+                editable_playlist: Some(("pl1".into(), None)),
+            };
+            let (_, painted) = menu_frame_for_test(&ctx, app, &item, Some(&context), false, vec![]);
+            assert!(painted.iter().any(|(text, _)| text == "Move up"));
+            assert!(painted.iter().any(|(text, _)| text == "Move down"));
+        });
+    }
+
+    #[test]
+    fn playlist_filter_click_stays_open_and_clearing_restores_its_height() {
+        with_app("picker", |app| {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            let item = PlayableItem::Track(app.track_cache["trk0"].clone());
+            let frame =
+                |app: &mut App, events| menu_frame_for_test(&ctx, app, &item, None, true, events);
+            let (root, _) = frame(app, vec![]);
+            for pressed in [true, false] {
+                frame(app, click(root.center(), pressed));
+            }
+            frame(app, vec![]);
+            let (_, painted) = frame(app, vec![]);
+            let add = painted
+                .iter()
+                .find(|(text, _)| text == "Add to playlist")
+                .unwrap()
+                .1
+                .center();
+            for pressed in [true, false] {
+                frame(app, click(add, pressed));
+            }
+            frame(app, vec![]);
+            let (_, painted) = frame(app, vec![]);
+            let field_rect = painted
+                .iter()
+                .find(|(text, _)| text == "Find a playlist")
+                .expect("the playlist filter is visible")
+                .1;
+            let height = || {
+                let layer = ctx
+                    .layer_id_at(field_rect.center())
+                    .expect("the submenu layer");
+                ctx.memory(|memory| memory.area_rect(layer.id))
+                    .expect("the submenu area")
+                    .height()
+            };
+            let full_height = height();
+            for pressed in [true, false] {
+                frame(app, click(field_rect.center(), pressed));
+            }
+            let (_, painted) = frame(app, vec![]);
+            assert!(egui::Popup::is_any_open(&ctx));
+            assert!(
+                ctx.text_edit_focused(),
+                "clicking the filter gives it text focus"
+            );
+            assert!(painted.iter().any(|(text, _)| text == "Sunday morning"));
+            frame(app, vec![egui::Event::Text("night".into())]);
+            frame(app, vec![]);
+            assert!(
+                height() < full_height,
+                "filtering shrinks the playlist menu"
+            );
+            for _ in 0..5 {
+                frame(
+                    app,
+                    vec![egui::Event::Key {
+                        key: egui::Key::Backspace,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+            frame(app, vec![]);
+            let (_, painted) = frame(app, vec![]);
+            assert_eq!(
+                height(),
+                full_height,
+                "clearing restores the full list height"
+            );
+            let playlist = painted
+                .iter()
+                .find(|(text, _)| text == "Sunday morning")
+                .unwrap()
+                .1
+                .center();
+            for pressed in [true, false] {
+                frame(app, click(playlist, pressed));
+            }
+            frame(app, vec![]);
+            assert!(!egui::Popup::is_any_open(&ctx));
+            assert!(
+                matches!(app.actions.as_slice(), [Action::AddToPlaylist { playlist_name, .. }] if playlist_name == "Sunday morning")
+            );
+        });
+    }
+
+    #[test]
+    fn episode_rows_preserve_the_resume_position_and_track_rows_keep_their_context() {
+        with_app("row-play", |app| {
+            let context = RowContext::View {
+                uris: vec![
+                    "spotify:track:before".into(),
+                    "spotify:episode:episode".into(),
+                    "spotify:track:after".into(),
+                ],
+                context_uri: "spotify:playlist:mixed".into(),
+                editable_playlist: Some(("mixed".into(), None)),
+            };
+            let episode = PlayableItem::Episode(crate::api::models::Episode {
+                uri: "spotify:episode:episode".into(),
+                duration_ms: 100_000,
+                resume_point: Some(crate::api::models::ResumePoint {
+                    fully_played: false,
+                    resume_position_ms: 42_000,
+                }),
+                ..Default::default()
+            });
+            let row = |item| TrackRow {
+                item,
+                context: &context,
+                index: 1,
+                number: None,
+                show_cover: false,
+                show_album: false,
+                added_at: None,
+                added_by: None,
+                show_added_by: false,
+                compact: false,
+                shift: 0.0,
+            };
+            play_from_row(app, &row(&episode));
+            assert!(
+                matches!(app.actions.as_slice(), [Action::PlayFromRow { uri, index: 1, resume_ms: Some(42_000), context: actual }] if uri == "spotify:episode:episode" && actual == &context)
+            );
+            app.actions.clear();
+            let track = PlayableItem::Track(app.track_cache["trk0"].clone());
+            play_from_row(app, &row(&track));
+            assert!(
+                matches!(app.actions.as_slice(), [Action::PlayFromRow { uri, index: 1, resume_ms: None, context: actual }] if uri == "spotify:track:trk0" && actual == &context)
+            );
+        });
+    }
 }

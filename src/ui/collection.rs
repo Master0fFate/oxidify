@@ -173,9 +173,11 @@ pub fn actions_row(
                         context: RowContext::View {
                             uris,
                             context_uri: uri.clone(),
+                            editable_playlist: None,
                         },
                         uri: String::new(),
                         index: 0,
+                        resume_ms: None,
                     });
                 } else {
                     app.actions.push(Action::PlayContext {
@@ -321,7 +323,7 @@ pub fn prepare_table_view(
         entry
     } else {
         let visible = view_indices(items, needle, sort);
-        let view_uris = sort.map(|_| {
+        let view_uris = (sort.is_some() || !needle.is_empty()).then(|| {
             visible
                 .iter()
                 .map(|&index| items[index].0.uri().to_string())
@@ -337,6 +339,23 @@ pub fn prepare_table_view(
         });
         ui.data_mut(|d| d.insert_temp(cache_id, Arc::clone(&entry)));
         entry
+    }
+}
+
+fn view_context(base: &RowContext, view_uris: Option<&Arc<[String]>>) -> RowContext {
+    match view_uris {
+        Some(uris) => match base {
+            RowContext::Context {
+                uri,
+                editable_playlist,
+            } => RowContext::View {
+                uris: uris.to_vec(),
+                context_uri: uri.clone(),
+                editable_playlist: editable_playlist.clone(),
+            },
+            _ => RowContext::Uris(uris.to_vec()),
+        },
+        None => base.clone(),
     }
 }
 
@@ -398,17 +417,7 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
     // What is displayed is what plays: a sorted view plays in its own
     // order, as a plain list of tracks, and its rows cannot edit server
     // positions that no longer match the screen.
-    let context = if let Some(uris) = &entry.view_uris {
-        match &table.context {
-            RowContext::Context { uri, .. } => RowContext::View {
-                uris: uris.to_vec(),
-                context_uri: uri.clone(),
-            },
-            _ => RowContext::Uris(uris.to_vec()),
-        }
-    } else {
-        table.context.clone()
-    };
+    let context = view_context(&table.context, entry.view_uris.as_ref());
     let sorted = sort.is_some();
     let compact = app.settings.compact_tracks;
     let row_height = if compact {
@@ -486,13 +495,21 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
             ui,
             app,
             TrackRow {
-                index: if sorted { row } else { index },
+                index: if entry.view_uris.is_some() {
+                    row
+                } else {
+                    index
+                },
                 number: Some(if sorted { row + 1 } else { index + 1 }),
                 item,
                 context: &context,
                 show_cover: table.show_cover && !compact,
                 show_album: table.show_album && !compact,
-                added_at: added_at.as_deref(),
+                // Every row reserves exactly the header's date column,
+                // including undated rows in a mixed playlist.
+                added_at: table
+                    .show_added
+                    .then_some(added_at.as_deref().unwrap_or("")),
                 added_by: added_by.as_deref(),
                 show_added_by: table.show_added_by,
                 compact,
@@ -645,6 +662,16 @@ fn view_indices(items: &[TableItem], needle: &str, sort: Option<TableSort>) -> V
         });
     }
     visible
+}
+
+/// Spotify mixes can contain missing dates or the epoch used for unknown
+/// dates. They do not need a Date added column until a real date is loaded.
+fn has_added_dates(items: &[TableItem]) -> bool {
+    items.iter().any(|(_, added_at, _)| {
+        added_at
+            .as_deref()
+            .is_some_and(|date| !date.is_empty() && !date.starts_with("1970-01-01"))
+    })
 }
 
 fn total_duration(items: &[TableItem]) -> u64 {
@@ -859,7 +886,7 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                     },
                     show_album: true,
                     show_cover: true,
-                    show_added: true,
+                    show_added: has_added_dates(&items),
                     show_added_by: made_together,
                     page: Page::Playlist(id.to_string()),
                     loading: page.items.loading,
@@ -1261,6 +1288,52 @@ mod tests {
     }
 
     #[test]
+    fn view_context_retains_uri_removal_rights_without_server_positions() {
+        let uris: Arc<[String]> = Arc::from(["spotify:track:a".to_string()]);
+        for editable in [
+            None,
+            Some(("pl1".to_string(), Some("snapshot".to_string()))),
+        ] {
+            let base = RowContext::Context {
+                uri: "spotify:playlist:pl1".into(),
+                editable_playlist: editable.clone(),
+            };
+            assert!(matches!(
+                view_context(&base, Some(&uris)),
+                RowContext::View { uris: actual, context_uri, editable_playlist }
+                    if actual == uris.as_ref()
+                        && context_uri == "spotify:playlist:pl1"
+                        && editable_playlist == editable
+            ));
+            assert!(matches!(
+                view_context(&base, None),
+                RowContext::Context { .. }
+            ));
+        }
+        let loose = RowContext::Uris(vec!["spotify:track:b".into()]);
+        assert!(
+            matches!(view_context(&loose, Some(&uris)), RowContext::Uris(actual) if actual == uris.as_ref())
+        );
+    }
+
+    #[test]
+    fn date_column_requires_at_least_one_real_loaded_date() {
+        let mut items = make_test_tracks();
+        assert!(has_added_dates(&items));
+        for (index, (_, date, _)) in items.iter_mut().enumerate() {
+            *date = match index {
+                0 => None,
+                1 => Some(String::new()),
+                _ => Some("1970-01-01T00:00:00Z".into()),
+            };
+        }
+        assert!(!has_added_dates(&items));
+        items[2].1 = Some("2026-09-30T12:00:00Z".into());
+        assert!(has_added_dates(&items));
+        assert!(!has_added_dates(&[]));
+    }
+
+    #[test]
     fn test_view_indices_filtering_and_sorting() {
         let items = make_test_tracks();
 
@@ -1287,6 +1360,116 @@ mod tests {
         });
         let visible = view_indices(&items, "", sort);
         assert_eq!(visible, vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn date_headers_and_album_rows_align_for_missing_epoch_and_mixed_dates() {
+        use crate::app::AppOptions;
+        use crate::paths::AppDirs;
+        use crate::settings::Settings;
+
+        fn painted(shape: &egui::Shape, text: &mut Vec<(String, f32)>) {
+            match shape {
+                egui::Shape::Text(shape) => text.push((
+                    shape.galley.text().to_string(),
+                    shape.pos.x + shape.galley.rect.left(),
+                )),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        painted(shape, text);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let root = std::env::temp_dir().join(format!("oxidify-date-table-{}", std::process::id()));
+        let mut app = App::new(
+            &crate::backend::Waker::default(),
+            AppDirs {
+                config: root.join("config"),
+                state: root.join("state"),
+                cache: root.join("cache"),
+            },
+            Settings::default(),
+            AppOptions {
+                media_controls: false,
+                tray: false,
+            },
+        );
+        crate::demo::populate(&mut app);
+        for mode in ["missing", "epoch", "mixed"] {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            let mut items = make_test_tracks();
+            for (index, (_, added_at, _)) in items.iter_mut().enumerate() {
+                *added_at = match (mode, index) {
+                    ("mixed", 0) => Some("2026-09-30T12:00:00Z".into()),
+                    ("epoch", _) | ("mixed", 1) => Some("1970-01-01T00:00:00Z".into()),
+                    _ => None,
+                };
+            }
+            let show_added = has_added_dates(&items);
+            let mut text = Vec::new();
+            for _ in 0..2 {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            vec2(1200.0, 800.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        table(
+                            &mut app,
+                            ui,
+                            Table {
+                                items: &items,
+                                context: RowContext::Uris(
+                                    items
+                                        .iter()
+                                        .map(|(item, _, _)| item.uri().to_string())
+                                        .collect(),
+                                ),
+                                show_album: true,
+                                show_cover: false,
+                                show_added,
+                                show_added_by: false,
+                                page: Page::Playlist("date-test".into()),
+                                loading: false,
+                                error: None,
+                                can_load_more: false,
+                                filter: "",
+                                items_revision: 0,
+                            },
+                        )
+                    },
+                );
+                text.clear();
+                for shape in &output.shapes {
+                    painted(&shape.shape, &mut text);
+                }
+                output.textures_delta.clear();
+            }
+            assert_eq!(
+                text.iter().any(|(label, _)| label == "DATE ADDED"),
+                mode == "mixed"
+            );
+            let heading = text.iter().find(|(label, _)| label == "ALBUM").unwrap().1;
+            for (item, _, _) in &items {
+                let PlayableItem::Track(track) = item else {
+                    unreachable!()
+                };
+                let album = &track.album.as_ref().unwrap().name;
+                let left = text.iter().find(|(label, _)| label == album).unwrap().1;
+                assert!(
+                    (left - heading).abs() < 1.0,
+                    "{mode}: {album} at {left}, header at {heading}"
+                );
+            }
+        }
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1340,6 +1523,12 @@ mod tests {
             assert_eq!(&*filtered.visible, &[2]);
             assert_eq!(
                 &**filtered.view_uris.as_ref().unwrap(),
+                &["spotify:track:t_2"]
+            );
+            let filtered_natural = view(ui, &app, &list, "desp", None);
+            assert_eq!(&*filtered_natural.visible, &[2]);
+            assert_eq!(
+                &**filtered_natural.view_uris.as_ref().unwrap(),
                 &["spotify:track:t_2"]
             );
             let natural = view(ui, &app, &list, "", None);

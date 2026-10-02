@@ -314,6 +314,23 @@ pub struct Episode {
     pub external_urls: ExternalUrls,
 }
 
+impl Episode {
+    /// Continue an unfinished episode without seeking past its final sample.
+    pub fn resume_ms(&self) -> Option<u32> {
+        let resume = self.resume_point.as_ref()?;
+        if resume.fully_played || resume.resume_position_ms == 0 {
+            return None;
+        }
+        Some(if self.duration_ms > 0 {
+            resume
+                .resume_position_ms
+                .min(self.duration_ms.saturating_sub(1))
+        } else {
+            resume.resume_position_ms
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct Show {
     #[serde(default)]
@@ -778,5 +795,23 @@ mod tests {
         let playlists = results.playlists.unwrap();
         assert_eq!(playlists.items.len(), 1);
         assert_eq!(playlists.next_offset(), Some(2));
+    }
+    #[test]
+    fn episode_resume_is_unfinished_and_inside_duration() {
+        let episode = |finished, position, duration| Episode {
+            duration_ms: duration,
+            resume_point: Some(ResumePoint {
+                fully_played: finished,
+                resume_position_ms: position,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(episode(false, 500, 1_000).resume_ms(), Some(500));
+        assert_eq!(episode(true, 500, 1_000).resume_ms(), None);
+        assert_eq!(episode(false, 0, 1_000).resume_ms(), None);
+        assert_eq!(episode(false, 5_000, 1_000).resume_ms(), Some(999));
+        assert_eq!(episode(false, 500, 0).resume_ms(), Some(500));
+        assert_eq!(episode(false, 500, 1).resume_ms(), Some(0));
+        assert_eq!(Episode::default().resume_ms(), None);
     }
 }

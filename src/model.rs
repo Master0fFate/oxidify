@@ -451,6 +451,9 @@ pub enum RowContext {
     View {
         uris: Vec<String>,
         context_uri: String,
+        /// Removal is by URI and remains safe when display order changes.
+        /// Reordering still requires a Context with actual server positions.
+        editable_playlist: Option<(String, Option<String>)>,
     },
 }
 
@@ -530,6 +533,11 @@ pub enum Action {
         offset_uri: Option<String>,
         offset_index: Option<u32>,
     },
+    /// Play an episode from the saved place shown by the requesting row.
+    PlayEpisode {
+        uri: String,
+        resume_ms: Option<u32>,
+    },
     PlayUris {
         uris: Vec<String>,
         index: u32,
@@ -538,6 +546,8 @@ pub enum Action {
         context: RowContext,
         uri: String,
         index: u32,
+        /// An episode's saved place, without discarding its playlist context.
+        resume_ms: Option<u32>,
     },
     ShufflePlay(String),
     SelectLocalPlayback,

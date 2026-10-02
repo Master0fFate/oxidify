@@ -464,47 +464,61 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
         Some(fraction) => (fraction * 100.0).round() as u8,
         None => volume,
     };
-    match thin_slider_with_scroll(
-        ui,
-        &palette,
-        egui::Id::new("volume-slider"),
-        shown as f32 / 100.0,
-        92.0,
-        palette.accent,
-        true,
-    ) {
-        SliderEvent::Dragging(value) => {
-            app.volume_preview = Some(value);
-            // Local volume is cheap to apply continuously; remote goes on release.
-            if now.is_none_or(|now| now.local) {
-                app.actions
-                    .push(Action::PreviewVolume((value * 100.0).round() as u8));
-            }
-        }
-        SliderEvent::Committed(value) => {
-            app.volume_preview = None;
-            app.actions
-                .push(Action::SetVolume((value * 100.0).round() as u8));
-        }
-        SliderEvent::None => {}
+    let adjustable = app.can_set_volume();
+    if !adjustable {
+        app.volume_preview = None;
     }
-    let volume_icon = match shown {
-        0 => Icon::VolumeX,
-        1..=33 => Icon::Volume,
-        34..=66 => Icon::Volume1,
-        _ => Icon::Volume2,
-    };
-    if theme::icon_button(
-        ui,
-        volume_icon,
-        18.0,
-        palette.secondary,
-        palette.text,
-        if shown == 0 { "Unmute" } else { "Mute" },
-    )
-    .clicked()
-    {
-        app.actions.push(Action::ToggleMute);
+    let controls = ui.add_enabled_ui(adjustable, |ui| {
+        match thin_slider_with_scroll(
+            ui,
+            &palette,
+            egui::Id::new("volume-slider"),
+            shown as f32 / 100.0,
+            92.0,
+            palette.accent,
+            true,
+        ) {
+            SliderEvent::Dragging(value) => {
+                app.volume_preview = Some(value);
+                // Local volume is cheap to apply continuously; remote goes on release.
+                if now.is_none_or(|now| now.local) {
+                    app.actions
+                        .push(Action::PreviewVolume((value * 100.0).round() as u8));
+                }
+            }
+            SliderEvent::Committed(value) => {
+                app.volume_preview = None;
+                app.actions
+                    .push(Action::SetVolume((value * 100.0).round() as u8));
+            }
+            SliderEvent::None => {}
+        }
+        let volume_icon = match shown {
+            0 => Icon::VolumeX,
+            1..=33 => Icon::Volume,
+            34..=66 => Icon::Volume1,
+            _ => Icon::Volume2,
+        };
+        if theme::icon_button(
+            ui,
+            volume_icon,
+            18.0,
+            palette.secondary,
+            palette.text,
+            if shown == 0 { "Unmute" } else { "Mute" },
+        )
+        .clicked()
+        {
+            app.actions.push(Action::ToggleMute);
+        }
+    });
+    if !adjustable {
+        ui.interact(
+            controls.response.rect,
+            egui::Id::new("volume-fixed"),
+            egui::Sense::hover(),
+        )
+        .on_hover_text("This device's volume can't be changed from Oxidify");
     }
     ui.add_space(4.0);
     let remote = now.is_some_and(|now| !now.local);

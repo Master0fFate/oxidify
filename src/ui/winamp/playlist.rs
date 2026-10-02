@@ -411,6 +411,7 @@ fn list(app: &mut App, view: &mut View, rows: &[Row], queue_uris: &[String], hei
                 context: RowContext::Uris(queue_uris.to_vec()),
                 uri: row.uri.clone(),
                 index: index as u32,
+                resume_ms: None,
             });
         }
         if app.winamp.playlist_selection.contains(&row.uri) {

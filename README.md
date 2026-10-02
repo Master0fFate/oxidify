@@ -34,7 +34,8 @@ getting started, everyday use, and how it connects to Spotify.
   for exactly what that does and does not promise.
 - **Controls every other device.** Move playback to a speaker, a phone, or
   another computer from the device picker, and keep controlling it: play,
-  pause, skip, seek, shuffle, repeat, volume.
+  pause, skip, seek, shuffle, repeat, volume. Devices that refuse remote volume
+  changes show disabled volume controls instead of failing requests.
 - **Finds speakers on your network.** A librespot, spotifyd, or hardware
   receiver waiting on the LAN is invisible to Spotify's API until it has an
   account. Oxidify discovers those over mDNS and connects them for you,
@@ -50,7 +51,9 @@ getting started, everyday use, and how it connects to Spotify.
   an account-scoped cache (up to six hours old), then refreshes from Spotify.
 - **Artist pages** with popular songs, a filterable discography, and related
   artists. **Album**, **playlist**, and **podcast** pages support playback
-  from any row.
+  from any row. Started podcast episodes continue from their saved position;
+  finished episodes start over. Playing an episode inside a playlist keeps
+  that playlist and its displayed order.
 - **Refresh the current page** with the circular arrow beside the Winamp
   mini player button. It requests fresh Spotify data, bypassing the page's
   metadata cache while still respecting Spotify rate limits.
@@ -61,7 +64,9 @@ getting started, everyday use, and how it connects to Spotify.
   edited: add from any row's menu (type to find the destination) or by dragging
   a song, including the one that is playing, onto a playlist in the sidebar or
   between rows of an open playlist. Adding a song that is already there asks
-  first. Remove from the playlist page.
+  first. The destination filter stays open while you type or scroll. Remove
+  from the playlist page even while sorted or filtered; positional moves are
+  available only in the playlist's original order.
 - **Queue** as a side panel or a page; it names what is playing from, and
   anything can be added to it from a row menu.
 - **Lyrics** beside whatever is playing, timed lines that follow the song,

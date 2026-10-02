@@ -11,11 +11,20 @@ when you hover, and each row has its own. Double-click a row to start playback
 from that song within its playlist or album. The shuffle button next to a
 page's play button starts the page in shuffled order.
 
+An unfinished podcast episode continues from the saved place shown in its
+row. A finished or unstarted episode starts at the beginning. The active
+episode keeps its live position, and episodes played from a playlist keep
+that playlist's queue and displayed order. This applies to supported Spotify
+playback; alternate local audio does not support podcast episodes.
+
 The player bar shows what is playing locally or on another device. Click the
 title to open its album, an artist name to open that artist, or the heart to
 save the track. Drag the cover or title onto a playlist in the sidebar, or
 between rows of an open playlist, to add it. The wheel over the volume slider
-moves it five percent at a time.
+moves it five percent at a time. When Spotify reports that a device cannot
+accept remote volume changes, volume and mute are disabled. Use that device's
+own controls instead; keyboard and media-control volume commands are ignored
+for the same device.
 
 Local Spotify playback keeps sample-rate conversion continuous between audio
 packets when the output uses a different rate, such as 48 kHz on Windows.
@@ -58,17 +67,24 @@ them onto a playlist in the sidebar or onto a gap in an open playlist page,
 remove and reorder from the playlist page, and rename or delete from its
 context menu. Reordering works by dragging a row to its new place, or from
 its menu; while the table is sorted or filtered, rows keep their place.
+**Remove from this playlist** remains available in those views, and playback
+follows the visible songs in their displayed order. Clearing a destination
+filter restores the Add to playlist menu's full scrollable height.
 Adding a song that is already in the playlist asks first. Dropping a song on
 Liked Songs saves it. Playlists you follow can be followed and unfollowed.
 
 Settings → Appearance can show the library as names only and track tables as
 one-line rows without covers. Date added is relative for the first month.
+The date column is hidden when no real dates are available; rows with missing
+dates stay aligned when other rows have dates.
 
 ## Search
 
 Ctrl+F (or `/`) focuses search from anywhere. Results are grouped into top
 result, songs, artists, albums, playlists, podcasts, and episodes. Use the
 chips to show one type. The empty search page lists recent searches.
+Clearing a previous query keeps your current page open. Typing the next query
+opens Search again.
 
 ## Devices and the queue
 
@@ -207,7 +223,8 @@ Connect devices and conflicting media-key handlers.
 | `Ctrl+/` or `?` | All shortcuts |
 | `Ctrl+Q` | Quit |
 
-On macOS, `Cmd` replaces `Ctrl`.
+On macOS, `Cmd` replaces `Ctrl`. Text fields retain arrow-key editing and
+selection; Shift shortcuts do not trigger their unshifted counterparts.
 
 ## Settings
 

@@ -1077,6 +1077,11 @@ fn sliders(app: &mut App, view: &mut View, now: Option<&NowPlaying>) {
         .map(|now| now.volume_percent)
         .unwrap_or_else(|| crate::app::volume_to_percent(app.local.volume));
     let (response, event) = view.slider(layout::VOLUME, "volume", 14);
+    let adjustable = app.can_set_volume();
+    let event = if adjustable { event } else { SliderEvent::None };
+    if !adjustable {
+        app.volume_preview = None;
+    }
     match event {
         SliderEvent::Dragging(value) => {
             app.volume_preview = Some(value);
@@ -1330,6 +1335,7 @@ mod tests {
             repeat: RepeatMode::Off,
             volume_percent: 50,
             can_control: true,
+            can_set_volume: true,
             is_episode: false,
             source_label: None,
         }

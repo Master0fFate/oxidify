@@ -86,6 +86,8 @@ pub struct NowPlaying {
     pub repeat: RepeatMode,
     pub volume_percent: u8,
     pub can_control: bool,
+    /// A remote device may support transport controls but reject volume changes.
+    pub can_set_volume: bool,
     pub is_episode: bool,
     pub source_label: Option<String>,
 }
@@ -766,6 +768,7 @@ impl App {
                 repeat: self.local.repeat,
                 volume_percent: volume_to_percent(self.local.volume),
                 can_control: true,
+                can_set_volume: true,
                 is_episode: track.is_episode,
                 source_label: self.local.source_label.clone(),
             });
@@ -853,8 +856,27 @@ impl App {
             repeat: RepeatMode::from_api(&remote.state.repeat_state),
             volume_percent: volume,
             can_control: device.is_none_or(|device| !device.is_restricted),
+            can_set_volume: device.is_none_or(|device| {
+                !device.is_restricted && device.supports_volume != Some(false)
+            }),
             is_episode,
             source_label: None,
+        })
+    }
+
+    /// A saved episode position must not rewind the same episode on the
+    /// chosen device, but choosing another device still needs a play request.
+    fn episode_is_at_target(&self, uri: &str) -> bool {
+        self.now_playing().is_some_and(|now| {
+            now.uri == uri
+                && match (self.target(), now.local) {
+                    (Target::Local, true) => true,
+                    (Target::Remote(id), false) => self
+                        .remote_fresh()
+                        .and_then(|remote| remote.state.device.as_ref())
+                        .is_some_and(|device| id.is_none() || device.id == id),
+                    _ => false,
+                }
         })
     }
 
@@ -3583,6 +3605,31 @@ impl App {
         }
     }
 
+    /// Whether the selected playback target accepts volume changes.
+    pub fn can_set_volume(&self) -> bool {
+        match self.target() {
+            Target::Local => true,
+            Target::Remote(id) => {
+                // Playback snapshots are fresher than the device picker. Only
+                // use a snapshot for this target, never another selected device.
+                let device = self
+                    .remote_fresh()
+                    .and_then(|remote| remote.state.device.as_ref())
+                    .filter(|device| id.is_none() || device.id == id)
+                    .or_else(|| {
+                        id.as_deref().and_then(|id| {
+                            self.devices
+                                .iter()
+                                .find(|device| device.id.as_deref() == Some(id))
+                        })
+                    });
+                device.is_none_or(|device| {
+                    !device.is_restricted && device.supports_volume != Some(false)
+                })
+            }
+        }
+    }
+
     /// `settle` is false while the slider is still moving: the level is heard
     /// at once, and Spotify is told where it ended up on release.
     fn set_volume(&mut self, percent: u8, settle: bool) {
@@ -3609,7 +3656,7 @@ impl App {
                     PlayerCommand::VolumePreview(volume)
                 });
             }
-            Target::Remote(_) if !settle => {}
+            Target::Remote(_) if !settle || !self.can_set_volume() => {}
             Target::Remote(device_id) => {
                 self.pending_remote_volume = Some((percent, Instant::now()));
                 self.backend.api(ApiRequest::Remote {
@@ -3843,26 +3890,52 @@ impl App {
                 let request = PlayRequest::tracks(uris).starting_at_index(index);
                 self.play_request(request, false);
             }
+            Action::PlayEpisode { uri, resume_ms } => {
+                // A row's saved position can lag the active player. Preserve
+                // the live position and treat Play on that episode as resume.
+                if self.episode_is_at_target(&uri) {
+                    if !self.believed_playing() {
+                        self.toggle_play();
+                    }
+                    return;
+                }
+                let mut request = PlayRequest::tracks(vec![uri]).starting_at_index(0);
+                request.position_ms = resume_ms.unwrap_or(0);
+                self.play_request(request, false);
+            }
             Action::PlayFromRow {
                 context,
                 uri,
                 index,
-            } => match context {
-                RowContext::Context {
-                    uri: context_uri, ..
-                } => {
-                    let request = PlayRequest::context(context_uri).starting_at_uri(uri);
-                    self.play_request(request, false);
+                resume_ms,
+            } => {
+                if util::uri_kind(&uri) == Some("episode") && self.episode_is_at_target(&uri) {
+                    if !self.believed_playing() {
+                        self.toggle_play();
+                    }
+                    return;
                 }
-                RowContext::Uris(uris) => {
-                    let (uris, index) = cap_uris(uris, index);
-                    let request = PlayRequest::tracks(uris).starting_at_index(index);
-                    self.play_request(request, false);
-                }
-                RowContext::View { uris, context_uri } => {
-                    let (uris, index) = cap_uris(uris, index);
-                    let request = PlayRequest::tracks(uris).starting_at_index(index);
-                    self.play_request(request, false);
+                let (mut request, view_context) = match context {
+                    RowContext::Context {
+                        uri: context_uri, ..
+                    } => (PlayRequest::context(context_uri).starting_at_uri(uri), None),
+                    RowContext::Uris(uris) => {
+                        let (uris, index) = cap_uris(uris, index);
+                        (PlayRequest::tracks(uris).starting_at_index(index), None)
+                    }
+                    RowContext::View {
+                        uris, context_uri, ..
+                    } => {
+                        let (uris, index) = cap_uris(uris, index);
+                        (
+                            PlayRequest::tracks(uris).starting_at_index(index),
+                            Some(context_uri),
+                        )
+                    }
+                };
+                request.position_ms = resume_ms.unwrap_or(0);
+                self.play_request(request, false);
+                if let Some(context_uri) = view_context {
                     self.note_recent_context(&context_uri);
                     self.assumed_context = Some(AssumedContext {
                         uri: context_uri,
@@ -3870,7 +3943,7 @@ impl App {
                         at: Instant::now(),
                     });
                 }
-            },
+            }
             Action::ShufflePlay(uri) => {
                 // librespot and the Web API both start an offsetless play
                 // at track one and only then shuffle what follows, so the
@@ -3926,6 +3999,9 @@ impl App {
                 }
             }
             Action::ToggleMute => {
+                if !self.can_set_volume() {
+                    return;
+                }
                 let current = self
                     .now_playing()
                     .map(|now| now.volume_percent)
@@ -5992,5 +6068,187 @@ mod tests {
                 .iter()
                 .any(|toast| toast.message.starts_with("Gone: "))
         );
+    }
+    #[test]
+    fn episode_play_uses_the_requested_rows_saved_place() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.apply(
+            Action::PlayEpisode {
+                uri: "spotify:episode:started".into(),
+                resume_ms: Some(42_000),
+            },
+            &ctx,
+        );
+        assert_eq!(app.queued_play.as_ref().unwrap().position_ms, 42_000);
+        app.apply(
+            Action::PlayEpisode {
+                uri: "spotify:episode:new".into(),
+                resume_ms: None,
+            },
+            &ctx,
+        );
+        assert_eq!(app.queued_play.as_ref().unwrap().position_ms, 0);
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn replaying_the_active_episode_does_not_seek_back_to_stale_progress() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        crate::demo::populate(&mut app);
+        app.remote.as_mut().unwrap().state.item =
+            Some(PlayableItem::Episode(crate::api::models::Episode {
+                uri: "spotify:episode:active".into(),
+                duration_ms: 100_000,
+                ..Default::default()
+            }));
+        app.remote.as_mut().unwrap().state.progress_ms = Some(80_000);
+        app.remote.as_mut().unwrap().state.is_playing = true;
+        app.apply(
+            Action::PlayEpisode {
+                uri: "spotify:episode:active".into(),
+                resume_ms: Some(42_000),
+            },
+            &ctx,
+        );
+        assert!(app.queued_play.is_none());
+        assert!(app.pending_remote_position.is_none());
+        assert!(app.now_playing().unwrap().position_ms >= 80_000);
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn paused_episode_resumes_here_but_another_target_still_gets_play() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        crate::demo::populate(&mut app);
+        app.local_ready = false;
+        let remote = app.remote.as_mut().unwrap();
+        remote.state.item = Some(PlayableItem::Episode(crate::api::models::Episode {
+            uri: "spotify:episode:active".into(),
+            duration_ms: 100_000,
+            ..Default::default()
+        }));
+        remote.state.progress_ms = Some(80_000);
+        remote.state.is_playing = false;
+        app.apply(
+            Action::PlayEpisode {
+                uri: "spotify:episode:active".into(),
+                resume_ms: Some(42_000),
+            },
+            &ctx,
+        );
+        assert!(app.pending_remote_position.is_none());
+        assert!(matches!(app.optimistic_playing, Some((true, _))));
+        assert!(app.pending_play_keys.iter().any(|key| key == "::toggle"));
+        app.clear_play_pending();
+        app.selected_device = Some("another-receiver".into());
+        app.apply(
+            Action::PlayEpisode {
+                uri: "spotify:episode:active".into(),
+                resume_ms: Some(42_000),
+            },
+            &ctx,
+        );
+        assert!(
+            app.pending_play_keys
+                .iter()
+                .any(|key| key == "spotify:episode:active")
+        );
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn remote_volume_capabilities_gate_every_volume_action() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        crate::demo::populate(&mut app);
+        app.local_ready = false;
+        let device = app.remote.as_mut().unwrap().state.device.as_mut().unwrap();
+        device.supports_volume = Some(false);
+        device.volume_percent = Some(40);
+        // A stale picker entry still claims volume support. The live
+        // playback snapshot must win.
+        assert!(matches!(app.target(), Target::Remote(_)));
+        assert!(!app.can_set_volume());
+        assert!(!app.now_playing().unwrap().can_set_volume);
+        app.apply(Action::SetVolume(10), &ctx);
+        app.apply(Action::PreviewVolume(20), &ctx);
+        app.apply(Action::VolumeBy(-5), &ctx);
+        app.apply(Action::ToggleMute, &ctx);
+        assert!(app.pending_remote_volume.is_none());
+        assert!(app.volume_before_mute.is_none());
+        assert_eq!(app.now_playing().unwrap().volume_percent, 40);
+        app.remote
+            .as_mut()
+            .unwrap()
+            .state
+            .device
+            .as_mut()
+            .unwrap()
+            .supports_volume = None;
+        assert!(app.can_set_volume());
+        app.apply(Action::SetVolume(10), &ctx);
+        assert!(matches!(app.pending_remote_volume, Some((10, _))));
+        app.remote
+            .as_mut()
+            .unwrap()
+            .state
+            .device
+            .as_mut()
+            .unwrap()
+            .is_restricted = true;
+        assert!(!app.can_set_volume());
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn playlist_episode_resume_keeps_context_and_visible_queue() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        let episode = "spotify:episode:middle";
+        app.apply(
+            Action::PlayFromRow {
+                context: RowContext::Context {
+                    uri: "spotify:playlist:list".into(),
+                    editable_playlist: None,
+                },
+                uri: episode.into(),
+                index: 1,
+                resume_ms: Some(42_000),
+            },
+            &ctx,
+        );
+        let request = app.queued_play.as_ref().unwrap();
+        assert_eq!(
+            request.context_uri.as_deref(),
+            Some("spotify:playlist:list")
+        );
+        assert_eq!(request.offset_uri.as_deref(), Some(episode));
+        assert_eq!(request.position_ms, 42_000);
+        let uris = vec![
+            "spotify:track:first".into(),
+            episode.into(),
+            "spotify:track:last".into(),
+        ];
+        app.apply(
+            Action::PlayFromRow {
+                context: RowContext::View {
+                    uris: uris.clone(),
+                    context_uri: "spotify:playlist:list".into(),
+                    editable_playlist: None,
+                },
+                uri: episode.into(),
+                index: 1,
+                resume_ms: Some(42_000),
+            },
+            &ctx,
+        );
+        let request = app.queued_play.as_ref().unwrap();
+        assert_eq!(request.uris, uris);
+        assert_eq!(request.offset_position, Some(1));
+        assert_eq!(request.position_ms, 42_000);
+        app.backend.shutdown();
     }
 }

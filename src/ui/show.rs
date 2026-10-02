@@ -62,9 +62,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
                     )
                     .clicked()
                     {
-                        app.actions.push(Action::PlayUris {
-                            uris: vec![uri],
-                            index: 0,
+                        app.actions.push(Action::PlayEpisode {
+                            uri,
+                            resume_ms: latest.resume_ms(),
                         });
                     }
                 }
@@ -242,9 +242,9 @@ pub fn episode_row(
         if is_current {
             app.actions.push(Action::TogglePlay);
         } else {
-            app.actions.push(Action::PlayUris {
-                uris: vec![episode.uri.clone()],
-                index: 0,
+            app.actions.push(Action::PlayEpisode {
+                uri: episode.uri.clone(),
+                resume_ms: episode.resume_ms(),
             });
         }
     }
@@ -319,9 +319,9 @@ pub fn episode_row(
         .frame(widgets::menu_frame(&palette))
         .show(|ui| widgets::item_menu(ui, app, &item, None, None));
     if response.double_clicked() {
-        app.actions.push(Action::PlayUris {
-            uris: vec![episode.uri.clone()],
-            index: 0,
+        app.actions.push(Action::PlayEpisode {
+            uri: episode.uri.clone(),
+            resume_ms: episode.resume_ms(),
         });
     }
     let _ = RowContext::Uris(Vec::new());
