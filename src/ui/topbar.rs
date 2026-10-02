@@ -133,12 +133,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.search.focus_requested = false;
                 response.request_focus();
             }
-            if response.gained_focus() && !matches!(app.page(), Page::Search) {
+            // Clear empties the field and focuses it in the same frame.
+            // Neither should navigate away from the current page.
+            let cleared = app.search.query.is_empty() && !before.is_empty();
+            if response.gained_focus() && !cleared && !matches!(app.page(), Page::Search) {
                 app.actions.push(Action::Open(Page::Search));
             }
             if app.search.query != before {
                 app.search.typed_at = Some(std::time::Instant::now());
-                if !matches!(app.page(), Page::Search) {
+                if !cleared && !matches!(app.page(), Page::Search) {
                     app.actions.push(Action::Open(Page::Search));
                 }
             }
@@ -448,6 +451,89 @@ fn capitalize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_global_search_preserves_the_page_and_focus_until_typing() {
+        use crate::app::AppOptions;
+        use crate::paths::AppDirs;
+        use crate::settings::Settings;
+
+        let root =
+            std::env::temp_dir().join(format!("oxidify-clear-search-{}", std::process::id()));
+        let mut app = App::new(
+            &crate::backend::Waker::default(),
+            AppDirs {
+                config: root.join("config"),
+                state: root.join("state"),
+                cache: root.join("cache"),
+            },
+            Settings::default(),
+            AppOptions {
+                media_controls: false,
+                tray: false,
+            },
+        );
+        crate::demo::populate(&mut app);
+        app.open(Page::Home);
+        app.search.query = "Bonobo".into();
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let frame = |app: &mut App, events| {
+            app.actions.clear();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        vec2(1280.0, 800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| show(app, ui),
+            );
+            output.textures_delta.clear();
+        };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        let field = egui::Id::new("global-search");
+        let field_rect = ctx.read_response(field).unwrap().rect;
+        // The Clear control is immediately beside the text field, inside
+        // the rounded search pill.
+        let clear = pos2(field_rect.right() + 13.0, field_rect.center().y);
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(clear),
+                    egui::Event::PointerButton {
+                        pos: clear,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            assert!(app.actions.is_empty(), "clearing must not navigate");
+        }
+        assert!(app.search.query.is_empty());
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+            assert!(
+                app.actions.is_empty(),
+                "focus after clearing must not navigate"
+            );
+        }
+        assert!(matches!(app.page(), Page::Home));
+        assert!(ctx.memory(|memory| memory.has_focus(field)));
+        frame(&mut app, vec![egui::Event::Text("Rework".into())]);
+        assert_eq!(app.search.query, "Rework");
+        assert!(matches!(
+            app.actions.as_slice(),
+            [Action::Open(Page::Search)]
+        ));
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn update_notice_opens_the_release_page_only_when_clicked() {

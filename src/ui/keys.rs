@@ -7,6 +7,9 @@ use crate::model::{Action, Dialog, Page};
 
 pub fn handle(app: &mut App, ctx: &egui::Context) {
     let typing = ctx.memory(|memory| memory.focused().is_some());
+    // Text fields own caret-navigation arrows; other focused widgets still
+    // allow player and page-navigation shortcuts.
+    let editing_text = ctx.text_edit_focused();
     let mut actions = Vec::new();
     ctx.input_mut(|input| {
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {
@@ -14,6 +17,28 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 actions.push(action);
             }
         };
+        // egui's plain-key matcher accepts an extra Shift. Consume the
+        // more specific chords first, especially Queue before Quit.
+        key(
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Key::A,
+            Action::OpenUri("artist".into()),
+        );
+        key(
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Key::B,
+            Action::OpenUri("album".into()),
+        );
+        // Cmd+Shift+Q is Log Out, taken by the window server.
+        if cfg!(target_os = "macos") {
+            key(Modifiers::COMMAND, Key::U, Action::ToggleQueuePanel);
+        } else {
+            key(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::Q,
+                Action::ToggleQueuePanel,
+            );
+        }
         key(Modifiers::COMMAND, Key::F, Action::FocusSearch);
         key(Modifiers::COMMAND, Key::B, Action::ToggleSidebar);
         key(Modifiers::COMMAND, Key::Comma, Action::Open(Page::Settings));
@@ -45,31 +70,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             Key::Slash,
             Action::ShowDialog(Dialog::Shortcuts),
         );
-        key(Modifiers::ALT, Key::ArrowLeft, Action::Back);
-        key(Modifiers::ALT, Key::ArrowRight, Action::Forward);
-        key(Modifiers::COMMAND, Key::ArrowLeft, Action::Previous);
-        key(Modifiers::COMMAND, Key::ArrowRight, Action::Next);
-        key(Modifiers::COMMAND, Key::ArrowUp, Action::VolumeBy(5));
-        key(Modifiers::COMMAND, Key::ArrowDown, Action::VolumeBy(-5));
-        key(
-            Modifiers::COMMAND | Modifiers::SHIFT,
-            Key::A,
-            Action::OpenUri("artist".into()),
-        );
-        key(
-            Modifiers::COMMAND | Modifiers::SHIFT,
-            Key::B,
-            Action::OpenUri("album".into()),
-        );
-        // Cmd+Shift+Q is Log Out, taken by the window server.
-        if cfg!(target_os = "macos") {
-            key(Modifiers::COMMAND, Key::U, Action::ToggleQueuePanel);
-        } else {
-            key(
-                Modifiers::COMMAND | Modifiers::SHIFT,
-                Key::Q,
-                Action::ToggleQueuePanel,
-            );
+        if !editing_text {
+            key(Modifiers::ALT, Key::ArrowLeft, Action::Back);
+            key(Modifiers::ALT, Key::ArrowRight, Action::Forward);
+            key(Modifiers::COMMAND, Key::ArrowLeft, Action::Previous);
+            key(Modifiers::COMMAND, Key::ArrowRight, Action::Next);
+            key(Modifiers::COMMAND, Key::ArrowUp, Action::VolumeBy(5));
+            key(Modifiers::COMMAND, Key::ArrowDown, Action::VolumeBy(-5));
         }
         if !typing {
             key(
@@ -259,6 +266,120 @@ mod tests {
             },
         );
         output.textures_delta.clear();
+    }
+
+    fn command_modifiers() -> Modifiers {
+        if cfg!(target_os = "macos") {
+            Modifiers::MAC_CMD | Modifiers::COMMAND
+        } else {
+            Modifiers::CTRL | Modifiers::COMMAND
+        }
+    }
+
+    #[test]
+    fn shift_shortcuts_are_not_consumed_by_the_plain_shortcuts() {
+        with_app("shift", |app| {
+            let command = command_modifiers();
+            let shifted = command | Modifiers::SHIFT;
+            if !cfg!(target_os = "macos") {
+                dispatch(app, vec![key_event(Key::Q, shifted, false)], false);
+                assert!(matches!(app.actions.as_slice(), [Action::ToggleQueuePanel]));
+            }
+            dispatch(app, vec![key_event(Key::Q, command, false)], false);
+            assert!(matches!(app.actions.as_slice(), [Action::Quit]));
+            let album = app.now_playing().unwrap().album_id.unwrap();
+            dispatch(app, vec![key_event(Key::B, shifted, false)], false);
+            assert!(
+                matches!(app.actions.as_slice(), [Action::Open(Page::Album(id))] if id == &album)
+            );
+            dispatch(app, vec![key_event(Key::B, command, false)], false);
+            assert!(matches!(app.actions.as_slice(), [Action::ToggleSidebar]));
+        });
+    }
+
+    #[test]
+    fn text_fields_keep_caret_arrows_but_other_focus_keeps_player_shortcuts() {
+        with_app("caret", |app| {
+            let ctx = egui::Context::default();
+            let field = egui::Id::new("caret-field");
+            let row = egui::Id::new("caret-row");
+            let command = command_modifiers();
+            let mut text = String::from("find this song");
+            let end = text.chars().count();
+            // The app dispatches shortcuts before drawing its text fields.
+            let frame = |app: &mut App, text: &mut String, events| {
+                app.actions.clear();
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        handle(app, ui.ctx());
+                        ui.add(egui::TextEdit::singleline(text).id(field));
+                        ui.interact(
+                            egui::Rect::from_min_size(
+                                egui::pos2(0.0, 100.0),
+                                egui::vec2(200.0, 28.0),
+                            ),
+                            row,
+                            egui::Sense::click(),
+                        );
+                    },
+                );
+                output.textures_delta.clear();
+            };
+            frame(app, &mut text, vec![]);
+            ctx.memory_mut(|memory| memory.request_focus(field));
+            frame(app, &mut text, vec![]);
+            let command_left = if cfg!(target_os = "macos") { 0 } else { 10 };
+            for (key, modifiers, expected) in [
+                (Key::ArrowLeft, command, command_left),
+                (Key::ArrowLeft, Modifiers::ALT, 10),
+                (Key::ArrowUp, command, 0),
+            ] {
+                let mut state = egui::TextEdit::load_state(&ctx, field).unwrap();
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(
+                        egui::text::CCursor::new(end),
+                    )));
+                state.store(&ctx, field);
+                frame(app, &mut text, vec![key_event(key, modifiers, false)]);
+                assert!(
+                    app.actions.is_empty(),
+                    "{key:?} with {modifiers:?} triggered a shortcut"
+                );
+                let caret = egui::TextEdit::load_state(&ctx, field)
+                    .and_then(|state| state.cursor.char_range())
+                    .map(|range| range.primary.index);
+                assert_eq!(caret, Some(egui::text::CCursor::new(expected).index));
+            }
+            assert_eq!(text, "find this song");
+            ctx.memory_mut(|memory| memory.surrender_focus(field));
+            frame(app, &mut text, vec![]);
+            frame(
+                app,
+                &mut text,
+                vec![key_event(Key::ArrowRight, command, false)],
+            );
+            assert!(matches!(app.actions.as_slice(), [Action::Next]));
+            frame(
+                app,
+                &mut text,
+                vec![key_event(Key::ArrowLeft, Modifiers::ALT, false)],
+            );
+            assert!(matches!(app.actions.as_slice(), [Action::Back]));
+            ctx.memory_mut(|memory| memory.request_focus(row));
+            frame(app, &mut text, vec![]);
+            assert!(!ctx.text_edit_focused());
+            frame(
+                app,
+                &mut text,
+                vec![key_event(Key::ArrowRight, command, false)],
+            );
+            assert!(matches!(app.actions.as_slice(), [Action::Next]));
+        });
     }
 
     #[test]
