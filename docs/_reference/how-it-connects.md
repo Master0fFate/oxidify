@@ -117,7 +117,11 @@ Playback runs on a dedicated runtime: librespot maintains the Spotify
 Connect session, so this computer appears as a device to every other Spotify
 client you own, receives transfers, and reports its position back. If the
 session drops, the engine reconnects with the stored credential; the
-interface never blocks on any of it. The engine discovers access points
+interface never blocks on any of it. Replacement engines preserve the last volume heard during an automatic
+reconnect, while an explicit settings change remains authoritative. This
+applies to the local Spotify engine and does not change account eligibility.
+
+The engine discovers access points
 through `apresolve.spotify.com` and connects over TCP in the resolver's
 preference order: port 4070 first, falling back to 443 and 80. Only outbound
 connections are needed; no inbound ports have to be open.

@@ -245,6 +245,7 @@ pub struct Engine {
     spirc: Arc<Spirc>,
     session: Session,
     mixer: Arc<dyn Mixer>,
+    state: Arc<Mutex<LocalState>>,
     device_id: String,
     shutting_down: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -343,6 +344,7 @@ impl Engine {
             spirc: Arc::new(spirc),
             session,
             mixer,
+            state,
             device_id,
             shutting_down,
         })
@@ -350,6 +352,14 @@ impl Engine {
 
     pub fn device_id(&self) -> &str {
         &self.device_id
+    }
+
+    /// The mixer keeps the level actually being heard, including changes
+    /// while Connect is inactive and does not emit a volume event.
+    pub(crate) fn heard(&self) -> Heard {
+        Heard {
+            mixer: Arc::clone(&self.mixer),
+        }
     }
 
     /// Spotify's own transcription of a track, as the raw JSON its clients
@@ -399,10 +409,12 @@ impl Engine {
             PlayerCommand::Previous => spirc.prev()?,
             PlayerCommand::Seek(position_ms) => spirc.set_position_ms(position_ms)?,
             PlayerCommand::Volume(volume) => {
-                self.mixer.set_volume(volume);
+                set_local_volume(&*self.mixer, &self.state, volume);
                 spirc.set_volume(volume)?;
             }
-            PlayerCommand::VolumePreview(volume) => self.mixer.set_volume(volume),
+            PlayerCommand::VolumePreview(volume) => {
+                set_local_volume(&*self.mixer, &self.state, volume);
+            }
             PlayerCommand::Shuffle(enabled) => spirc.shuffle(enabled)?,
             PlayerCommand::Repeat(mode) => match mode {
                 RepeatMode::Off => {
@@ -454,6 +466,34 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// A handle to the old engine's level, consumed when that engine is stopped.
+/// Reading the mixer avoids stale state snapshots and missing Connect echoes.
+pub(crate) struct Heard {
+    mixer: Arc<dyn Mixer>,
+}
+
+impl Heard {
+    pub(crate) fn level(&self) -> u16 {
+        self.mixer.volume()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn at(volume: u16) -> Self {
+        let mixer = mixer::find(Some("softvol")).unwrap()(MixerConfig {
+            volume_ctrl: VolumeCtrl::Cubic(VolumeCtrl::DEFAULT_DB_RANGE),
+            ..MixerConfig::default()
+        })
+        .unwrap();
+        mixer.set_volume(volume);
+        Self { mixer }
+    }
+}
+
+fn set_local_volume(mixer: &dyn Mixer, state: &Mutex<LocalState>, volume: u16) {
+    mixer.set_volume(volume);
+    state.lock().unwrap_or_else(|p| p.into_inner()).volume = volume;
 }
 
 /// The audio sink for a new player, and where the volume is applied.
@@ -696,6 +736,36 @@ mod tests {
 
     fn uri() -> SpotifyUri {
         SpotifyUri::from_uri("spotify:track:14XWXWv5FoCbFzLksawpEe").unwrap()
+    }
+
+    #[test]
+    fn local_volume_updates_the_mixer_and_snapshot_before_a_connect_echo() {
+        let heard = Heard::at(52_428);
+        let state = Mutex::new(LocalState {
+            volume: 52_428,
+            ..LocalState::default()
+        });
+        for volume in [3_276, 0, u16::MAX] {
+            set_local_volume(&*heard.mixer, &state, volume);
+            assert_eq!(heard.level(), volume);
+            assert_eq!(state.lock().unwrap().volume, volume);
+        }
+    }
+
+    #[test]
+    fn reconnect_volume_comes_from_the_mixer_not_a_stale_snapshot() {
+        let heard = Heard::at(52_428);
+        let mut state = LocalState {
+            volume: 52_428,
+            ..LocalState::default()
+        };
+        // An inactive Connect device need not receive VolumeChanged.
+        heard.mixer.set_volume(3_276);
+        assert_eq!(heard.level(), 3_276);
+        assert_eq!(state.volume, 52_428);
+        // Nor should a delayed event restore a previous, louder level.
+        apply_event(&mut state, PlayerEvent::VolumeChanged { volume: 26_214 });
+        assert_eq!(heard.level(), 3_276);
     }
 
     #[test]

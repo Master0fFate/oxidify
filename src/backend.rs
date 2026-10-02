@@ -22,7 +22,7 @@ use crate::api::{
 };
 use crate::images::{ArtLoader, accent_color};
 use crate::paths::AppDirs;
-use crate::player::{Engine, EngineConfig, EngineEvent, LocalState, PlayerCommand};
+use crate::player::{Engine, EngineConfig, EngineEvent, Heard, LocalState, PlayerCommand};
 use crate::settings::PlaybackBackend;
 
 pub type ApiResult<T> = Result<T, ApiError>;
@@ -732,6 +732,8 @@ struct Worker {
     commands: mpsc::UnboundedSender<Command>,
     waker: Waker,
     engine: Option<Arc<Engine>>,
+    /// The live native mixer's level, consumed with the engine it belongs to.
+    heard: Option<Heard>,
     alternate: Option<Arc<AlternateHandle>>,
     playback_mode: PlaybackBackend,
     alternate_config: AlternateConfig,
@@ -778,6 +780,7 @@ impl Worker {
             commands,
             waker,
             engine: None,
+            heard: None,
             alternate: None,
             playback_mode,
             alternate_config,
@@ -830,10 +833,7 @@ impl Worker {
                     mode,
                     alternate,
                 } => {
-                    self.engine_config = config;
-                    self.playback_mode = mode;
-                    self.alternate_config = alternate;
-                    self.switch_playback().await;
+                    self.switch_playback(config, mode, alternate).await;
                 }
                 Command::Player(command) => self.player_command(command),
                 Command::Api(request) => self.dispatch(request),
@@ -920,14 +920,9 @@ impl Worker {
     async fn stop_all_engines(&mut self) {
         self.event_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if let Some(engine) = self.engine.take() {
-            engine.shutdown();
-        }
+        self.stop_spotify_only();
         if let Some(alternate) = self.alternate.take() {
             alternate.shutdown().await;
-        }
-        if self.engine_busy {
-            self.ignore_spotify_engine = true;
         }
     }
 
@@ -1227,8 +1222,18 @@ impl Worker {
         })
     }
 
-    async fn switch_playback(&mut self) {
+    async fn switch_playback(
+        &mut self,
+        config: EngineConfig,
+        mode: PlaybackBackend,
+        alternate: AlternateConfig,
+    ) {
         self.stop_all_engines().await;
+        // A requested settings value is newer than the engine being stopped.
+        // Carry its volume first, then install this explicit configuration.
+        self.engine_config = config;
+        self.playback_mode = mode;
+        self.alternate_config = alternate;
         match self.playback_mode {
             PlaybackBackend::Alternate => self.start_alternate(),
             PlaybackBackend::Spotify => {
@@ -1275,6 +1280,11 @@ impl Worker {
     }
 
     fn stop_spotify_only(&mut self) {
+        // Take the handle as well as the engine, so a retired engine cannot
+        // overwrite a later setting or an alternate engine's configuration.
+        if let Some(heard) = self.heard.take() {
+            self.engine_config.initial_volume = heard.level();
+        }
         if let Some(engine) = self.engine.take() {
             engine.shutdown();
         }
@@ -1313,9 +1323,7 @@ impl Worker {
         if !self.signed_in {
             return;
         }
-        if let Some(engine) = self.engine.take() {
-            engine.shutdown();
-        }
+        self.stop_spotify_only();
         let now = Instant::now();
         self.reconnects
             .retain(|attempt| now.duration_since(*attempt) < Duration::from_secs(600));
@@ -1400,6 +1408,9 @@ impl Worker {
             return;
         }
         self.cancel_signin = None;
+        // Reauthorizing can replace an engine that is still running, too.
+        // Retire it before cloning the configuration for its replacement.
+        self.stop_spotify_only();
         self.engine_busy = true;
         self.emit(Event::Playback(LocalPlayback::Connecting));
         let config = self.engine_config.clone();
@@ -1459,6 +1470,7 @@ impl Worker {
         match engine {
             Some(engine) => {
                 let device_id = engine.device_id().to_string();
+                self.heard = Some(engine.heard());
                 self.engine = Some(Arc::new(engine));
                 self.reconnects.clear();
                 self.emit(Event::Playback(LocalPlayback::Ready { device_id }));
@@ -1479,10 +1491,8 @@ impl Worker {
     /// are routed to Alternate by the interface.
     fn on_account_checked(&mut self, premium: Option<bool>) {
         self.premium = premium;
-        if premium != Some(true)
-            && let Some(engine) = self.engine.take()
-        {
-            engine.shutdown();
+        if premium != Some(true) {
+            self.stop_spotify_only();
         }
     }
 
@@ -2198,6 +2208,158 @@ struct CachedPlaylist {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh, empty state directory and no credentials: these tests never
+    /// connect to Spotify, start audio, or use the listener's stored state.
+    fn volume_worker() -> Worker {
+        let root = std::env::temp_dir().join(format!(
+            "oxidify-reconnect-volume-{}",
+            rand::random::<u64>()
+        ));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let config = EngineConfig {
+            device_name: "Oxidify test".into(),
+            bitrate_kbps: 320,
+            normalisation: false,
+            autoplay: false,
+            gapless: true,
+            backend: None,
+            audio_device: None,
+            initial_volume: 52_428,
+            credentials_dir: dirs.credentials_dir(),
+            volume_dir: dirs.volume_dir(),
+            audio_cache_dir: None,
+            audio_cache_limit: None,
+            tap: crate::vis::AudioTap::new(),
+            eq: crate::eq::shared(),
+        };
+        let http = reqwest::Client::new();
+        let art = ArtLoader::new(
+            http.clone(),
+            tokio::runtime::Handle::current(),
+            dirs.art_cache_dir(),
+        );
+        let (events, _) = std::sync::mpsc::channel();
+        let (commands, _) = mpsc::unbounded_channel();
+        Worker::new(
+            dirs,
+            config,
+            None,
+            http,
+            art,
+            Arc::new(NetActivity::default()),
+            events,
+            commands,
+            Waker::default(),
+            PlaybackBackend::Spotify,
+            AlternateConfig::from_settings(&crate::settings::Settings::default()),
+        )
+    }
+
+    fn remove_volume_worker_files(worker: &Worker) {
+        std::fs::remove_dir_all(worker.dirs.config.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconnect_keeps_the_live_volume_including_mute() {
+        let mut worker = volume_worker();
+        worker.signed_in = true;
+        worker.premium = Some(true);
+        for volume in [3_276, 0, u16::MAX] {
+            worker.engine_config.initial_volume = 52_428;
+            worker.heard = Some(Heard::at(volume));
+            worker.reconnect_engine();
+            assert_eq!(worker.engine_config.initial_volume, volume);
+            assert!(worker.heard.is_none());
+            assert!(!worker.engine_busy, "empty test credentials never connect");
+        }
+        remove_volume_worker_files(&worker);
+    }
+
+    #[tokio::test]
+    async fn retiring_an_engine_cannot_overwrite_a_later_setting() {
+        let mut worker = volume_worker();
+        worker.heard = Some(Heard::at(3_276));
+        worker.stop_spotify_only();
+        assert_eq!(worker.engine_config.initial_volume, 3_276);
+        worker.engine_config.initial_volume = 13_107;
+        worker.stop_spotify_only();
+        assert_eq!(worker.engine_config.initial_volume, 13_107);
+        remove_volume_worker_files(&worker);
+    }
+
+    #[tokio::test]
+    async fn explicit_restart_uses_the_new_config_after_retiring_the_old_engine() {
+        let mut worker = volume_worker();
+        worker.heard = Some(Heard::at(3_276));
+        let mut config = worker.engine_config.clone();
+        config.initial_volume = 13_107;
+        worker
+            .switch_playback(
+                config,
+                PlaybackBackend::Spotify,
+                worker.alternate_config.clone(),
+            )
+            .await;
+        assert_eq!(worker.engine_config.initial_volume, 13_107);
+        assert!(worker.heard.is_none());
+        worker.stop_all_engines().await;
+        assert_eq!(worker.engine_config.initial_volume, 13_107);
+        remove_volume_worker_files(&worker);
+    }
+
+    #[tokio::test]
+    async fn signing_out_carries_volume_without_retaining_the_old_engine() {
+        let mut worker = volume_worker();
+        worker.signed_in = true;
+        worker.heard = Some(Heard::at(3_276));
+        worker.sign_out().await;
+        assert_eq!(worker.engine_config.initial_volume, 3_276);
+        assert!(worker.heard.is_none());
+        assert!(!worker.signed_in);
+        remove_volume_worker_files(&worker);
+    }
+
+    #[tokio::test]
+    async fn losing_confirmed_premium_carries_volume_and_rejects_pending_engine() {
+        let mut worker = volume_worker();
+        for premium in [Some(false), None] {
+            worker.heard = Some(Heard::at(3_276));
+            worker.engine_config.initial_volume = 52_428;
+            worker.engine_busy = true;
+            worker.on_account_checked(premium);
+            assert_eq!(worker.engine_config.initial_volume, 3_276);
+            assert!(worker.heard.is_none());
+            assert!(worker.ignore_spotify_engine);
+        }
+        remove_volume_worker_files(&worker);
+    }
+
+    #[tokio::test]
+    async fn alternate_switch_keeps_its_requested_volume_separate() {
+        let mut worker = volume_worker();
+        worker.heard = Some(Heard::at(3_276));
+        let mut config = worker.engine_config.clone();
+        config.initial_volume = 13_107;
+        let mut alternate = worker.alternate_config.clone();
+        alternate.volume = 26_214;
+        // No API session is installed, so Alternate cannot start any work.
+        worker
+            .switch_playback(config, PlaybackBackend::Alternate, alternate)
+            .await;
+        assert_eq!(worker.engine_config.initial_volume, 13_107);
+        assert_eq!(worker.alternate_config.volume, 26_214);
+        assert!(worker.heard.is_none());
+        worker.reconnect_engine();
+        assert_eq!(worker.engine_config.initial_volume, 13_107);
+        assert_eq!(worker.alternate_config.volume, 26_214);
+        assert!(!worker.engine_busy);
+        remove_volume_worker_files(&worker);
+    }
 
     #[test]
     fn full_top_songs_use_foreground_while_home_preview_stays_background() {
