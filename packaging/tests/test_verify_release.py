@@ -193,8 +193,18 @@ class ReleaseTests(unittest.TestCase):
 
     def test_windows_document_line_endings(self):
         target = release.TARGETS[2]
-        contents = (self.root / "LICENSE").read_bytes().replace(b"\n", b"\r\n")
-        release.verify_archive(self.root, self.archive(target, {"LICENSE": contents}), TAG, target)
+        license_path = self.root / "LICENSE"
+        # write_text uses the host's line endings. Normalize the fixture once
+        # before constructing either form, so Windows cannot produce CRCRLF.
+        lf = license_path.read_bytes().replace(b"\r\n", b"\n")
+        for source in (lf, lf.replace(b"\n", b"\r\n")):
+            license_path.write_bytes(source)
+            for contents in (lf, lf.replace(b"\n", b"\r\n")):
+                with self.subTest(source=source, archive=contents):
+                    release.verify_archive(self.root, self.archive(target, {"LICENSE": contents}), TAG, target)
+        # Only normal LF/CRLF differences are harmless, not malformed text.
+        with self.assertRaisesRegex(ValueError, "document differs"):
+            release.verify_archive(self.root, self.archive(target, {"LICENSE": lf.replace(b"\n", b"\r\r\n")}), TAG, target)
 
     def test_complete_release_and_rerun(self):
         self.complete_release()
