@@ -6,8 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to rebuild
+        description: Release tag (existing, or new with source_sha)
         required: true
+        type: string
+      source_sha:
+        description: Full commit SHA for a new tag (leave empty to rebuild an existing draft)
+        required: false
         type: string
 
 permissions:
@@ -20,46 +24,59 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  RELEASE_SOURCE_INPUT: ${{ inputs.source_sha }}
 
 jobs:
   validate:
-    name: Validate release version
+    name: Validate release source
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
-      - name: Match tag, manifest, lockfile, and notes
+      - name: Validate requested tag and optional immutable SHA
         shell: python
         run: |
           import os
-          import pathlib
           import re
-          import tomllib
-
-          version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
-          assert re.fullmatch(r"\d+\.\d+\.\d+", version), "Expected a stable release version"
-          assert os.environ["RELEASE_TAG"] == f"v{version}", "Tag and Cargo.toml disagree"
-          packages = tomllib.loads(pathlib.Path("Cargo.lock").read_text())["package"]
-          assert next(p["version"] for p in packages if p["name"] == "oxidify") == version
-          notes = pathlib.Path(f"packaging/release-notes/v{version}.md")
-          assert notes.is_file() and notes.read_text().strip(), "Written release notes are missing"
-          config = pathlib.Path("docs/_config.yml").read_text()
-          assert f'oxidify_version: "{version}"' in config.splitlines(), "Download page version differs"
-          versions = pathlib.Path("docs/_data/versions.yml").read_text()
-          assert f"current: v{version}" in versions.splitlines(), "Version dropdown differs"
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", os.environ["RELEASE_TAG"]):
+              raise SystemExit("Expected a stable vX.Y.Z tag")
+          sha = os.environ["RELEASE_SOURCE_INPUT"]
+          if sha and not re.fullmatch(r"[0-9a-f]{40}", sha):
+              raise SystemExit("source_sha must be a full lowercase 40-character commit SHA")
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha || format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Match source, tag, manifest, lockfile, documentation, and notes
+        id: source
+        shell: bash
+        run: |
+          sha="$(python packaging/verify_release.py source --tag "$RELEASE_TAG")"
+          if [ -n "$RELEASE_SOURCE_INPUT" ]; then test "$sha" = "$RELEASE_SOURCE_INPUT"; fi
+          echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Reject moved tags and already published releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        shell: bash
+        run: |
+          options=()
+          if [ -n "$RELEASE_SOURCE_INPUT" ]; then options+=(--allow-missing); fi
+          python packaging/prepare_release.py check --tag "$RELEASE_TAG" --sha "$SOURCE_SHA" "${options[@]}"
 
   checks:
     name: Release checks
     needs: validate
     uses: ./.github/workflows/ci.yml
     with:
-      ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      ref: ${{ needs.validate.outputs.source_sha }}
 
   build:
     name: build (${{ matrix.target }})
-    needs: checks
+    needs: [validate, checks]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -81,7 +98,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Verify checked release source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: python packaging/verify_release.py source --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -126,7 +151,8 @@ jobs:
           cp third_party/yt-dlp/LICENSE "dist/$name/yt-dlp-LICENSE.txt"
           if [ "${{ runner.os }}" = "Linux" ]; then
             # Desktop integration for package builds and hand-installs.
-            cp -r packaging "dist/$name/"
+            mkdir -p "dist/$name/packaging"
+            git archive HEAD packaging | tar -x -C "dist/$name"
             rm -rf "dist/$name/packaging/macos"
           fi
           cd dist
@@ -163,12 +189,17 @@ jobs:
           $binary = Join-Path $destination 'oxidify.exe'
           $actual = (Get-Item $binary).VersionInfo.ProductVersion
           if ($actual -notmatch "^$([regex]::Escape($version))(\.0)?$") { throw "Installed version is $actual, expected $version" }
-          foreach ($notice in @('LICENSE', 'NOTICE', 'yt-dlp-NOTICE.txt', 'yt-dlp-LICENSE.txt')) {
-            if (-not (Test-Path (Join-Path $destination $notice))) { throw "Missing $notice" }
-          }
+          python packaging/verify_release.py installed --tag $env:RELEASE_TAG --directory $destination --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Installed payload verification failed' }
           $uninstall = Start-Process (Join-Path $destination 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
           if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstall.ExitCode)" }
           if (Test-Path $binary) { throw 'Uninstaller left the binary behind' }
+
+      - name: Validate archives and record source provenance
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: python packaging/verify_release.py report --tag "$RELEASE_TAG" --sha "$SOURCE_SHA" --target "${{ matrix.target }}"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -177,11 +208,12 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/*-setup.exe
+            dist/*.build.json
           if-no-files-found: error
 
   macos:
     name: macOS universal app
-    needs: checks
+    needs: [validate, checks]
     runs-on: macos-latest
     timeout-minutes: 45
     env:
@@ -197,7 +229,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Verify checked release source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: python packaging/verify_release.py source --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -276,15 +316,36 @@ jobs:
             --password "$APPLE_APP_PASSWORD"
           xcrun stapler staple "dist/$name.dmg"
 
+      - name: Smoke-test the packaged disk image
+        run: |
+          mount="$RUNNER_TEMP/oxidify-dmg-test"
+          hdiutil attach "dist/oxidify-${RELEASE_TAG}-macos-universal.dmg" -readonly -nobrowse -mountpoint "$mount"
+          trap 'hdiutil detach "$mount"' EXIT
+          python packaging/verify_release.py macos-bundle --tag "$RELEASE_TAG" --directory "$mount/Oxidify.app"
+          codesign --verify --deep --strict "$mount/Oxidify.app"
+          lipo "$mount/Oxidify.app/Contents/MacOS/oxidify" -verify_arch arm64 x86_64
+          test "$("$mount/Oxidify.app/Contents/MacOS/oxidify" --version)" = "oxidify ${RELEASE_TAG#v}"
+          for notice in LICENSE NOTICE yt-dlp-NOTICE.txt yt-dlp-LICENSE.txt; do
+            cmp "$mount/$notice" "$mount/Oxidify.app/Contents/Resources/$notice"
+          done
+          cmp README.md "$mount/README.md"
+
+      - name: Validate disk image and record source provenance
+        env:
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: python packaging/verify_release.py report --tag "$RELEASE_TAG" --sha "$SOURCE_SHA" --target macos-universal
+
       - uses: actions/upload-artifact@v7
         with:
           name: macos-universal
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.build.json
           if-no-files-found: error
 
   publish:
     name: GitHub release
-    needs: [build, macos]
+    needs: [validate, build, macos]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -292,35 +353,45 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Verify checked release source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: python packaging/verify_release.py source --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"
       - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
-      - name: Checksums
+      - name: Verify complete artifacts, source provenance, contents, and checksums
+        env:
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: python packaging/verify_release.py release --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"
+      - name: Guard draft-only release and create the checked tag if requested
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
         run: |
-          cd dist
-          sha256sum * > checksums.txt
-      - name: Verify complete artifact set
-        shell: python
-        run: |
-          import os
-          import pathlib
-
-          tag = os.environ["RELEASE_TAG"]
-          expected = {"checksums.txt", f"oxidify-{tag}-macos-universal.dmg"}
-          for arch in ("x86_64", "aarch64"):
-              expected.add(f"oxidify-{tag}-{arch}-unknown-linux-gnu.tar.gz")
-              expected.add(f"oxidify-{tag}-{arch}-pc-windows-msvc.zip")
-              expected.add(f"oxidify-{tag}-{arch}-pc-windows-msvc-setup.exe")
-          actual = {p.name for p in pathlib.Path("dist").iterdir() if p.is_file()}
-          assert actual == expected, f"Release files differ: {actual ^ expected}"
-          assert all(p.stat().st_size for p in pathlib.Path("dist").iterdir()), "Empty release file"
+          options=()
+          if [ -n "$RELEASE_SOURCE_INPUT" ]; then options+=(--allow-missing); fi
+          python packaging/prepare_release.py prepare --tag "$RELEASE_TAG" --sha "$SOURCE_SHA" "${options[@]}"
       - uses: softprops/action-gh-release@v2
         with:
           name: Oxidify ${{ env.RELEASE_TAG }}
           tag_name: ${{ env.RELEASE_TAG }}
-          files: dist/*
+          target_commitish: ${{ needs.validate.outputs.source_sha }}
+          files: |
+            dist/oxidify-*
+            dist/checksums.txt
+            dist/provenance.json
           body_path: packaging/release-notes/${{ env.RELEASE_TAG }}.md
           draft: true
           fail_on_unmatched_files: true
+      - name: Verify uploaded draft assets and checked source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: python packaging/prepare_release.py uploaded --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"
