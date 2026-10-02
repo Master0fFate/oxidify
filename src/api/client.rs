@@ -206,14 +206,28 @@ impl PlayRequest {
 
     fn body(&self) -> Value {
         let mut body = serde_json::Map::new();
-        if let Some(context) = &self.context_uri {
+        // The Web API plays a lone track or episode only as `uris`; as a
+        // `context_uri` it answers 400 "Non supported context uri". (librespot
+        // takes a track as a context, so local playback keeps that form.)
+        let single_item = self
+            .context_uri
+            .as_deref()
+            .filter(|uri| matches!(crate::util::uri_kind(uri), Some("track" | "episode")))
+            // A resume can name a later song than the context's (autoplay moved
+            // on): the named song is the one to play.
+            .map(|context| self.offset_uri.as_deref().unwrap_or(context));
+        if let Some(item) = single_item {
+            body.insert("uris".into(), json!([item]));
+        } else if let Some(context) = &self.context_uri {
             body.insert("context_uri".into(), json!(context));
         } else if !self.uris.is_empty() {
             body.insert("uris".into(), json!(self.uris));
         }
-        if let Some(uri) = &self.offset_uri {
+        // A single item is the start: an offset naming it adds nothing.
+        let offset = single_item.is_none();
+        if let Some(uri) = self.offset_uri.as_ref().filter(|_| offset) {
             body.insert("offset".into(), json!({ "uri": uri }));
-        } else if let Some(position) = self.offset_position {
+        } else if let Some(position) = self.offset_position.filter(|_| offset) {
             body.insert("offset".into(), json!({ "position": position }));
         }
         if self.position_ms > 0 {
@@ -1113,5 +1127,28 @@ mod tests {
             .is_premium_required()
         );
         assert!(!ApiError::RateLimited.is_premium_required());
+    }
+    #[test]
+    fn lone_contexts_use_remote_uris_and_preserve_resume_position() {
+        let mut song =
+            PlayRequest::context("spotify:track:first").starting_at_uri("spotify:track:resumed");
+        song.position_ms = 42_000;
+        assert_eq!(
+            song.body(),
+            json!({"uris": ["spotify:track:resumed"], "position_ms": 42_000})
+        );
+        assert_eq!(
+            PlayRequest::context("spotify:episode:episode")
+                .starting_at_index(9)
+                .body(),
+            json!({"uris": ["spotify:episode:episode"]})
+        );
+        assert_eq!(
+            PlayRequest::context("spotify:track:first").body(),
+            json!({"uris": ["spotify:track:first"]})
+        );
+        // Serializing for the Web API must not mutate librespot's request.
+        assert_eq!(song.context_uri.as_deref(), Some("spotify:track:first"));
+        assert_eq!(song.offset_uri.as_deref(), Some("spotify:track:resumed"));
     }
 }
