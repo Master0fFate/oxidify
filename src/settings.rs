@@ -227,10 +227,14 @@ impl Default for Settings {
 impl Settings {
     pub fn load(path: &Path) -> Self {
         let mut settings = match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
-                log::warn!("settings at {} are unreadable: {error}", path.display());
-                Self::default()
-            }),
+            Ok(text) => {
+                // Windows editors can prefix UTF-8 JSON with a byte order mark.
+                let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+                serde_json::from_str(text).unwrap_or_else(|error| {
+                    log::warn!("settings at {} are unreadable: {error}", path.display());
+                    Self::default()
+                })
+            }
             Err(_) => Self::default(),
         };
         settings.sanitize();
@@ -458,5 +462,22 @@ mod alternate_settings_tests {
         assert_eq!(parsed.piped_api_base, "https://piped.example");
         assert!((parsed.alternate_min_score - 0.7).abs() < f32::EPSILON);
         assert!(!parsed.alternate_skip_on_miss);
+    }
+    #[test]
+    fn bom_settings_preserve_preferences_on_load_and_save() {
+        let dir = std::env::temp_dir().join(format!("oxidify-settings-bom-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            "\u{feff}{\"volume\":12345,\"device_name\":\"My speaker\"}",
+        )
+        .unwrap();
+        let settings = Settings::load(&path);
+        assert_eq!(settings.volume, 12345);
+        assert_eq!(settings.device_name, "My speaker");
+        settings.save(&path);
+        assert_eq!(Settings::load(&path).volume, 12345);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

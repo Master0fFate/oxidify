@@ -44,8 +44,9 @@ once; the old directories are left untouched.
 
 ## settings.json
 
-Settings are stored in one readable JSON file and written atomically. Its
-main fields are:
+Settings are stored in one readable JSON file and written atomically. UTF-8
+files saved with a leading byte order mark by a Windows editor are accepted
+without resetting preferences. Its main fields are:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
