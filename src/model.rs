@@ -294,9 +294,32 @@ pub struct HomeData {
     pub top_songs_revision: u64,
     pub requested: bool,
     pub loaded_at: Option<Instant>,
+    /// Which of Home's shelves are showing.
+    pub filter: HomeFilter,
 }
 
 pub const DISCOVER_TERMS: &[&str] = &["Discover Weekly", "Release Radar", "Daily Mix", "daylist"];
+
+/// The chips above Home: everything, music only, or podcasts only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HomeFilter {
+    #[default]
+    All,
+    Music,
+    Podcasts,
+}
+
+impl HomeFilter {
+    pub const ALL: [HomeFilter; 3] = [Self::All, Self::Music, Self::Podcasts];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Music => "Music",
+            Self::Podcasts => "Podcasts",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchFilter {
@@ -627,8 +650,14 @@ pub enum Action {
     /// Add, replace, or remove the optional personal Web API app.
     ConfigurePersonalWebApp,
     ToggleSidebar,
+    /// Fold Your Library down to a rail of covers, or open it out again.
+    ToggleSidebarCollapsed,
     ToggleQueuePanel,
     ToggleLyricsPanel,
+    /// Open or close the Now Playing view beside the page.
+    ToggleNowPlayingPanel,
+    /// Which of Home's shelves to show.
+    SetHomeFilter(HomeFilter),
     ToggleDevicesPopup,
     CheckForUpdates,
     SettingsChanged,

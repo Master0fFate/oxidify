@@ -204,6 +204,8 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub show_queue_panel: bool,
     pub show_lyrics_panel: bool,
+    /// The Now Playing view is open beside the page.
+    pub show_now_playing_panel: bool,
     /// The track the lyrics below are for.
     pub lyrics_uri: Option<String>,
     /// `Loaded(None)` when nobody has transcribed the track.
@@ -427,6 +429,7 @@ impl App {
             dialog: None,
             show_queue_panel: session.queue_open.unwrap_or(false),
             show_lyrics_panel: false,
+            show_now_playing_panel: session.now_playing_open.unwrap_or(false),
             lyrics_uri: None,
             lyrics: Loadable::NotLoaded,
             lyrics_following: true,
@@ -1263,11 +1266,38 @@ impl App {
         if let Some(url) = now.art_small.or(now.art_url) {
             self.tint_for(Some(&url));
         }
-        if matches!(self.page(), Page::Queue) || self.show_queue_panel {
+        if matches!(self.page(), Page::Queue)
+            || self.show_queue_panel
+            || self.show_now_playing_panel
+        {
             self.refresh_queue(true);
         }
         if self.show_lyrics_panel {
             self.request_lyrics();
+        }
+        if self.show_now_playing_panel {
+            self.prefetch_now_playing_artist();
+        }
+    }
+
+    /// Asks for the playing track's first artist, so the Now Playing view
+    /// can show their picture and following. One request, only while the
+    /// view is open, and never twice for the same artist.
+    pub fn prefetch_now_playing_artist(&mut self) {
+        if self.offline || !self.is_connected() {
+            return;
+        }
+        let Some(id) = self
+            .now_playing()
+            .filter(|now| !now.is_episode)
+            .and_then(|now| now.artists.first().and_then(|artist| artist.id.clone()))
+        else {
+            return;
+        };
+        let page = self.artist_pages.entry(id.clone()).or_default();
+        if page.artist.needs_load() {
+            page.artist = Loadable::Loading;
+            self.backend.api(ApiRequest::Artist { id });
         }
     }
 
@@ -1362,7 +1392,10 @@ impl App {
                 self.refresh_devices();
             }
             let playlist_open = self.settings.winamp_window && self.settings.playlist_open;
-            if (self.show_queue_panel || matches!(self.page(), Page::Queue) || playlist_open)
+            if (self.show_queue_panel
+                || self.show_now_playing_panel
+                || matches!(self.page(), Page::Queue)
+                || playlist_open)
                 && !self.queue.is_loading()
                 && self
                     .queue_fetched_at
@@ -4213,10 +4246,18 @@ impl App {
                 self.settings.sidebar_visible = !self.settings.sidebar_visible;
                 self.settings_dirty = true;
             }
+            Action::ToggleSidebarCollapsed => {
+                self.settings.sidebar_collapsed = !self.settings.sidebar_collapsed;
+                // Folding a hidden library opens it out: the key brought it
+                // back, so the rail is what appears.
+                self.settings.sidebar_visible = true;
+                self.settings_dirty = true;
+            }
             Action::ToggleQueuePanel => {
                 self.show_queue_panel = !self.show_queue_panel;
                 if self.show_queue_panel {
                     self.show_lyrics_panel = false;
+                    self.show_now_playing_panel = false;
                     self.refresh_queue(true);
                 }
             }
@@ -4224,10 +4265,22 @@ impl App {
                 self.show_lyrics_panel = !self.show_lyrics_panel;
                 if self.show_lyrics_panel {
                     self.show_queue_panel = false;
+                    self.show_now_playing_panel = false;
                     self.lyrics_following = true;
                     self.request_lyrics();
                 }
             }
+            Action::ToggleNowPlayingPanel => {
+                self.show_now_playing_panel = !self.show_now_playing_panel;
+                if self.show_now_playing_panel {
+                    self.show_queue_panel = false;
+                    self.show_lyrics_panel = false;
+                    self.refresh_queue(true);
+                    self.prefetch_now_playing_artist();
+                }
+                self.note_session_change();
+            }
+            Action::SetHomeFilter(filter) => self.home.filter = filter,
             Action::ToggleDevicesPopup => {
                 self.show_devices = !self.show_devices;
                 if self.show_devices && self.allows_spotify_player_api() {
@@ -4781,6 +4834,7 @@ impl App {
                 window_size: self.last_window_size.or(self.session_window_size),
                 window_pos: self.last_window_pos.or(self.session_window_pos),
                 queue_open: Some(self.show_queue_panel),
+                now_playing_open: Some(self.show_now_playing_panel),
                 winamp_pos: self.winamp.last_pos.or(self.winamp.restore_pos),
             }
             .save(&self.dirs.session_file());

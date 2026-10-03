@@ -49,7 +49,7 @@ jekyll_vitepress:
     page_type: TechArticle
     image:
       path: /screenshot.png
-      alt: Oxidify showing a playlist with the queue open and a track playing
+      alt: Oxidify showing a playlist with the Now Playing view open and a track playing
   llms:
     title: Oxidify
     description: >-

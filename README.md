@@ -13,7 +13,7 @@ layout, library access, and Spotify Connect receiver in one desktop
 application, adding resilient alternate local playback for accounts that
 cannot use Spotify Connect.
 
-![Oxidify showing a playlist, with the queue open and a track playing on a remote speaker](docs/screenshot.png)
+![Oxidify showing a playlist, with the Now Playing view open and a track playing on a remote speaker](docs/screenshot.png)
 
 **Documentation:** the `docs/` directory builds the site: what it is,
 getting started, everyday use, and how it connects to Spotify.
@@ -40,22 +40,33 @@ getting started, everyday use, and how it connects to Spotify.
   receiver waiting on the LAN is invisible to Spotify's API until it has an
   account. Oxidify discovers those over mDNS and connects them for you,
   after which they behave like any other Spotify Connect device.
+- **The layout you know.** One bar across the top holds navigation, Home,
+  search, and your account; Your Library, the page, and an optional side
+  panel sit beneath it as separate rounded panels, with the player bar
+  along the bottom.
 - **Library access.** Playlists, Liked Songs, saved albums, followed
-  artists, podcasts, and saved episodes, filterable in the sidebar and as
-  full pages. Sidebar rows pin to the top and drag into your own order.
-  Appearance can switch the sidebar and track tables to compact rows.
+  artists, podcasts, and saved episodes, filterable in Your Library and as
+  full pages. Library rows pin to the top and drag into your own order, and
+  the panel folds down to a rail of covers when the page needs the room.
+  The sort control switches between recently played and your own order and
+  between full and compact rows; Appearance does the same for track tables.
+- **Now Playing view.** A panel beside the page with the playing cover
+  large, the artist, and what is next in the queue, from the button in the
+  player bar or the arrow on the playing cover.
 - **Search** across songs, artists, albums, playlists, podcasts, and episodes,
   with a top result and per-type views.
-- **Home** with Made for you, Recently played, your top artists and songs, and
-  recommendations. The full Top songs page restores its first 50 songs from
-  an account-scoped cache (up to six hours old), then refreshes from Spotify.
+- **Home** with shortcuts to what you played last, Made for you, Recently
+  played, your top artists and songs, and recommendations, with chips to
+  show all of it, music only, or your podcasts and saved episodes. The full
+  Top songs page restores its first 50 songs from an account-scoped cache
+  (up to six hours old), then refreshes from Spotify.
 - **Artist pages** with popular songs, a filterable discography, and related
   artists. **Album**, **playlist**, and **podcast** pages support playback
   from any row. Started podcast episodes continue from their saved position;
   finished episodes start over. Playing an episode inside a playlist keeps
   that playlist and its displayed order.
-- **Refresh the current page** with the circular arrow beside the Winamp
-  mini player button. It requests fresh Spotify data, bypassing the page's
+- **Refresh the current page** with the circular arrow beside Settings in
+  the top bar. It requests fresh Spotify data, bypassing the page's
   metadata cache while still respecting Spotify rate limits.
 - **Responsive track tables.** Sorted and filtered views are cached between
   frames and refreshed when their inputs change. Sorted Liked Songs also
@@ -75,7 +86,8 @@ getting started, everyday use, and how it connects to Spotify.
   cover of what you are looking at or listening to. Turn it off in Settings
   and the interface stays in its neutral chrome with blue accents.
 - **Light and dark**, or follow the system.
-- **Winamp mini player.** `Ctrl+M` turns the window into a tiny player that
+- **Winamp mini player.** `Ctrl+M`, or the button at the right end of the
+  player bar, turns the window into a tiny player that
   wears classic `.wsz` skins, drawn pixel for pixel at 1x to 4x, with the
   spectrum analyser, the playlist, and the equalizer hanging under it as
   they did; the logo in the skin brings the big window back. Drop a skin
@@ -259,7 +271,7 @@ responsibility; see the section above.
 | `S` / `R` | Shuffle / cycle repeat |
 | `Q` | Queue panel |
 | `Ctrl+F` or `/` | Search |
-| `Ctrl+B` | Show or hide the sidebar |
+| `Ctrl+B` | Show or hide Your Library |
 | `Alt+←` / `Alt+→`, or mouse side buttons | Back or forward |
 | `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
@@ -322,8 +334,8 @@ the verbs cover more than a media key can ask for.
 Settings live in one readable JSON file (`~/.config/oxidify/settings.json`
 on Linux). They include the Connect device name, bitrate, normalisation,
 autoplay, gapless playback, the audio backend (PulseAudio/PipeWire or ALSA
-on Linux), audio cache size, theme, sidebar state, whether pages take
-colour from artwork, the mini player's skin and size, and the alternate
+on Linux), audio cache size, theme, whether Your Library is shown and
+whether it is folded to a rail, whether pages take colour from artwork, the mini player's skin and size, and the alternate
 playback fields (`playback_backend`, `piped_api_base`, `ytdlp_path`,
 `alternate_min_score`, `alternate_skip_on_miss`).
 Playback settings apply when you press **Apply and restart playback**.

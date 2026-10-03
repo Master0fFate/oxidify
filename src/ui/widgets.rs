@@ -109,6 +109,38 @@ pub fn paint_vertical_gradient(ui: &Ui, rect: Rect, top: Color32, bottom: Color3
     ui.painter().add(egui::Shape::mesh(mesh));
 }
 
+/// Fills `rect` with a vertical gradient from `top` to `bottom`, its top
+/// corners rounded by `radius` so it sits flush inside a panel's top edge.
+pub fn paint_rounded_gradient(ui: &Ui, rect: Rect, radius: f32, top: Color32, bottom: Color32) {
+    let radius = radius.clamp(0.0, rect.height() / 2.0);
+    // The strip holding the corners is as good as one colour; the gradient
+    // runs over the plain rectangle beneath it, starting from the colour it
+    // would have had there.
+    let cap = Rect::from_min_size(rect.min, vec2(rect.width(), radius));
+    ui.painter().rect_filled(
+        cap,
+        CornerRadius {
+            nw: radius as u8,
+            ne: radius as u8,
+            sw: 0,
+            se: 0,
+        },
+        top,
+    );
+    let t = if rect.height() > 0.0 {
+        radius / rect.height()
+    } else {
+        0.0
+    };
+    let start = Color32::from(egui::Rgba::from(top) * (1.0 - t) + egui::Rgba::from(bottom) * t);
+    paint_vertical_gradient(
+        ui,
+        Rect::from_min_max(pos2(rect.left(), cap.bottom()), rect.max),
+        start,
+        bottom,
+    );
+}
+
 /// Lays out only the rows that intersect the visible area of the enclosing
 /// scroll view. Every row must occupy exactly `row_height`.
 pub fn virtual_rows(
@@ -292,9 +324,9 @@ pub fn item_menu(
     if item.is_track() {
         let saved = app.is_saved(&uri).unwrap_or(false);
         let (icon, text) = if saved {
-            (Icon::HeartFilled, "Remove from Liked Songs")
+            (Icon::CircleCheck, "Remove from Liked Songs")
         } else {
-            (Icon::Heart, "Save to Liked Songs")
+            (Icon::CirclePlus, "Add to Liked Songs")
         };
         if menu_item(ui, &palette, Some(icon), text) {
             app.actions.push(Action::ToggleSaved(uri.clone()));
@@ -863,7 +895,7 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
         x += cols.added;
     }
 
-    // Heart.
+    // Add to Liked Songs: a plus on hover, a filled check once saved.
     if cols.heart > 0.0 {
         let saved = app.is_saved(row.item.uri());
         let heart_rect = Rect::from_min_size(pos2(x, rect.top()), vec2(cols.heart, row_height));
@@ -873,17 +905,15 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
                     .max_rect(heart_rect)
                     .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
             );
-            let (icon, color) = if saved == Some(true) {
-                (Icon::HeartFilled, palette.accent)
-            } else {
-                (Icon::Heart, palette.secondary)
-            };
-            let tooltip = if saved == Some(true) {
-                "Remove from Liked Songs"
-            } else {
-                "Save to Liked Songs"
-            };
-            if theme::icon_button(&mut child, icon, 16.0, color, palette.text, tooltip).clicked() {
+            if theme::liked_button(
+                &mut child,
+                &palette,
+                saved == Some(true),
+                16.0,
+                palette.secondary,
+            )
+            .clicked()
+            {
                 app.actions
                     .push(Action::ToggleSaved(row.item.uri().to_string()));
             }
@@ -1378,6 +1408,33 @@ pub fn shelf(
     ui.add_space(8.0);
     theme::section_title(ui, palette, title);
     ui.add_space(4.0);
+    shelf_body(ui, id, add_contents);
+}
+
+/// A shelf whose title row ends in a Show all link; `show_all` is set
+/// when the link is clicked.
+pub fn shelf_with_all(
+    ui: &mut Ui,
+    palette: &Palette,
+    id: &str,
+    title: &str,
+    show_all: &mut bool,
+    add_contents: impl FnOnce(&mut Ui),
+) {
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        theme::section_title(ui, palette, title);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if theme::link(ui, "Show all", theme::semibold(13.0), palette.secondary).clicked() {
+                *show_all = true;
+            }
+        });
+    });
+    ui.add_space(4.0);
+    shelf_body(ui, id, add_contents);
+}
+
+fn shelf_body(ui: &mut Ui, id: &str, add_contents: impl FnOnce(&mut Ui)) {
     egui::ScrollArea::horizontal()
         .id_salt(id)
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)

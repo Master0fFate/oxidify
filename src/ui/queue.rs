@@ -40,40 +40,48 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
         .default_size(app.settings.queue_width)
         .size_range(280.0..=560.0)
         .show_separator_line(false)
-        .frame(
-            Frame::new()
-                .fill(palette.panel)
-                .inner_margin(Margin::symmetric(12, 12)),
-        );
+        .frame(super::panel_frame(&palette, super::PanelSide::Right));
     let response = panel.show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.add_space(4.0);
-            theme::text(ui, "Queue", theme::bold(18.0), palette.text);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if theme::icon_button(ui, Icon::X, 18.0, palette.secondary, palette.text, "Close")
-                    .clicked()
-                {
-                    app.actions.push(Action::ToggleQueuePanel);
-                }
-                if theme::icon_button(
-                    ui,
-                    Icon::Refresh,
-                    16.0,
-                    palette.secondary,
-                    palette.text,
-                    "Refresh",
-                )
-                .clicked()
-                {
-                    app.actions.push(Action::RefreshQueue);
-                }
+        super::panel_card(ui, &palette);
+        Frame::new()
+            .inner_margin(Margin::symmetric(12, 12))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    theme::text(ui, "Queue", theme::bold(18.0), palette.text);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if theme::icon_button(
+                            ui,
+                            Icon::X,
+                            18.0,
+                            palette.secondary,
+                            palette.text,
+                            "Close",
+                        )
+                        .clicked()
+                        {
+                            app.actions.push(Action::ToggleQueuePanel);
+                        }
+                        if theme::icon_button(
+                            ui,
+                            Icon::Refresh,
+                            16.0,
+                            palette.secondary,
+                            palette.text,
+                            "Refresh",
+                        )
+                        .clicked()
+                        {
+                            app.actions.push(Action::RefreshQueue);
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("queue-panel-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| contents(app, ui, true));
             });
-        });
-        ui.add_space(8.0);
-        egui::ScrollArea::vertical()
-            .id_salt("queue-panel-scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| contents(app, ui, true));
     });
     let width = response.response.rect.width();
     if (width - app.settings.queue_width).abs() > 1.0 {

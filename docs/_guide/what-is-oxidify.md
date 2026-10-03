@@ -16,7 +16,7 @@ Oxidify is a native music player written in Rust with
 binary with no embedded browser engine. It starts in well under a second and
 uses a layout similar to Spotify's desktop client.
 
-![Oxidify showing a playlist with the queue open and a track playing](/screenshot.png)
+![Oxidify showing a playlist with the Now Playing view open and a track playing](/screenshot.png)
 
 ## What it does
 

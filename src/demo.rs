@@ -577,6 +577,9 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
     for surface in show.unwrap_or("").split(',').map(str::trim) {
         match surface {
             "queue" => app.show_queue_panel = true,
+            "now-playing" => app.show_now_playing_panel = true,
+            "collapsed" => app.settings.sidebar_collapsed = true,
+            "podcasts" => app.home.filter = HomeFilter::Podcasts,
             "devices" => app.show_devices = true,
             "shortcuts" => app.dialog = Some(Dialog::Shortcuts),
             "update" => {
@@ -808,6 +811,20 @@ mod tests {
         app.show_queue_panel = true;
         app.show_devices = true;
         frame(&ctx, &mut app);
+        app.show_devices = false;
+        app.show_queue_panel = false;
+        app.show_now_playing_panel = true;
+        for _ in 0..2 {
+            frame(&ctx, &mut app);
+        }
+        app.settings.sidebar_collapsed = true;
+        for filter in HomeFilter::ALL {
+            app.home.filter = filter;
+            app.open(Page::Home);
+            frame(&ctx, &mut app);
+        }
+        app.settings.sidebar_collapsed = false;
+        app.show_now_playing_panel = false;
         for dialog in [
             Dialog::Shortcuts,
             Dialog::CreatePlaylist {
@@ -1210,5 +1227,180 @@ mod tests {
         assert_eq!(restored.sidebar_order, settings.sidebar_order);
         let older: Settings = serde_json::from_str("{}").unwrap();
         assert!(older.sidebar_order.is_empty());
+    }
+
+    fn fresh_app(name: &str) -> (std::path::PathBuf, egui::Context, App) {
+        let root = std::env::temp_dir().join(format!("oxidify-{name}-{}", std::process::id()));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let ctx = egui::Context::default();
+        let waker = crate::backend::Waker::default();
+        waker.attach(&ctx);
+        let mut app = App::new(
+            &waker,
+            dirs,
+            Settings::default(),
+            AppOptions {
+                media_controls: false,
+                tray: false,
+            },
+        );
+        app.attach(&ctx);
+        populate(&mut app);
+        (root, ctx, app)
+    }
+
+    /// The column beside the page holds one panel at a time: opening Now
+    /// Playing, the queue, or the lyrics closes whichever was open, and
+    /// the Now Playing choice is remembered across runs like the queue's.
+    #[test]
+    fn the_right_column_holds_one_panel_at_a_time() {
+        let (root, ctx, mut app) = fresh_app("one-panel");
+        app.show_queue_panel = true;
+        frame(&ctx, &mut app);
+        app.actions.push(Action::ToggleNowPlayingPanel);
+        frame(&ctx, &mut app);
+        assert!(app.show_now_playing_panel);
+        assert!(!app.show_queue_panel);
+        assert!(!app.show_lyrics_panel);
+        app.actions.push(Action::ToggleLyricsPanel);
+        frame(&ctx, &mut app);
+        assert!(app.show_lyrics_panel);
+        assert!(!app.show_now_playing_panel);
+        app.actions.push(Action::ToggleQueuePanel);
+        frame(&ctx, &mut app);
+        assert!(app.show_queue_panel);
+        assert!(!app.show_lyrics_panel);
+        app.actions.push(Action::ToggleNowPlayingPanel);
+        frame(&ctx, &mut app);
+        assert!(app.show_now_playing_panel);
+        assert!(!app.show_queue_panel);
+        // Closing it leaves the column empty rather than bringing another
+        // panel back.
+        app.actions.push(Action::ToggleNowPlayingPanel);
+        frame(&ctx, &mut app);
+        assert!(!app.show_now_playing_panel && !app.show_queue_panel && !app.show_lyrics_panel);
+        // Demo mode never writes the session file, so the round trip is
+        // taken on the record itself: the new field survives, and older
+        // files without it leave the view closed.
+        let session = crate::settings::SessionState {
+            queue_open: Some(false),
+            now_playing_open: Some(true),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&session).unwrap();
+        let restored: crate::settings::SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.now_playing_open, Some(true));
+        assert_eq!(restored.queue_open, Some(false));
+        let older: crate::settings::SessionState =
+            serde_json::from_str(r#"{"queue_open": true}"#).unwrap();
+        assert_eq!(older.now_playing_open, None);
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Folding the library is a setting that survives the next start, and
+    /// folding a hidden library shows it as the rail rather than leaving
+    /// nothing on screen.
+    #[test]
+    fn folding_the_library_is_remembered_and_unhides_it() {
+        let (root, ctx, mut app) = fresh_app("fold");
+        assert!(!app.settings.sidebar_collapsed);
+        app.actions.push(Action::ToggleSidebarCollapsed);
+        frame(&ctx, &mut app);
+        assert!(app.settings.sidebar_collapsed);
+        app.settings.sidebar_visible = false;
+        app.actions.push(Action::ToggleSidebarCollapsed);
+        frame(&ctx, &mut app);
+        assert!(!app.settings.sidebar_collapsed);
+        assert!(app.settings.sidebar_visible);
+        app.settings.sidebar_collapsed = true;
+        let json = serde_json::to_string(&app.settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert!(restored.sidebar_collapsed);
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The folded rail is still the library: clicking a cover opens its
+    /// page. The sweep starts under the rail's header and stops at the
+    /// first row, Liked Songs, wherever the loaded fonts put it.
+    #[test]
+    fn the_folded_library_still_opens_its_rows() {
+        let (root, ctx, mut app) = fresh_app("rail");
+        app.settings.sidebar_collapsed = true;
+        app.open(Page::Home);
+        for _ in 0..3 {
+            frame(&ctx, &mut app);
+        }
+        // The header (the icon that opens the library out, and Create)
+        // sits in the first hundred points under the top bar; the sweep
+        // starts beneath it so it does not unfold the rail on the way.
+        let rail_center_x = crate::theme::PANEL_GAP + crate::theme::RAIL_WIDTH / 2.0;
+        let mut opened = false;
+        for step in 0..40 {
+            let pos = egui::pos2(rail_center_x, 165.0 + step as f32 * 10.0);
+            frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                frame_events(
+                    &ctx,
+                    &mut app,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+            if app.page() == &Page::LikedSongs {
+                opened = true;
+                break;
+            }
+            assert_eq!(
+                app.page(),
+                &Page::Home,
+                "a click above the rows must open nothing else"
+            );
+            assert!(
+                app.settings.sidebar_collapsed,
+                "the sweep unfolded the rail"
+            );
+        }
+        assert!(opened, "no click on the rail opened Liked Songs");
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Home's Podcasts chip asks for the library's podcasts and episodes
+    /// when they have not been fetched; All asks for nothing extra, so
+    /// opening Home stays as cheap as it was.
+    #[test]
+    fn the_podcasts_chip_asks_for_the_shelves_it_shows() {
+        let (root, ctx, mut app) = fresh_app("podcasts-chip");
+        app.library.shows.reset();
+        app.library.episodes.reset();
+        app.open(Page::Home);
+        frame(&ctx, &mut app);
+        assert!(!app.library.shows.loading);
+        assert!(!app.library.episodes.loading);
+        app.actions
+            .push(Action::SetHomeFilter(HomeFilter::Podcasts));
+        frame(&ctx, &mut app);
+        assert_eq!(app.home.filter, HomeFilter::Podcasts);
+        frame(&ctx, &mut app);
+        assert!(
+            app.library.shows.loading,
+            "the podcasts shelf was not asked for"
+        );
+        assert!(
+            app.library.episodes.loading,
+            "the episodes were not asked for"
+        );
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
     }
 }

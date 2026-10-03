@@ -1,27 +1,68 @@
 //! The Home page.
 
-use egui::{CornerRadius, Rect, Sense, Vec2, pos2, vec2};
+use egui::{Align, CornerRadius, Layout, Rect, Sense, Vec2, pos2, vec2};
 
 use crate::api::models::{PlayableItem, Playlist, pick_image};
 use crate::app::App;
-use crate::model::{Action, DISCOVER_TERMS, Loadable, Page, RowContext};
+use crate::model::{Action, DISCOVER_TERMS, HomeFilter, Loadable, Page, RowContext};
 use crate::theme::{self, Icon};
 
 use super::widgets::{self, TrackRow};
 
-pub fn show(app: &mut App, ui: &mut egui::Ui) {
+/// The chips that choose what Home shows. Drawn above the page's scroll
+/// area, so they stay in place while the shelves scroll under them.
+pub fn filter_row(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    ui.add_space(6.0);
-    theme::text(ui, crate::util::greeting(), theme::bold(30.0), palette.text);
-    ui.add_space(12.0);
-    quick_access(app, ui);
-    ui.add_space(16.0);
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.add_space(widgets::PAGE_PADDING);
+        ui.spacing_mut().item_spacing.x = 8.0;
+        for filter in HomeFilter::ALL {
+            if theme::soft_button(
+                ui,
+                &palette,
+                None,
+                filter.label(),
+                app.home.filter == filter,
+            )
+            .clicked()
+            {
+                app.actions.push(Action::SetHomeFilter(filter));
+            }
+        }
+    });
+    ui.add_space(2.0);
+}
 
-    made_for_you(app, ui);
-    recently_played(app, ui);
-    top_artists(app, ui);
-    top_tracks(app, ui);
-    recommendations(app, ui);
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    match app.home.filter {
+        HomeFilter::All => {
+            ui.add_space(4.0);
+            quick_access(app, ui);
+            ui.add_space(16.0);
+            made_for_you(app, ui);
+            recently_played(app, ui);
+            top_artists(app, ui);
+            your_podcasts(app, ui, false);
+            top_tracks(app, ui);
+            recommendations(app, ui);
+        }
+        HomeFilter::Music => {
+            ui.add_space(4.0);
+            quick_access(app, ui);
+            ui.add_space(16.0);
+            made_for_you(app, ui);
+            recently_played(app, ui);
+            top_artists(app, ui);
+            top_tracks(app, ui);
+            recommendations(app, ui);
+        }
+        HomeFilter::Podcasts => {
+            ui.add_space(4.0);
+            your_podcasts(app, ui, true);
+            saved_episodes(app, ui);
+        }
+    }
 }
 
 struct Tile {
@@ -32,6 +73,8 @@ struct Tile {
     liked: bool,
 }
 
+/// The grid of shortcuts at the top: Liked Songs and the playlists played
+/// most recently, two rows of them on a wide page.
 fn quick_access(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let mut tiles: Vec<Tile> = vec![Tile {
@@ -45,7 +88,15 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
         liked: true,
     }];
     if let Some(playlists) = app.library.playlists.get() {
-        for playlist in playlists.iter().take(7) {
+        let rank = |uri: &str| {
+            app.recent_contexts
+                .iter()
+                .position(|held| held == uri)
+                .unwrap_or(usize::MAX)
+        };
+        let mut ordered: Vec<_> = playlists.iter().enumerate().collect();
+        ordered.sort_by_key(|(index, playlist)| (rank(&playlist.uri), *index));
+        for (_, playlist) in ordered.into_iter().take(7) {
             tiles.push(Tile {
                 image: pick_image(&playlist.images, 64).map(str::to_string),
                 name: playlist.name.clone(),
@@ -58,6 +109,7 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
     let available = ui.available_width();
     let columns = ((available / 300.0).floor() as usize).clamp(2, 4);
     let gap = 10.0;
+    let tile_height = 64.0;
     let tile_width = (available - gap * (columns as f32 - 1.0)) / columns as f32;
     let rows = tiles.len().div_ceil(columns);
     for row in 0..rows {
@@ -75,7 +127,7 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
                     break;
                 };
                 let (rect, response) =
-                    ui.allocate_exact_size(vec2(tile_width, 60.0), Sense::click());
+                    ui.allocate_exact_size(vec2(tile_width, tile_height), Sense::click());
                 if ui.is_rect_visible(rect) {
                     let hovered = ui.rect_contains_pointer(rect);
                     let fill = if hovered {
@@ -84,7 +136,7 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
                         palette.surface
                     };
                     ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
-                    let cover = Rect::from_min_size(rect.min, Vec2::splat(60.0));
+                    let cover = Rect::from_min_size(rect.min, Vec2::splat(tile_height));
                     if *liked {
                         super::sidebar::liked_cover(ui, cover, 6.0);
                     } else {
@@ -340,6 +392,128 @@ fn top_artists(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+/// The podcasts in the library as a shelf. Under the Podcasts chip the
+/// shelf asks for them; under All it shows them only once they are here,
+/// so opening Home asks Spotify for nothing extra.
+fn your_podcasts(app: &mut App, ui: &mut egui::Ui, load: bool) {
+    let palette = app.palette;
+    let shows = &app.library.shows;
+    if load && !shows.loaded_once && !shows.loading {
+        app.actions.push(Action::LoadMore(Page::Podcasts));
+    }
+    let loading = shows.loading && shows.items.is_empty();
+    let error = shows.error.clone();
+    let shows: Vec<_> = shows.items.iter().map(|saved| saved.show.clone()).collect();
+    if shows.is_empty() && !load {
+        return;
+    }
+    if shows.is_empty() && !loading && error.is_none() {
+        if app.library.shows.loaded_once {
+            widgets::empty_state(
+                ui,
+                &palette,
+                Icon::Mic,
+                "No podcasts yet",
+                "Podcasts you follow will appear here.",
+            );
+        }
+        return;
+    }
+    let mut show_all = false;
+    widgets::shelf_with_all(
+        ui,
+        &palette,
+        "home-podcasts",
+        "Your podcasts",
+        &mut show_all,
+        |ui| {
+            if loading {
+                widgets::loading_row(ui, &palette);
+            }
+            if let Some(error) = &error {
+                widgets::error_row(ui, app, error, Some(Page::Podcasts));
+            }
+            for show in &shows {
+                let card = widgets::card(
+                    ui,
+                    app,
+                    pick_image(&show.images, 300),
+                    &show.name,
+                    &show.publisher,
+                    false,
+                    false,
+                );
+                widgets::card_context_menu(app, &card, &show.uri, &show.name);
+                if card.clicked {
+                    app.actions.push(Action::Open(Page::Show(show.id.clone())));
+                }
+            }
+        },
+    );
+    if show_all {
+        app.actions.push(Action::Open(Page::Podcasts));
+    }
+}
+
+/// The saved episodes, a handful of them, with the page for the rest.
+fn saved_episodes(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let list = &app.library.episodes;
+    if !list.loaded_once && !list.loading {
+        app.actions.push(Action::LoadMore(Page::Episodes));
+    }
+    let loading = list.loading && list.items.is_empty();
+    let error = list.error.clone();
+    let episodes: Vec<_> = list
+        .items
+        .iter()
+        .take(6)
+        .map(|saved| saved.episode.clone())
+        .collect();
+    let more = list.items.len() > episodes.len() || list.can_load_more();
+    if episodes.is_empty() && !loading && error.is_none() {
+        return;
+    }
+    ui.add_space(8.0);
+    let mut show_all = false;
+    section_heading(ui, &palette, "Saved episodes", more, &mut show_all);
+    if show_all {
+        app.actions.push(Action::Open(Page::Episodes));
+    }
+    ui.add_space(4.0);
+    if loading {
+        widgets::loading_row(ui, &palette);
+    }
+    if let Some(error) = &error {
+        widgets::error_row(ui, app, error, Some(Page::Episodes));
+    }
+    for episode in &episodes {
+        super::show::episode_row(app, ui, episode, None);
+    }
+    ui.add_space(12.0);
+}
+
+/// A section title with, when there is somewhere to go, a Show all link
+/// at the right edge.
+fn section_heading(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    title: &str,
+    link: bool,
+    show_all: &mut bool,
+) {
+    ui.horizontal(|ui| {
+        theme::section_title(ui, palette, title);
+        if link {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::link(ui, "Show all", theme::semibold(13.0), palette.secondary).clicked() {
+                    *show_all = true;
+                }
+            });
+        }
+    });
+}
+
 fn track_list(
     app: &mut App,
     ui: &mut egui::Ui,
@@ -353,12 +527,10 @@ fn track_list(
     let tracks = match tracks {
         Loadable::Loaded(tracks) => tracks,
         Loadable::Loading | Loadable::NotLoaded => {
-            if let Some(page) = title_page {
-                if theme::link(ui, title, theme::bold(17.0), palette.text).clicked() {
-                    app.actions.push(Action::Open(page));
-                }
-            } else {
-                theme::section_title(ui, &palette, title);
+            let mut show_all = false;
+            section_heading(ui, &palette, title, title_page.is_some(), &mut show_all);
+            if show_all && let Some(page) = title_page {
+                app.actions.push(Action::Open(page));
             }
             widgets::loading_row(ui, &palette);
             ui.add_space(12.0);
@@ -374,12 +546,10 @@ fn track_list(
     if tracks.is_empty() {
         return;
     }
-    if let Some(page) = title_page {
-        if theme::link(ui, title, theme::bold(17.0), palette.text).clicked() {
-            app.actions.push(Action::Open(page));
-        }
-    } else {
-        theme::section_title(ui, &palette, title);
+    let mut show_all = false;
+    section_heading(ui, &palette, title, title_page.is_some(), &mut show_all);
+    if show_all && let Some(page) = title_page.clone() {
+        app.actions.push(Action::Open(page));
     }
     ui.add_space(4.0);
     let uris: Vec<String> = tracks.iter().map(|track| track.uri.clone()).collect();

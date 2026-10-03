@@ -13,9 +13,11 @@ use super::widgets::{SliderEvent, thin_slider, thin_slider_with_scroll};
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let tint = app.now_playing_tint();
+    // The bar sits on the window ground under the panels, taking a trace
+    // of the playing cover's colour.
     let fill = match tint {
-        Some(tint) => super::blend(palette.panel, tint, 0.12),
-        None => palette.panel,
+        Some(tint) => super::blend(palette.window, tint, 0.12),
+        None => palette.window,
     };
     egui::Panel::bottom("player-bar")
         .exact_size(theme::PLAYER_BAR_HEIGHT)
@@ -28,11 +30,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         )
         .show(ui, |ui| {
             let rect = ui.max_rect();
-            ui.painter().hline(
-                rect.x_range(),
-                rect.top() + 0.5,
-                egui::Stroke::new(1.0, palette.outline),
-            );
             let now = app.now_playing();
             let width = rect.width();
             let side = (width * 0.3).clamp(200.0, 420.0);
@@ -109,6 +106,46 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
             Sense::click_and_drag(),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Hovering the cover offers the Now Playing view from its corner, the
+    // way the official client's cover does; the rest of the cover still
+    // opens the album.
+    if (cover_response.hovered() || ui.rect_contains_pointer(cover_rect.expand(4.0)))
+        && !app.show_now_playing_panel
+    {
+        let expand_rect = Rect::from_center_size(
+            pos2(cover_rect.right() - 11.0, cover_rect.top() + 11.0),
+            Vec2::splat(22.0),
+        );
+        let expand = ui.interact(
+            expand_rect,
+            egui::Id::new("now-playing-expand"),
+            Sense::click(),
+        );
+        let lifted = expand.hovered();
+        ui.painter().circle_filled(
+            expand_rect.center(),
+            if lifted { 11.0 } else { 10.0 },
+            egui::Color32::from_black_alpha(if lifted { 200 } else { 150 }),
+        );
+        theme::paint_icon(
+            ui,
+            Icon::ChevronUp,
+            expand_rect,
+            14.0,
+            if lifted {
+                egui::Color32::WHITE
+            } else {
+                palette.secondary
+            },
+        );
+        if expand
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Now Playing view")
+            .clicked()
+        {
+            app.actions.push(Action::ToggleNowPlayingPanel);
+        }
+    }
     if !now.is_episode && cover_response.drag_started_by(egui::PointerButton::Primary) {
         egui::DragAndDrop::set_payload(
             ui.ctx(),
@@ -120,7 +157,12 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
             },
         );
     }
-    if cover_response.clicked() {
+    if cover_response.clicked()
+        && !app
+            .actions
+            .iter()
+            .any(|action| matches!(action, Action::ToggleNowPlayingPanel))
+    {
         if let Some(id) = &now.album_id {
             app.actions.push(Action::Open(Page::Album(id.clone())));
         } else if let Some(id) = &now.show_id {
@@ -154,6 +196,10 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
     );
     text_ui.set_clip_rect(text_rect.intersect(ui.clip_rect()));
     text_ui.spacing_mut().item_spacing.y = 2.0;
+    // The artists sit in a horizontal row, which egui makes as tall as a
+    // button unless told otherwise; at that height the row fell below the
+    // band and the names were cut off.
+    text_ui.spacing_mut().interact_size.y = 16.0;
     let title_response = theme::link(&mut text_ui, &now.title, theme::medium(14.0), palette.text);
     if title_response.clicked() {
         if let Some(id) = &now.album_id {
@@ -216,13 +262,8 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
 
     if !now.is_episode {
         let saved = app.is_saved(&now.uri).unwrap_or(false);
-        let (icon, color, tooltip) = if saved {
-            (Icon::HeartFilled, palette.accent, "Remove from Liked Songs")
-        } else {
-            (Icon::Heart, palette.secondary, "Save to Liked Songs")
-        };
-        // Sit the heart just past the actual text, not at the region's far
-        // edge, so it stays visually attached to the title.
+        // Sit the control just past the actual text, not at the region's
+        // far edge, so it stays visually attached to the title.
         let natural = {
             let title =
                 ui.painter()
@@ -241,7 +282,7 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
                 .max_rect(heart_rect)
                 .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
         );
-        if theme::icon_button(&mut heart_ui, icon, 17.0, color, palette.text, tooltip).clicked() {
+        if theme::liked_button(&mut heart_ui, &palette, saved, 17.0, palette.secondary).clicked() {
             app.actions.push(Action::ToggleSaved(now.uri.clone()));
         }
     }
@@ -457,6 +498,21 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
 fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
     let palette = app.palette;
     ui.spacing_mut().item_spacing.x = 6.0;
+    // From the right edge in, the order the official client keeps: the
+    // mini player, volume, the device, the queue, lyrics, Now Playing.
+    if theme::icon_button(
+        ui,
+        Icon::Shrink,
+        18.0,
+        palette.secondary,
+        palette.text,
+        "Winamp mini player (Ctrl+M)",
+    )
+    .clicked()
+    {
+        app.actions.push(Action::ToggleWinampWindow);
+    }
+    ui.add_space(2.0);
     let volume = now
         .map(|now| now.volume_percent)
         .unwrap_or_else(|| crate::app::volume_to_percent(app.local.volume));
@@ -572,5 +628,21 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
     .clicked()
     {
         app.actions.push(Action::ToggleLyricsPanel);
+    }
+    if theme::icon_button(
+        ui,
+        Icon::SquarePlay,
+        18.0,
+        if app.show_now_playing_panel {
+            palette.accent
+        } else {
+            palette.secondary
+        },
+        palette.text,
+        "Now Playing view",
+    )
+    .clicked()
+    {
+        app.actions.push(Action::ToggleNowPlayingPanel);
     }
 }

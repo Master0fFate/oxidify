@@ -96,9 +96,13 @@ pub struct Settings {
     pub volume: u16,
     /// Whether the library sidebar is visible.
     pub sidebar_visible: bool,
+    /// Your Library is folded down to a rail of covers.
+    pub sidebar_collapsed: bool,
     pub sidebar_width: f32,
     pub lyrics_width: f32,
     pub queue_width: f32,
+    /// The Now Playing view's width.
+    pub now_playing_width: f32,
     pub search_history: Vec<String>,
     pub show_shortcut_hints: bool,
     /// An optional personal Spotify Web API application id. The shared
@@ -186,9 +190,11 @@ impl Default for Settings {
             accent_from_art: true,
             volume: (u16::MAX as u32 * 70 / 100) as u16,
             sidebar_visible: true,
-            sidebar_width: 250.0,
+            sidebar_collapsed: false,
+            sidebar_width: 280.0,
             lyrics_width: 360.0,
             queue_width: 360.0,
+            now_playing_width: 340.0,
             search_history: Vec::new(),
             show_shortcut_hints: true,
             web_client_id: None,
@@ -368,6 +374,23 @@ mod tests {
     }
 
     #[test]
+    fn older_settings_open_the_library_out_not_as_a_rail() {
+        let settings: Settings = serde_json::from_str(r#"{"sidebar_width": 250.0}"#).unwrap();
+        assert!(!settings.sidebar_collapsed);
+        assert_eq!(settings.sidebar_width, 250.0);
+        assert_eq!(settings.now_playing_width, 340.0);
+        let collapsed = Settings {
+            sidebar_collapsed: true,
+            now_playing_width: 400.0,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&collapsed).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert!(restored.sidebar_collapsed);
+        assert_eq!(restored.now_playing_width, 400.0);
+    }
+
+    #[test]
     fn hidden_sidebar_round_trips() {
         let settings = Settings {
             sidebar_visible: false,
@@ -400,6 +423,8 @@ pub struct SessionState {
     pub window_pos: Option<[f32; 2]>,
     /// Whether the queue panel was open.
     pub queue_open: Option<bool>,
+    /// Whether the Now Playing view was open.
+    pub now_playing_open: Option<bool>,
     /// Last outer position of the Winamp window.
     pub winamp_pos: Option<[f32; 2]>,
 }

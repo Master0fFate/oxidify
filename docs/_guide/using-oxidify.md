@@ -18,9 +18,14 @@ that playlist's queue and displayed order. This applies to supported Spotify
 playback; alternate local audio does not support podcast episodes.
 
 The player bar shows what is playing locally or on another device. Click the
-title to open its album, an artist name to open that artist, or the heart to
-save the track. Drag the cover or title onto a playlist in the sidebar, or
-between rows of an open playlist, to add it. The wheel over the volume slider
+title to open its album, an artist name to open that artist, or the plus to
+add the track to Liked Songs; a filled check means it is there already.
+Drag the cover or title onto a playlist in Your Library, or between rows of
+an open playlist, to add it. The arrow in the cover's corner, or the first
+button at the right of the bar, opens the **Now Playing view**: the cover
+large beside the page, the artist, and what is next in the queue. The
+queue, the lyrics, and the Now Playing view share that column, one at a
+time. The wheel over the volume slider
 moves it five percent at a time. When Spotify reports that a device cannot
 accept remote volume changes, volume and mute are disabled. Use that device's
 own controls instead; keyboard and media-control volume commands are ignored
@@ -31,8 +36,11 @@ packets when the output uses a different rate, such as 48 kHz on Windows.
 
 ## Home
 
-Home previews your most-played songs. Select **Your top songs** or **Show
-more top songs** to open the complete ranked list.
+The chips above Home choose what it shows: everything, music only, or your
+podcasts and saved episodes. The shortcuts under them are Liked Songs and
+the playlists you played last. Home previews your most-played songs; select
+**Your top songs**, **Show all**, or **Show more top songs** to open the
+complete ranked list.
 
 Track tables sort by their column headings: click **Title**, **Album**,
 **Date added**, or the clock to sort by it, again to reverse, and a third
@@ -57,11 +65,20 @@ go back; dragging a row switches to your own order again.
 The Albums, Artists, and Podcasts shelves pin the same way: drag into
 the block, within it, or below it.
 
-Use the chips to filter the sidebar by Playlists, Albums, Artists, or Podcasts,
-or use the magnifier to search it. Liked Songs stays at the top. The current
-page is highlighted, and the playing playlist has a small speaker icon.
+Use the chips to filter Your Library by Playlists, Artists, Albums, or
+Podcasts, or use the magnifier to search it. The control at the right of
+that row names the order the shelf is in, **Recents** or **Custom order**,
+and switches it back to recently played or between full and compact rows.
+Liked Songs stays at the top. The current page is highlighted, and the
+playing playlist has a small speaker icon.
 
-**Playlists you own** are fully editable: create one with the **+** button,
+Click **Your Library** to fold the panel down to a rail of covers; each
+still opens its page, takes a dropped song, and answers a right-click, and
+the library icon opens it out again. `Ctrl+B` hides it altogether and
+brings it back.
+
+**Playlists you own** are fully editable: create one with the **Create**
+button,
 add songs from any row's menu (the list filters as you type) or by dragging
 them onto a playlist in the sidebar or onto a gap in an open playlist page,
 remove and reorder from the playlist page, and rename or delete from its
@@ -214,7 +231,7 @@ Connect devices and conflicting media-key handlers.
 | `S` / `R` | Shuffle / cycle repeat |
 | `Q` | Queue panel |
 | `Ctrl+F` or `/` | Search |
-| `Ctrl+B` | Show or hide the sidebar |
+| `Ctrl+B` | Show or hide Your Library |
 | `Alt+←` / `Alt+→`, or mouse side buttons | Back or forward |
 | `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |

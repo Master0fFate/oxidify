@@ -19,9 +19,9 @@ hero:
       link: https://github.com/Master0fFate/oxidify
   image:
     src: /screenshot.png
-    alt: "Oxidify showing the Late night focus playlist with the queue panel open, a track playing, and the library in the sidebar"
-    width: 1894
-    height: 1037
+    alt: "Oxidify showing the Late night focus playlist with the Now Playing view open, a track playing, and Your Library on the left"
+    width: 1860
+    height: 1200
 
 features:
   - icon: ⚡

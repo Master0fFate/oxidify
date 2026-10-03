@@ -33,12 +33,14 @@ impl Palette {
     pub fn dark() -> Self {
         Self {
             dark: true,
-            window: Color32::from_rgb(0x0f, 0x11, 0x14),
-            panel: Color32::from_rgb(0x15, 0x18, 0x1c),
-            surface: Color32::from_rgb(0x1d, 0x21, 0x27),
-            surface_hover: Color32::from_rgb(0x26, 0x2b, 0x33),
-            surface_active: Color32::from_rgb(0x2f, 0x35, 0x3f),
-            outline: Color32::from_rgb(0x2a, 0x30, 0x38),
+            // The window is the near-black ground the panels float on, as
+            // in Spotify's panelled layout; the panels sit a step above it.
+            window: Color32::from_rgb(0x08, 0x09, 0x0b),
+            panel: Color32::from_rgb(0x12, 0x14, 0x17),
+            surface: Color32::from_rgb(0x1c, 0x1f, 0x24),
+            surface_hover: Color32::from_rgb(0x27, 0x2b, 0x31),
+            surface_active: Color32::from_rgb(0x32, 0x37, 0x3f),
+            outline: Color32::from_rgb(0x2a, 0x2f, 0x37),
             text: Color32::from_rgb(0xf2, 0xf4, 0xf6),
             secondary: Color32::from_rgb(0xa9, 0xb1, 0xbc),
             dim: Color32::from_rgb(0x6e, 0x77, 0x84),
@@ -47,7 +49,7 @@ impl Palette {
             on_accent: Color32::from_rgb(0x0a, 0x28, 0x48),
             danger: Color32::from_rgb(0xf5, 0x71, 0x7f),
             warning: Color32::from_rgb(0xf2, 0xb8, 0x5c),
-            overlay: Color32::from_rgb(0x22, 0x27, 0x2e),
+            overlay: Color32::from_rgb(0x20, 0x24, 0x2a),
             shadow: Color32::from_black_alpha(140),
         }
     }
@@ -55,7 +57,9 @@ impl Palette {
     pub fn light() -> Self {
         Self {
             dark: false,
-            window: Color32::from_rgb(0xf8, 0xf9, 0xfb),
+            // Light keeps white panels on a faintly grey ground, so the
+            // gutters between them read without dimming the pages.
+            window: Color32::from_rgb(0xf2, 0xf3, 0xf6),
             panel: Color32::from_rgb(0xff, 0xff, 0xff),
             surface: Color32::from_rgb(0xee, 0xf0, 0xf3),
             surface_hover: Color32::from_rgb(0xe3, 0xe6, 0xeb),
@@ -100,7 +104,15 @@ pub const RADIUS_SMALL: u8 = 4;
 pub const ROW_HEIGHT: f32 = 56.0;
 pub const COMPACT_ROW_HEIGHT: f32 = 48.0;
 pub const PLAYER_BAR_HEIGHT: f32 = 88.0;
-pub const TOP_BAR_HEIGHT: f32 = 56.0;
+/// The global bar above every panel: navigation, Home, search, account.
+pub const TOP_BAR_HEIGHT: f32 = 60.0;
+/// The gutter between the window's edge and its panels, and between the
+/// panels themselves.
+pub const PANEL_GAP: f32 = 8.0;
+/// The corner radius of the library, page, and side panels.
+pub const PANEL_RADIUS: u8 = 8;
+/// The width of Your Library collapsed to a rail of covers.
+pub const RAIL_WIDTH: f32 = 72.0;
 
 const INTER_MEDIUM: &str = "inter-medium";
 const INTER_SEMIBOLD: &str = "inter-semibold";
@@ -377,6 +389,7 @@ pub enum Icon {
     Speaker,
     Square,
     SquarePen,
+    SquarePlay,
     Sun,
     Tablet,
     Trash,
@@ -466,6 +479,7 @@ const ICONS: &[(Icon, &str, &[u8])] = icons! {
     Speaker => "speaker",
     Square => "square",
     SquarePen => "square-pen",
+    SquarePlay => "square-play",
     Sun => "sun",
     Tablet => "tablet",
     Trash => "trash-2",
@@ -660,6 +674,53 @@ pub fn circle_spinner(
     } else {
         response.on_hover_text(tooltip)
     }
+}
+
+/// The add-to-Liked-Songs control: a plus in a ring until the song is
+/// saved, then a filled accent disc with a check, the way Spotify marks
+/// what is in the library. `size` is the ring's diameter.
+pub fn liked_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    saved: bool,
+    size: f32,
+    quiet: Color32,
+) -> Response {
+    let edge = size + 12.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(edge), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let lifted = response.hovered() || response.has_focus();
+        let scale = if response.is_pointer_button_down_on() {
+            0.92
+        } else if lifted {
+            1.06
+        } else {
+            1.0
+        };
+        let diameter = size * scale;
+        if saved {
+            let fill = if lifted {
+                palette.accent_hover
+            } else {
+                palette.accent
+            };
+            ui.painter()
+                .circle_filled(rect.center(), diameter / 2.0, fill);
+            paint_icon(ui, Icon::Check, rect, diameter * 0.6, palette.on_accent);
+        } else {
+            let tint = if lifted { palette.text } else { quiet };
+            paint_icon(ui, Icon::CirclePlus, rect, diameter, tint);
+        }
+    }
+    let tooltip = if saved {
+        "Remove from Liked Songs"
+    } else {
+        "Add to Liked Songs"
+    };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tooltip));
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(tooltip)
 }
 
 /// A pill-shaped text button: filled for the primary action, outlined otherwise.

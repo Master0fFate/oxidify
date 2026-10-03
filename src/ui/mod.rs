@@ -1,4 +1,12 @@
 //! Window layout: panels, overlays, keyboard shortcuts.
+//!
+//! The window is laid out the way Spotify's desktop client has been since
+//! its global-navigation redesign: one bar across the top with the
+//! navigation, Home, search, and the account; under it Your Library on the
+//! left, the page in the middle, and an optional side panel (Now Playing,
+//! the queue, or the lyrics) on the right, each a rounded panel floating on
+//! the darker window with a gutter between them; and the player bar along
+//! the bottom.
 
 pub mod artist;
 pub mod collection;
@@ -9,6 +17,7 @@ mod keys;
 pub mod library;
 pub mod login;
 mod lyrics;
+pub mod now_playing;
 pub mod player_bar;
 pub mod queue;
 pub mod search;
@@ -29,6 +38,44 @@ use crate::backend::AuthStatus;
 use crate::model::{Action, Page, ToastKind};
 use crate::theme::{self, Icon};
 
+/// Which side of the window a panel sits on, for the gutters it owns: every
+/// panel keeps the gap below it, the left panel the gap on its left, the
+/// right panel the gap on its right, and the page both.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PanelSide {
+    Left,
+    Center,
+    Right,
+}
+
+/// The frame a floating panel is drawn in: the window colour, with the
+/// gutters this panel owns as margins. The rounded panel itself is painted
+/// by [`panel_card`] once the frame has given the content its rectangle.
+pub fn panel_frame(palette: &theme::Palette, side: PanelSide) -> Frame {
+    let gap = theme::PANEL_GAP as i8;
+    let (left, right) = match side {
+        PanelSide::Left => (gap, 0),
+        PanelSide::Center => (gap, gap),
+        PanelSide::Right => (0, gap),
+    };
+    Frame::new().fill(palette.window).inner_margin(Margin {
+        left,
+        right,
+        top: 0,
+        bottom: gap,
+    })
+}
+
+/// Paints the rounded panel behind a panel's content and clips the content
+/// to it, so scrolled rows end at the rounded edge instead of the window's.
+pub fn panel_card(ui: &mut egui::Ui, palette: &theme::Palette) -> Rect {
+    let card = ui.max_rect();
+    ui.painter()
+        .rect_filled(card, CornerRadius::same(theme::PANEL_RADIUS), palette.panel);
+    ui.set_clip_rect(card.intersect(ui.clip_rect()));
+    card
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let ctx = &ctx;
@@ -47,13 +94,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     player_bar::show(app, ui);
+    topbar::show(app, ui);
     if app.settings.sidebar_visible {
         sidebar::show(app, ui);
     }
-    if app.show_queue_panel {
+    // One side panel at a time, the way the official client keeps its
+    // right column: Now Playing, the queue, or the lyrics.
+    if app.show_now_playing_panel {
+        now_playing::side_panel(app, ui);
+    } else if app.show_queue_panel {
         queue::side_panel(app, ui);
-    }
-    if app.show_lyrics_panel {
+    } else if app.show_lyrics_panel {
         lyrics::side_panel(app, ui);
     }
     central(app, ui);
@@ -106,9 +157,9 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let tint = page_tint(app);
     egui::CentralPanel::default()
-        .frame(Frame::new().fill(palette.window))
+        .frame(panel_frame(&palette, PanelSide::Center))
         .show(ui, |ui| {
-            let rect = ui.max_rect();
+            let card = panel_card(ui, &palette);
             if let Some(tint) = tint {
                 let strength = if matches!(
                     app.page(),
@@ -118,13 +169,23 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                 } else {
                     0.85
                 };
-                let top = blend(palette.window, tint, strength);
-                let header = Rect::from_min_size(rect.min, vec2(rect.width(), 340.0));
-                widgets::paint_vertical_gradient(ui, header, top, palette.window);
+                let top = blend(palette.panel, tint, strength);
+                let header = Rect::from_min_size(card.min, vec2(card.width(), 340.0));
+                widgets::paint_rounded_gradient(
+                    ui,
+                    header,
+                    f32::from(theme::PANEL_RADIUS),
+                    top,
+                    palette.panel,
+                );
             }
             ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
-            topbar::show(app, ui);
             let page = app.page().clone();
+            // Home's filter chips stay put while the shelves scroll under
+            // them, as the official client's do.
+            if page == Page::Home {
+                home::filter_row(app, ui);
+            }
             egui::ScrollArea::vertical()
                 .id_salt(("page", page.encode()))
                 .auto_shrink([false, false])
