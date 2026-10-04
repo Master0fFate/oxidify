@@ -34,7 +34,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             return;
         }
     };
-    if results.is_empty() {
+    // The two halves of a search land separately; the page is empty only
+    // once both have answered with nothing.
+    if results.is_empty() && !app.search.pending() {
         widgets::empty_state(
             ui,
             &palette,
@@ -44,6 +46,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         );
         return;
     }
+    let catalogue_waiting = app.search.catalogue_pending && results.tracks.is_none();
+    let playlists_waiting = app.search.playlists_pending && results.playlists.is_none();
     match app.search.filter {
         SearchFilter::All => all(app, ui, &results),
         SearchFilter::Songs => songs(app, ui, &results, usize::MAX),
@@ -52,6 +56,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         SearchFilter::Playlists => playlists_grid(app, ui, &results),
         SearchFilter::Podcasts => shows_grid(app, ui, &results),
         SearchFilter::Episodes => episodes(app, ui, &results, usize::MAX),
+    }
+    let waiting = match app.search.filter {
+        SearchFilter::Playlists => playlists_waiting,
+        SearchFilter::All => catalogue_waiting || playlists_waiting,
+        _ => catalogue_waiting,
+    };
+    if waiting {
+        ui.add_space(8.0);
+        widgets::loading_row(ui, &palette);
     }
 }
 

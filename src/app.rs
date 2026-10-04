@@ -2121,6 +2121,9 @@ impl App {
         if query.is_empty() {
             self.search.results = Loadable::NotLoaded;
             self.search.committed.clear();
+            self.search.catalogue_pending = false;
+            self.search.playlists_pending = false;
+            self.backend.send(Command::CancelSearch);
             return;
         }
         if query == self.search.committed && !self.search.results.needs_load() {
@@ -2128,6 +2131,8 @@ impl App {
         }
         self.search.serial += 1;
         self.search.committed = query.clone();
+        self.search.catalogue_pending = true;
+        self.search.playlists_pending = true;
         if self.search.results.get().is_none() {
             self.search.results = Loadable::Loading;
         }
@@ -2135,6 +2140,65 @@ impl App {
             query,
             serial: self.search.serial,
         });
+    }
+
+    /// One half of a search has landed. The first half of a search
+    /// replaces whatever an older search left on the page; the second
+    /// fills in beside it. A failed half leaves the other's answers up and
+    /// only turns the page red when nothing at all arrived.
+    fn absorb_search_half(
+        &mut self,
+        query: &str,
+        serial: u64,
+        result: Result<crate::api::models::SearchResults, crate::api::ApiError>,
+        playlists: bool,
+    ) {
+        if serial != self.search.serial || query != self.search.committed {
+            return;
+        }
+        if playlists {
+            self.search.playlists_pending = false;
+        } else {
+            self.search.catalogue_pending = false;
+        }
+        match result {
+            Ok(half) => {
+                if !playlists {
+                    let uris: Vec<String> = half
+                        .tracks
+                        .iter()
+                        .flat_map(|page| page.items.iter())
+                        .map(|track| track.uri.clone())
+                        .collect();
+                    self.request_contains(uris);
+                    self.settings.remember_search(query);
+                    self.settings_dirty = true;
+                }
+                let same_search = self.search.results_serial == serial;
+                match self.search.results.get_mut().filter(|_| same_search) {
+                    Some(existing) => {
+                        if playlists {
+                            existing.playlists = half.playlists;
+                        } else {
+                            existing.tracks = half.tracks;
+                            existing.artists = half.artists;
+                            existing.albums = half.albums;
+                            existing.shows = half.shows;
+                            existing.episodes = half.episodes;
+                        }
+                    }
+                    None => {
+                        self.search.results = Loadable::Loaded(half);
+                        self.search.results_serial = serial;
+                    }
+                }
+            }
+            Err(error) => {
+                if self.search.results.get().is_none() && !self.search.pending() {
+                    self.search.results = Loadable::Failed(error.to_string());
+                }
+            }
+        }
     }
 
     /// Asks Spotify whether these items are in the library, in batches.
@@ -2885,27 +2949,16 @@ impl App {
                     }
                 }
             }
-            ApiResponse::Search {
+            ApiResponse::SearchCatalogue {
                 query,
                 serial,
                 result,
-            } => {
-                if serial != self.search.serial || query != self.search.committed {
-                    return;
-                }
-                if let Ok(results) = &result {
-                    let uris: Vec<String> = results
-                        .tracks
-                        .iter()
-                        .flat_map(|page| page.items.iter())
-                        .map(|track| track.uri.clone())
-                        .collect();
-                    self.request_contains(uris);
-                    self.settings.remember_search(&query);
-                    self.settings_dirty = true;
-                }
-                self.search.results.refresh(result);
-            }
+            } => self.absorb_search_half(&query, serial, result, false),
+            ApiResponse::SearchPlaylists {
+                query,
+                serial,
+                result,
+            } => self.absorb_search_half(&query, serial, result, true),
             ApiResponse::Artist { id, result } => {
                 if let Ok(artist) = &result {
                     if let Some(image) = pick_image(&artist.images, 300) {
@@ -5080,6 +5133,168 @@ mod tests {
     use super::*;
     use crate::api::ApiError;
     use crate::paths::AppDirs;
+
+    fn search_page<T>(items: Vec<T>) -> crate::api::models::Page<T> {
+        let total = items.len() as u32;
+        crate::api::models::Page {
+            items,
+            total,
+            limit: total,
+            offset: 0,
+            next: None,
+        }
+    }
+
+    fn catalogue_half(serial: u64, found: bool) -> ApiResponse {
+        let tracks = found.then(|| {
+            search_page(vec![Track {
+                id: Some("t1".into()),
+                name: "Weird Fishes".into(),
+                uri: "spotify:track:t1".into(),
+                ..Track::default()
+            }])
+        });
+        ApiResponse::SearchCatalogue {
+            query: "radiohead".into(),
+            serial,
+            result: Ok(crate::api::models::SearchResults {
+                tracks,
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn playlist_half(serial: u64, found: bool) -> ApiResponse {
+        let playlists = found.then(|| {
+            search_page(vec![Playlist {
+                id: "p1".into(),
+                name: "This Is Radiohead".into(),
+                uri: "spotify:playlist:p1".into(),
+                ..Playlist::default()
+            }])
+        });
+        ApiResponse::SearchPlaylists {
+            query: "radiohead".into(),
+            serial,
+            result: Ok(crate::api::models::SearchResults {
+                playlists,
+                ..Default::default()
+            }),
+        }
+    }
+
+    /// Each half of a search shows the moment it lands, whichever comes
+    /// first, and the page waits for the other instead of calling the
+    /// search empty.
+    #[test]
+    fn each_half_of_a_search_shows_as_it_arrives() {
+        for playlists_first in [false, true] {
+            let mut app = test_app();
+            app.run_search("radiohead".into());
+            let serial = app.search.serial;
+            assert!(app.search.pending());
+            assert!(matches!(app.search.results, Loadable::Loading));
+            let (first, second) = if playlists_first {
+                (playlist_half(serial, true), catalogue_half(serial, true))
+            } else {
+                (catalogue_half(serial, true), playlist_half(serial, true))
+            };
+            app.handle_api(first);
+            let results = app.search.results.get().expect("the first half shows");
+            assert_eq!(results.playlists.is_some(), playlists_first);
+            assert_eq!(results.tracks.is_some(), !playlists_first);
+            assert!(app.search.pending(), "the other half is still on its way");
+            app.handle_api(second);
+            let results = app.search.results.get().expect("both halves show");
+            assert!(results.tracks.is_some() && results.playlists.is_some());
+            assert!(!app.search.pending());
+            app.backend.shutdown();
+        }
+    }
+
+    /// A newer search's first half replaces the older search's page, and a
+    /// late half of the older search is thrown away.
+    #[test]
+    fn a_newer_search_replaces_the_page_and_stale_halves_are_dropped() {
+        let mut app = test_app();
+        app.run_search("radiohead".into());
+        let old = app.search.serial;
+        app.handle_api(catalogue_half(old, true));
+        app.handle_api(playlist_half(old, true));
+        assert!(!app.search.pending());
+        app.search.query = "radiohead live".into();
+        app.run_search("radiohead live".into());
+        let new = app.search.serial;
+        assert_ne!(old, new);
+        // The old answers stay on the page while the new ones travel.
+        assert!(
+            app.search
+                .results
+                .get()
+                .is_some_and(|r| r.playlists.is_some())
+        );
+        let mut half = catalogue_half(new, true);
+        if let ApiResponse::SearchCatalogue { query, .. } = &mut half {
+            *query = "radiohead live".into();
+        }
+        app.handle_api(half);
+        let results = app.search.results.get().unwrap();
+        assert!(results.tracks.is_some());
+        assert!(
+            results.playlists.is_none(),
+            "the old search's playlists must not sit beside the new songs"
+        );
+        app.handle_api(playlist_half(old, true));
+        assert!(app.search.results.get().unwrap().playlists.is_none());
+        assert!(app.search.playlists_pending);
+        app.backend.shutdown();
+    }
+
+    /// A half that fails leaves the other half's answers up; only a search
+    /// where nothing at all arrived turns the page red, and two empty
+    /// halves make it empty.
+    #[test]
+    fn a_failed_half_keeps_the_other_s_answers() {
+        let mut app = test_app();
+        app.run_search("radiohead".into());
+        let serial = app.search.serial;
+        app.handle_api(catalogue_half(serial, true));
+        app.handle_api(ApiResponse::SearchPlaylists {
+            query: "radiohead".into(),
+            serial,
+            result: Err(ApiError::RateLimited),
+        });
+        assert!(app.search.results.get().is_some_and(|r| r.tracks.is_some()));
+        assert!(!app.search.pending());
+
+        let mut app = test_app();
+        app.run_search("radiohead".into());
+        let serial = app.search.serial;
+        app.handle_api(ApiResponse::SearchCatalogue {
+            query: "radiohead".into(),
+            serial,
+            result: Err(ApiError::RateLimited),
+        });
+        assert!(
+            matches!(app.search.results, Loadable::Loading),
+            "one failed half waits for the other"
+        );
+        app.handle_api(ApiResponse::SearchPlaylists {
+            query: "radiohead".into(),
+            serial,
+            result: Err(ApiError::RateLimited),
+        });
+        assert!(matches!(app.search.results, Loadable::Failed(_)));
+
+        let mut app = test_app();
+        app.run_search("radiohead".into());
+        let serial = app.search.serial;
+        app.handle_api(catalogue_half(serial, false));
+        app.handle_api(playlist_half(serial, false));
+        assert!(app.search.results.get().is_some_and(|r| r.is_empty()));
+        assert!(!app.search.pending());
+        app.backend.shutdown();
+    }
 
     fn test_app() -> App {
         let root = std::env::temp_dir().join(format!(

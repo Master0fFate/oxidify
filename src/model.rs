@@ -363,9 +363,24 @@ pub struct SearchState {
     pub committed: String,
     pub serial: u64,
     pub results: Loadable<SearchResults>,
+    /// The search the loaded results answer, so a half of a newer search
+    /// replaces them rather than merging into another query's answers.
+    pub results_serial: u64,
+    /// The catalogue half (songs, artists, albums, podcasts, episodes) of
+    /// the current search is still on its way.
+    pub catalogue_pending: bool,
+    /// The playlist half of the current search is still on its way.
+    pub playlists_pending: bool,
     pub filter: SearchFilter,
     pub typed_at: Option<Instant>,
     pub focus_requested: bool,
+}
+
+impl SearchState {
+    /// Something of the current search is still on its way.
+    pub fn pending(&self) -> bool {
+        self.catalogue_pending || self.playlists_pending
+    }
 }
 
 #[derive(Default)]

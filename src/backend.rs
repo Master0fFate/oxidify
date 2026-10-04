@@ -154,7 +154,20 @@ pub enum ApiRequest {
     Contains {
         uris: Vec<String>,
     },
+    /// A search as the interface asks for it. The worker splits it into
+    /// the two halves below, so each shows as soon as it arrives.
     Search {
+        query: String,
+        serial: u64,
+    },
+    /// Songs, artists, albums, podcasts, and episodes: the catalogue,
+    /// which a personal app answers fastest.
+    SearchCatalogue {
+        query: String,
+        serial: u64,
+    },
+    /// Playlists, which only the shared app may search for.
+    SearchPlaylists {
         query: String,
         serial: u64,
     },
@@ -328,7 +341,14 @@ pub enum ApiResponse {
         uris: Vec<String>,
         result: ApiResult<Vec<bool>>,
     },
-    Search {
+    /// The catalogue half of a search: everything but playlists.
+    SearchCatalogue {
+        query: String,
+        serial: u64,
+        result: ApiResult<SearchResults>,
+    },
+    /// The playlist half of a search.
+    SearchPlaylists {
         query: String,
         serial: u64,
         result: ApiResult<SearchResults>,
@@ -391,6 +411,8 @@ pub enum Command {
     /// Start (or restart) the Web API sign-in in the browser.
     SignIn,
     CancelSignIn,
+    /// Drop any search still on its way: the field was cleared.
+    CancelSearch,
     SignOut,
     /// Authorize local playback on this computer (a separate browser grant).
     AuthorizePlayback,
@@ -726,6 +748,9 @@ struct Worker {
     http: reqwest::Client,
     api: Arc<ApiGateway>,
     background_api: Arc<tokio::sync::Semaphore>,
+    /// The halves of the search in flight, aborted when a newer one starts
+    /// so stale answers never queue behind the request that matters.
+    search_tasks: Vec<tokio::task::AbortHandle>,
     top_tracks_writes: Arc<top_tracks_cache::Writes>,
     art: ArtLoader,
     events: std::sync::mpsc::Sender<Event>,
@@ -773,6 +798,7 @@ impl Worker {
             web_client_id,
             api: Arc::new(ApiGateway::new(http.clone(), activity)),
             background_api: Arc::new(tokio::sync::Semaphore::new(4)),
+            search_tasks: Vec::new(),
             top_tracks_writes: Arc::default(),
             http,
             art,
@@ -836,7 +862,11 @@ impl Worker {
                     self.switch_playback(config, mode, alternate).await;
                 }
                 Command::Player(command) => self.player_command(command),
-                Command::Api(request) => self.dispatch(request),
+                Command::Api(ApiRequest::Search { query, serial }) => self.search(query, serial),
+                Command::CancelSearch => self.cancel_search(),
+                Command::Api(request) => {
+                    self.dispatch(request);
+                }
                 Command::Accent { url } => self.accent(url),
                 Command::WebSignedIn { source, token } => {
                     if self.authorizing_source == Some(source) {
@@ -1651,7 +1681,32 @@ impl Worker {
 
     // ---- api ----------------------------------------------------------------
 
-    fn dispatch(&self, request: ApiRequest) {
+    /// Stops the search halves still in flight.
+    fn cancel_search(&mut self) {
+        for task in self.search_tasks.drain(..) {
+            task.abort();
+        }
+    }
+
+    /// A search goes out as two requests at once: the catalogue, which a
+    /// personal app answers quickly, and the playlists, which only the
+    /// shared app may look for. Each half shows as it lands, and a newer
+    /// search aborts both halves of the older one.
+    fn search(&mut self, query: String, serial: u64) {
+        self.cancel_search();
+        if query.trim().is_empty() {
+            return;
+        }
+        let catalogue = self.dispatch(ApiRequest::SearchCatalogue {
+            query: query.clone(),
+            serial,
+        });
+        let playlists = self.dispatch(ApiRequest::SearchPlaylists { query, serial });
+        self.search_tasks.push(catalogue);
+        self.search_tasks.push(playlists);
+    }
+
+    fn dispatch(&self, request: ApiRequest) -> tokio::task::AbortHandle {
         let api = Arc::clone(&self.api);
         let background_api = Arc::clone(&self.background_api);
         let background = request.background();
@@ -1735,7 +1790,8 @@ impl Worker {
             }
             let _ = events.send(Event::Api(Box::new(response)));
             waker.wake();
-        });
+        })
+        .abort_handle()
     }
 
     fn accent(&self, url: String) {
@@ -1809,7 +1865,10 @@ fn operation_for(api: &ApiGateway, request: &ApiRequest) -> Operation {
         }
         ApiRequest::MyPlaylists { .. } => Operation::PlaylistLibrary,
         ApiRequest::CreatePlaylist { .. } => Operation::PlaylistCreation,
-        ApiRequest::Discover { .. } | ApiRequest::Search { .. } => Operation::PlaylistSearch,
+        ApiRequest::Discover { .. }
+        | ApiRequest::Search { .. }
+        | ApiRequest::SearchPlaylists { .. } => Operation::PlaylistSearch,
+        ApiRequest::SearchCatalogue { .. } => Operation::Catalog,
         ApiRequest::Playlist { id, .. } => Operation::PlaylistMetadata(api.playlist_access(id)),
         ApiRequest::PlaylistItems { id, .. } | ApiRequest::PlaylistSample { id, .. } => {
             Operation::PlaylistItems(api.playlist_access(id))
@@ -1849,7 +1908,7 @@ fn observe_playlists(api: &ApiGateway, response: &ApiResponse) {
             ..
         }
         | ApiResponse::PlaylistCreated(Ok(playlist)) => api.observe_playlist(playlist),
-        ApiResponse::Search {
+        ApiResponse::SearchPlaylists {
             result: Ok(results),
             ..
         } => {
@@ -2074,11 +2133,20 @@ async fn handle(api: &ApiGateway, request: ApiRequest) -> (ApiResponse, Option<A
             result: routed!(contains(&uris)),
             uris,
         },
-        ApiRequest::Search { query, serial } => ApiResponse::Search {
-            result: routed!(search(
-                &query,
-                &["track", "artist", "album", "playlist", "show", "episode"]
-            )),
+        // The interface's request never reaches here: the worker splits it
+        // into the two halves below before dispatching.
+        ApiRequest::Search { query, serial } | ApiRequest::SearchCatalogue { query, serial } => {
+            ApiResponse::SearchCatalogue {
+                result: routed!(search(
+                    &query,
+                    &["track", "artist", "album", "show", "episode"]
+                )),
+                query,
+                serial,
+            }
+        }
+        ApiRequest::SearchPlaylists { query, serial } => ApiResponse::SearchPlaylists {
+            result: routed!(search(&query, &["playlist"])),
             query,
             serial,
         },

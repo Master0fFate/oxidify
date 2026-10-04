@@ -48,6 +48,15 @@ time to return to the list's own order. Sorted and filtered views are reused
 until the list, filter, sort, or contributor names change, rather than sorted
 again on every frame. The play button in Liked Songs follows the sorted view.
 
+## Search
+
+Type in the field at the top and the results page opens as you type. A
+search is two requests at once: the catalogue (songs, artists, albums,
+podcasts, episodes), which a personal Spotify app answers quickly, and the
+playlists, which only the shared app may look for. Each half shows the
+moment it lands, with a spinner for the other, and typing on cancels any
+half still on its way instead of queueing it behind the new search.
+
 ## Your Library
 
 Pinned entries sit in a block right under Liked Songs: pin one from its
