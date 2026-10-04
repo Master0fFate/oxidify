@@ -98,6 +98,11 @@ getting started, everyday use, and how it connects to Spotify.
   compensate for their overlap so their combined response meets the sliders;
   the graph uses the same digital filters as playback. Alternate audio does
   not yet use the equalizer.
+- **Liked Songs in two presses.** The plus beside a song adds it to Liked
+  Songs. Once it is there, the check opens the places it can go: the
+  playlists you can edit, filtered as you type (Enter takes the first
+  match, playlists already holding the song are marked), or out of Liked
+  Songs again.
 - **Keyboard-first.** Every common action has a shortcut (`Ctrl+/` or `?` lists
   them).
 - **Keeps playing when you close the window.** The window closes for real,

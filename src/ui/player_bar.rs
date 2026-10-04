@@ -247,7 +247,11 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
     };
     // The playing thing answers the same right-click menu as a table row,
     // from the cover, the empty space around the words, or the words.
-    if let Some(item) = app.now_playing_item() {
+    let item = app.now_playing_item();
+    if let Some(item) = &item {
+        // Playing from a playlist of one's own, the menu can take the song
+        // out of it, as a row of that playlist would.
+        let context = app.playing_editable_context(item.uri());
         for response in [
             &cover_response,
             &info_response,
@@ -256,7 +260,7 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
         ] {
             egui::Popup::context_menu(response)
                 .frame(super::widgets::menu_frame(&palette))
-                .show(|ui| super::widgets::item_menu(ui, app, &item, None, None));
+                .show(|ui| super::widgets::item_menu(ui, app, item, context.as_ref(), None));
         }
     }
 
@@ -282,8 +286,18 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
                 .max_rect(heart_rect)
                 .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
         );
-        if theme::liked_button(&mut heart_ui, &palette, saved, 17.0, palette.secondary).clicked() {
-            app.actions.push(Action::ToggleSaved(now.uri.clone()));
+        match &item {
+            Some(item) => {
+                super::widgets::liked_control(&mut heart_ui, app, item, 17.0, palette.secondary);
+            }
+            // Before the track's details are in, the plain toggle still works.
+            None => {
+                if theme::liked_button(&mut heart_ui, &palette, saved, 17.0, palette.secondary)
+                    .clicked()
+                {
+                    app.actions.push(Action::ToggleSaved(now.uri.clone()));
+                }
+            }
         }
     }
 }

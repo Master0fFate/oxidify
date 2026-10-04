@@ -713,7 +713,7 @@ pub fn liked_button(
         }
     }
     let tooltip = if saved {
-        "Remove from Liked Songs"
+        "In Liked Songs. Add to a playlist, or remove"
     } else {
         "Add to Liked Songs"
     };

@@ -19,7 +19,13 @@ playback; alternate local audio does not support podcast episodes.
 
 The player bar shows what is playing locally or on another device. Click the
 title to open its album, an artist name to open that artist, or the plus to
-add the track to Liked Songs; a filled check means it is there already.
+add the track to Liked Songs. Once it is there the plus becomes a filled
+check, and pressing that opens where else the song can go: **Remove from
+Liked Songs**, or the playlists you can edit, filtered as you type. Enter
+adds to the first match, and playlists that already hold the song show a
+check. The same control sits in every track row and in the Now Playing
+view. While a song plays from a playlist you can edit, the bar's right-click
+menu also offers **Remove from this playlist**.
 Drag the cover or title onto a playlist in Your Library, or between rows of
 an open playlist, to add it. The arrow in the cover's corner, or the first
 button at the right of the bar, opens the **Now Playing view**: the cover

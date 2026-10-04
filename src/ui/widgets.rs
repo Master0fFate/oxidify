@@ -331,63 +331,7 @@ pub fn item_menu(
         if menu_item(ui, &palette, Some(icon), text) {
             app.actions.push(Action::ToggleSaved(uri.clone()));
         }
-        let playlists = app.editable_playlists();
-        menu_with_field(ui, "Add to playlist", |ui| {
-            ui.set_min_width(220.0);
-            ui.set_max_width(300.0);
-            let filter_id = ui.id().with("playlist-filter");
-            let mut filter = ui
-                .data(|data| data.get_temp::<String>(filter_id))
-                .unwrap_or_default();
-            let search = ui.add(
-                egui::TextEdit::singleline(&mut filter)
-                    .hint_text("Find a playlist")
-                    .desired_width(220.0),
-            );
-            if search.changed() {
-                ui.data_mut(|data| data.insert_temp(filter_id, filter.clone()));
-            }
-            let focused_id = ui.id().with("playlist-filter-focus");
-            if !ui
-                .data(|data| data.get_temp::<bool>(focused_id))
-                .unwrap_or(false)
-            {
-                search.request_focus();
-                ui.data_mut(|data| data.insert_temp(focused_id, true));
-            }
-            if menu_item(ui, &palette, Some(Icon::Plus), "New playlist") {
-                app.actions.push(Action::ShowDialog(Dialog::CreatePlaylist {
-                    name: String::new(),
-                    public: false,
-                    add_uris: vec![uri.clone()],
-                }));
-            }
-            if !playlists.is_empty() {
-                menu_separator(ui, &palette);
-            }
-            let needle = filter.trim().to_lowercase();
-            // A popup starts layout at its previous size. Ask for the full
-            // list height so clearing a filter can grow a shrunken menu.
-            egui::ScrollArea::vertical()
-                .max_height(320.0)
-                .min_scrolled_height(320.0)
-                .show(ui, |ui| {
-                    for (id, name) in &playlists {
-                        if !needle.is_empty() && !name.to_lowercase().contains(&needle) {
-                            continue;
-                        }
-                        if menu_item(ui, &palette, Some(Icon::ListMusic), name) {
-                            app.actions.push(Action::AddToPlaylist {
-                                playlist_id: id.clone(),
-                                playlist_name: name.clone(),
-                                uris: vec![uri.clone()],
-                                position: None,
-                                confirmed: false,
-                            });
-                        }
-                    }
-                });
-        });
+        menu_with_field(ui, "Add to playlist", |ui| playlist_picker(ui, app, &uri));
     } else if menu_item(ui, &palette, Some(Icon::Bookmark), "Save episode") {
         app.actions.push(Action::ToggleSaved(uri.clone()));
     }
@@ -476,6 +420,133 @@ pub fn item_menu(
     }
     if menu_item(ui, &palette, Some(Icon::ExternalLink), "Open in Spotify") {
         app.actions.push(Action::OpenInSpotify(uri));
+    }
+}
+
+/// The playlists a song can go into, filtered as you type. Enter adds it
+/// to the first match, and playlists already holding it are marked with a
+/// check. Shared by the Add to playlist submenu and the liked control.
+pub fn playlist_picker(ui: &mut Ui, app: &mut App, uri: &str) {
+    let palette = app.palette;
+    let playlists = app.editable_playlists();
+    ui.set_min_width(220.0);
+    ui.set_max_width(300.0);
+    let filter_id = ui.id().with("playlist-filter");
+    let mut filter = ui
+        .data(|data| data.get_temp::<String>(filter_id))
+        .unwrap_or_default();
+    let search = ui.add(
+        egui::TextEdit::singleline(&mut filter)
+            .hint_text("Find a playlist")
+            .desired_width(220.0),
+    );
+    if search.changed() {
+        ui.data_mut(|data| data.insert_temp(filter_id, filter.clone()));
+    }
+    let focused_id = ui.id().with("playlist-filter-focus");
+    if !ui
+        .data(|data| data.get_temp::<bool>(focused_id))
+        .unwrap_or(false)
+    {
+        search.request_focus();
+        ui.data_mut(|data| data.insert_temp(focused_id, true));
+    }
+    let needle = filter.trim().to_lowercase();
+    let matches: Vec<&(String, String)> = playlists
+        .iter()
+        .filter(|(_, name)| needle.is_empty() || name.to_lowercase().contains(&needle))
+        .collect();
+    // Enter in the field takes the first match, so a song reaches a
+    // playlist with a few letters and a keystroke.
+    if search.lost_focus()
+        && ui.input(|input| input.key_pressed(egui::Key::Enter))
+        && let Some((id, name)) = matches.first()
+    {
+        app.actions.push(Action::AddToPlaylist {
+            playlist_id: id.clone(),
+            playlist_name: name.clone(),
+            uris: vec![uri.to_string()],
+            position: None,
+            confirmed: false,
+        });
+        ui.close();
+    }
+    if menu_item(ui, &palette, Some(Icon::Plus), "New playlist") {
+        app.actions.push(Action::ShowDialog(Dialog::CreatePlaylist {
+            name: String::new(),
+            public: false,
+            add_uris: vec![uri.to_string()],
+        }));
+    }
+    if !playlists.is_empty() {
+        menu_separator(ui, &palette);
+    }
+    // A popup starts layout at its previous size. Ask for the full list
+    // height so clearing a filter can grow a shrunken menu.
+    egui::ScrollArea::vertical()
+        .max_height(320.0)
+        .min_scrolled_height(320.0)
+        .show(ui, |ui| {
+            for (index, (id, name)) in matches.iter().enumerate() {
+                let holds = app.playlist_holds(id, uri);
+                let icon = if holds {
+                    Icon::Check
+                } else if index == 0 && !needle.is_empty() {
+                    Icon::ListEnd
+                } else {
+                    Icon::ListMusic
+                };
+                if menu_item(ui, &palette, Some(icon), name) {
+                    app.actions.push(Action::AddToPlaylist {
+                        playlist_id: id.clone(),
+                        playlist_name: name.clone(),
+                        uris: vec![uri.to_string()],
+                        position: None,
+                        confirmed: false,
+                    });
+                }
+            }
+        });
+}
+
+/// The add-to-Liked-Songs control with the official client's second
+/// press: until the song is saved, the plus saves it; once it is, the
+/// check opens where else it can go, the playlists, and the way out of
+/// Liked Songs, instead of silently removing it.
+pub fn liked_control(ui: &mut Ui, app: &mut App, item: &PlayableItem, size: f32, quiet: Color32) {
+    let palette = app.palette;
+    let uri = item.uri().to_string();
+    let saved = app.is_saved(&uri) == Some(true);
+    let response = theme::liked_button(ui, &palette, saved, size, quiet);
+    if saved {
+        egui::Popup::menu(&response)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .frame(menu_frame(&palette))
+            .show(|ui| {
+                ui.set_min_width(240.0);
+                if menu_item(
+                    ui,
+                    &palette,
+                    Some(Icon::CircleCheck),
+                    "Remove from Liked Songs",
+                ) {
+                    app.actions.push(Action::ToggleSaved(uri.clone()));
+                }
+                menu_separator(ui, &palette);
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    theme::text(
+                        ui,
+                        "Add to playlist",
+                        theme::semibold(12.5),
+                        palette.secondary,
+                    );
+                });
+                ui.add_space(2.0);
+                playlist_picker(ui, app, &uri);
+            });
+    } else if response.clicked() {
+        app.actions.push(Action::ToggleSaved(uri));
     }
 }
 
@@ -905,18 +976,7 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
                     .max_rect(heart_rect)
                     .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
             );
-            if theme::liked_button(
-                &mut child,
-                &palette,
-                saved == Some(true),
-                16.0,
-                palette.secondary,
-            )
-            .clicked()
-            {
-                app.actions
-                    .push(Action::ToggleSaved(row.item.uri().to_string()));
-            }
+            liked_control(&mut child, app, row.item, 16.0, palette.secondary);
         }
         x += cols.heart;
     }
@@ -1956,6 +2016,78 @@ mod tests {
             assert!(
                 matches!(app.actions.as_slice(), [Action::AddToPlaylist { playlist_name, .. }] if playlist_name == "Sunday morning")
             );
+        });
+    }
+
+    /// The liked control has two presses: the plus saves the song, and the
+    /// check that replaces it opens the menu of places the song can go,
+    /// rather than quietly taking it out of Liked Songs.
+    #[test]
+    fn the_liked_control_saves_first_and_offers_the_menu_once_saved() {
+        with_app("liked-control", |app| {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            let item = PlayableItem::Track(app.track_cache["trk1"].clone());
+            let frame = |app: &mut App, events: Vec<egui::Event>| {
+                app.actions.clear();
+                let mut rect = Rect::NOTHING;
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            vec2(900.0, 700.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        ui.add_space(40.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(40.0);
+                            let before = ui.cursor().min;
+                            liked_control(ui, app, &item, 16.0, egui::Color32::GRAY);
+                            rect = Rect::from_min_size(before, vec2(28.0, 28.0));
+                        });
+                    },
+                );
+                let mut painted = Vec::new();
+                for shape in &output.shapes {
+                    painted_text(&shape.shape, &mut painted);
+                }
+                output.textures_delta.clear();
+                (rect, painted)
+            };
+            app.saved.insert("spotify:track:trk1".into(), false);
+            let (rect, _) = frame(app, vec![]);
+            let center = rect.center();
+            for pressed in [true, false] {
+                frame(app, click(center, pressed));
+            }
+            assert!(
+                matches!(app.actions.as_slice(), [Action::ToggleSaved(uri)] if uri == "spotify:track:trk1"),
+                "the first press saves the song, got {:?}",
+                app.actions
+            );
+            assert!(!egui::Popup::is_any_open(&ctx));
+
+            app.saved.insert("spotify:track:trk1".into(), true);
+            frame(app, vec![]);
+            for pressed in [true, false] {
+                frame(app, click(center, pressed));
+            }
+            let (_, painted) = frame(app, vec![]);
+            assert!(
+                app.actions.is_empty(),
+                "the second press must open the menu, not toggle, got {:?}",
+                app.actions
+            );
+            assert!(egui::Popup::is_any_open(&ctx), "the menu did not open");
+            assert!(
+                painted
+                    .iter()
+                    .any(|(text, _)| text == "Remove from Liked Songs")
+            );
+            assert!(painted.iter().any(|(text, _)| text == "Sunday morning"));
         });
     }
 

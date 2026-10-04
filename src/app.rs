@@ -4634,6 +4634,28 @@ impl App {
         None
     }
 
+    /// Whether a loaded playlist already holds the song, as far as the
+    /// pages fetched so far can tell.
+    pub fn playlist_holds(&self, playlist_id: &str, uri: &str) -> bool {
+        self.playlist_contains_any(playlist_id, std::slice::from_ref(&uri.to_string()))
+    }
+
+    /// The playing playlist as a row context when the listener can edit
+    /// it, so the playing song's menu can take it out of that playlist.
+    pub fn playing_editable_context(&self, uri: &str) -> Option<RowContext> {
+        let context_uri = self.playing_context_uri()?;
+        let id = context_uri.strip_prefix("spotify:playlist:")?.to_string();
+        let editable = self
+            .editable_playlists()
+            .iter()
+            .any(|(playlist_id, _)| *playlist_id == id);
+        editable.then(|| RowContext::View {
+            uris: vec![uri.to_string()],
+            context_uri: context_uri.clone(),
+            editable_playlist: Some((id, None)),
+        })
+    }
+
     fn playlist_contains_any(&self, playlist_id: &str, uris: &[String]) -> bool {
         let Some(page) = self.playlist_pages.get(playlist_id) else {
             return false;
