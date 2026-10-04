@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 use super::AlternateConfig;
 use super::audio::{AudioOutput, OutputStatus, RodioOutput, volume_f32};
 use super::buffer::SharedAudio;
-use super::decode::{DecodeHandle, FormatHint, PcmSource, spawn_decoder};
+use super::decode::{DecodeHandle, DurationProbe, FormatHint, PcmSource, spawn_decoder};
 use super::fetch::{self, FetchPolicy};
 use super::hydrate::{expand_load, offset_index, seed_queue};
 use super::matching::{TrackQuery, rank_candidates};
@@ -185,6 +185,8 @@ struct Engine {
     active_buffer: Option<SharedAudio>,
     active_hint: Option<FormatHint>,
     pending: Option<PendingPlay>,
+    /// Where the playing audio's own length can be read, once decoded.
+    active_duration: Option<DurationProbe>,
     overlap_uri: Option<String>,
     prefetch: Option<Prefetched>,
     outgoing: Option<SharedAudio>,
@@ -223,6 +225,7 @@ async fn run(
         active_buffer: None,
         active_hint: None,
         pending: None,
+        active_duration: None,
         overlap_uri: None,
         prefetch: None,
         outgoing: None,
@@ -288,6 +291,7 @@ impl Engine {
         self.seeded_play = false;
         self.abort_jobs();
         self.active_hint = None;
+        self.active_duration = None;
         self.overlap_uri = None;
         if let Some(prefetch) = self.prefetch.take() {
             prefetch.buffer.cancel();
@@ -599,9 +603,12 @@ impl Engine {
                 self.cache_match(uri, video_id);
                 let start = self.session.position_now();
                 match self.output.play_bytes(bytes, start) {
-                    Ok(_) => {
+                    Ok(info) => {
                         self.miss_skips = 0;
                         self.session.set_playing(Some(label));
+                        if let Some(ms) = info.duration_ms {
+                            self.session.set_current_duration(ms);
+                        }
                         self.emit();
                     }
                     Err(error) => self.fail_transport(format!("Couldn't decode audio: {error}")),
@@ -763,13 +770,19 @@ impl Engine {
         if now.abs_diff(pending.start_ms) >= SEEK_MATERIAL_MS {
             decode.seek(now);
         }
+        let probe = pcm.duration_probe();
         match self.output.play_pcm(pcm, decode) {
-            Ok(_) => {
+            Ok(info) => {
                 self.miss_skips = 0;
                 if let Some(previous) = self.outgoing.take() {
                     previous.cancel();
                 }
                 self.session.set_playing(Some(pending.label));
+                self.active_duration = Some(probe);
+                if let Some(ms) = info.duration_ms {
+                    self.session.set_current_duration(ms);
+                }
+                self.adopt_media_duration();
                 self.emit();
                 self.maybe_prefetch_next();
             }
@@ -797,7 +810,24 @@ impl Engine {
         self.emit();
     }
 
+    /// The matched audio's own length, once the decoder has read its
+    /// headers. Spotify's duration belongs to a different recording; the
+    /// bar, and seeks on it, follow what is actually playing.
+    fn adopt_media_duration(&mut self) {
+        let Some(ms) = self
+            .active_duration
+            .as_ref()
+            .and_then(|probe| probe.duration_ms())
+        else {
+            return;
+        };
+        if self.session.set_current_duration(ms) {
+            self.emit();
+        }
+    }
+
     fn poll_output(&mut self) {
+        self.adopt_media_duration();
         match self.output.status() {
             OutputStatus::DeviceLost => self.handle_device_lost(),
             OutputStatus::Buffering if self.session.playback() == Playback::Playing => {
@@ -877,9 +907,11 @@ impl Engine {
         let paused = self.session.playback() == Playback::Paused;
         let (pcm, decode) = spawn_decoder(buffer, hint, pos)
             .map_err(|error| format!("Couldn't decode audio: {error}"))?;
+        let probe = pcm.duration_probe();
         self.output
             .play_pcm(pcm, decode)
             .map_err(|error| format!("Couldn't start audio: {error}"))?;
+        self.active_duration = Some(probe);
         if paused {
             self.output.pause();
         }
@@ -1780,6 +1812,68 @@ mod tests {
         assert!(
             logged.contains(&500),
             "seek did not keep session position, got {logged:?}"
+        );
+        handle.shutdown().await;
+    }
+
+    /// The bar follows the audio's own length: the output reports the
+    /// decoded media as one second long while Spotify called the track
+    /// three minutes, and the state carries the second from then on.
+    #[tokio::test]
+    async fn the_bar_follows_the_audio_s_own_length() {
+        let plays = Arc::new(AtomicUsize::new(0));
+        let durations = Arc::new(Mutex::new(Vec::<u32>::new()));
+        let wav = wav_bytes(40_000);
+        let lookup = Arc::new(ScriptLookup {
+            searches: Arc::new(AtomicUsize::new(0)),
+            hold: Mutex::new(None),
+            body: ScriptedBody {
+                chunks: vec![wav],
+                fail: None,
+                content_length: None,
+                fail_after_ms: 0,
+            },
+        });
+        let logged = Arc::clone(&durations);
+        let handle = spawn_test(
+            test_config(),
+            RecordingOutput {
+                plays: Arc::clone(&plays),
+                resumes: Arc::new(AtomicUsize::new(0)),
+                pauses: Arc::new(AtomicUsize::new(0)),
+            },
+            lookup,
+            Arc::new(move |event| {
+                if let EngineEvent::State(state) = event
+                    && let Some(track) = state.track
+                {
+                    logged
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(track.duration_ms);
+                }
+            }),
+        );
+        let mut long = track("a");
+        long.duration_ms = 180_000;
+        handle.test_load(vec![long], true);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline && plays.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(60)).await;
+        let logged = durations.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(
+            logged.first().copied(),
+            Some(180_000),
+            "the first state carries Spotify's length, got {logged:?}"
+        );
+        // The output's own guess (one second) is overtaken by what the
+        // decoder read from the WAV: five seconds at 8 kHz.
+        assert_eq!(
+            logged.last().copied(),
+            Some(5_000),
+            "the bar did not take the audio's own length, got {logged:?}"
         );
         handle.shutdown().await;
     }

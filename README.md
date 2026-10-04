@@ -233,7 +233,10 @@ for the endpoint and any binary you run, and for their terms of use. Nothing
 here is approved or authorized by Spotify or by YouTube, and Oxidify makes no
 claim that it is.
 Podcasts are not supported in that mode. Weak matches are never played.
-Playback starts when audio headers are in, not after a fixed time buffer.
+Playback starts when audio headers are in, not after a fixed time buffer,
+and the player bar then shows the matched recording's own length, which
+is rarely exactly Spotify's, so the position and seeking follow what is
+actually playing.
 An M4A file with its `moov` atom at the end may wait until the download
 finishes. Alternate playback does not select Opus, WebM, or Ogg/Vorbis:
 YouTube's useful native alternative is WebM/Opus, and Opus is not decoded.

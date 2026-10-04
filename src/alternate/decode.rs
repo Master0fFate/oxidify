@@ -78,6 +78,8 @@ struct DecodeState {
     phase: AtomicU8,
     channels: AtomicU16,
     sample_rate: AtomicU32,
+    /// The media's own length once its headers have been read; 0 until then.
+    duration_ms: AtomicU32,
     epoch: AtomicU64,
     target_ms: AtomicU32,
     error: Mutex<Option<String>>,
@@ -90,6 +92,7 @@ impl DecodeState {
             phase: AtomicU8::new(PHASE_START),
             channels: AtomicU16::new(0),
             sample_rate: AtomicU32::new(0),
+            duration_ms: AtomicU32::new(0),
             epoch: AtomicU64::new(0),
             target_ms: AtomicU32::new(start_ms),
             error: Mutex::new(None),
@@ -264,7 +267,26 @@ pub struct PcmSource {
     idx: usize,
 }
 
+/// A read-only view of the decoder's knowledge of the media's length, kept
+/// by the engine after the source itself has gone into the output.
+#[derive(Clone)]
+pub struct DurationProbe(Arc<DecodeState>);
+
+impl DurationProbe {
+    /// The media's own length, once the decoder has read its headers.
+    pub fn duration_ms(&self) -> Option<u32> {
+        match self.0.duration_ms.load(Ordering::SeqCst) {
+            0 => None,
+            ms => Some(ms),
+        }
+    }
+}
+
 impl PcmSource {
+    pub fn duration_probe(&self) -> DurationProbe {
+        DurationProbe(Arc::clone(&self.state))
+    }
+
     fn pull(&mut self) -> Option<f32> {
         loop {
             let epoch = self.state.epoch.load(Ordering::SeqCst);
@@ -327,7 +349,9 @@ impl Source for PcmSource {
     }
 
     fn total_duration(&self) -> Option<Duration> {
-        None
+        self.duration_probe()
+            .duration_ms()
+            .map(|ms| Duration::from_millis(u64::from(ms)))
     }
 
     fn try_seek(&mut self, pos: Duration) -> std::result::Result<(), SeekError> {
@@ -440,6 +464,14 @@ fn decode_loop(
         let channels = decoder.channels();
         let rate = decoder.sample_rate();
         state.set_format(channels, rate);
+        // The matched recording is rarely exactly as long as Spotify's;
+        // the bar and its seeks follow this length once it is known.
+        if let Some(total) = decoder.total_duration() {
+            state.duration_ms.store(
+                total.as_millis().min(u128::from(u32::MAX)) as u32,
+                Ordering::SeqCst,
+            );
+        }
         if start_ms > 0 {
             let seeked = seekable
                 && native_seek_allowed(&hint)

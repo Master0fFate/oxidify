@@ -395,6 +395,27 @@ impl Session {
         }
     }
 
+    /// Replaces the current track's length with the one the audio itself
+    /// reports: a third-party match is rarely exactly as long as Spotify's
+    /// recording, and the bar and its seeks must follow what is playing.
+    /// Answers whether anything changed.
+    pub fn set_current_duration(&mut self, duration_ms: u32) -> bool {
+        if duration_ms == 0 {
+            return false;
+        }
+        let Some(index) = self.current_index() else {
+            return false;
+        };
+        let Some(track) = self.tracks.get_mut(index) else {
+            return false;
+        };
+        if track.duration_ms == duration_ms {
+            return false;
+        }
+        track.duration_ms = duration_ms;
+        true
+    }
+
     pub fn snapshot(&self) -> LocalState {
         LocalState {
             playback: self.playback,
