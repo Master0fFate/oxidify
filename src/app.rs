@@ -151,6 +151,7 @@ pub struct App {
     pub offline: bool,
     pub palette: Palette,
     applied_dark: Option<bool>,
+    applied_accent: Option<crate::settings::Accent>,
 
     pub auth: AuthStatus,
     pub user: Option<User>,
@@ -362,6 +363,7 @@ impl App {
             .then(|| TrayService::spawn(move || wake.wake()))
             .flatten();
 
+        let accent = settings.accent;
         let session = SessionState::load(&dirs.session_file());
         let first_page = session
             .last_page
@@ -387,8 +389,9 @@ impl App {
             control_devices: None,
             control_devices_stale: true,
             offline: false,
-            palette: Palette::dark(),
+            palette: Palette::dark().with_accent(accent),
             applied_dark: None,
+            applied_accent: None,
             auth: AuthStatus::Starting,
             user: None,
             local_device_id: None,
@@ -1506,14 +1509,17 @@ impl App {
 
     fn apply_theme(&mut self, ctx: &egui::Context) {
         let dark = ctx.theme() == egui::Theme::Dark;
-        if self.applied_dark != Some(dark) {
+        let accent = self.settings.accent;
+        if self.applied_dark != Some(dark) || self.applied_accent != Some(accent) {
             self.palette = if dark {
                 Palette::dark()
             } else {
                 Palette::light()
-            };
+            }
+            .with_accent(accent);
             theme::apply(ctx, &self.palette);
             self.applied_dark = Some(dark);
+            self.applied_accent = Some(accent);
             self.accents.clear();
             self.accent_pending.clear();
         }

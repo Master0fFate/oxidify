@@ -49,12 +49,15 @@ getting started, everyday use, and how it connects to Spotify.
   full pages. Library rows pin to the top and drag into your own order, and
   the panel folds down to a rail of covers when the page needs the room.
   The sort control switches between recently played and your own order and
-  between full and compact rows; Appearance does the same for track tables.
+  between full rows, compact rows, and a grid of covers; Appearance does the
+  same for track tables.
 - **Now Playing view.** A panel beside the page with the playing cover
   large, the artist, and what is next in the queue, from the button in the
   player bar or the arrow on the playing cover.
 - **Search** across songs, artists, albums, playlists, podcasts, and episodes,
-  with a top result and per-type views.
+  with a top result and per-type views. A search goes out as two requests
+  at once, the catalogue and the playlists, and each shows the moment it
+  lands; typing on cancels the ones still travelling.
 - **Home** with shortcuts to what you played last, Made for you, Recently
   played, your top artists and songs, and recommendations, with chips to
   show all of it, music only, or your podcasts and saved episodes. The full
@@ -83,8 +86,10 @@ getting started, everyday use, and how it connects to Spotify.
 - **Lyrics** beside whatever is playing, timed lines that follow the song,
   from Spotify or [LRCLIB](https://lrclib.net).
 - **Album-art colour.** Pages and the player bar can take a tint from the
-  cover of what you are looking at or listening to. Turn it off in Settings
-  and the interface stays in its neutral chrome with blue accents.
+  cover of what you are looking at or listening to, and the bar fades from
+  one song's colour to the next. Turn it off in Settings and the interface
+  stays in its neutral chrome. The accent is the green of Spotify's own
+  client; Settings → Appearance brings back the older blue.
 - **Light and dark**, or follow the system.
 - **Winamp mini player.** `Ctrl+M`, or the button at the right end of the
   player bar, turns the window into a tiny player that
@@ -342,8 +347,8 @@ the verbs cover more than a media key can ask for.
 Settings live in one readable JSON file (`~/.config/oxidify/settings.json`
 on Linux). They include the Connect device name, bitrate, normalisation,
 autoplay, gapless playback, the audio backend (PulseAudio/PipeWire or ALSA
-on Linux), audio cache size, theme, whether Your Library is shown and
-whether it is folded to a rail, whether pages take colour from artwork, the mini player's skin and size, and the alternate
+on Linux), audio cache size, theme, accent, whether Your Library is shown,
+folded to a rail, or a grid, whether pages take colour from artwork, the mini player's skin and size, and the alternate
 playback fields (`playback_backend`, `piped_api_base`, `ytdlp_path`,
 `alternate_min_score`, `alternate_skip_on_miss`).
 Playback settings apply when you press **Apply and restart playback**.

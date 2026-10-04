@@ -78,6 +78,41 @@ impl Palette {
         }
     }
 
+    /// The palette with the chosen accent. Green is Spotify's own, bright
+    /// on dark and deepened on light so it still reads as text; blue is the
+    /// accent Oxidify shipped with before.
+    pub fn with_accent(mut self, accent: crate::settings::Accent) -> Self {
+        use crate::settings::Accent;
+        let (accent, hover, on_accent) = match (accent, self.dark) {
+            (Accent::Green, true) => (
+                Color32::from_rgb(0x1e, 0xd7, 0x60),
+                Color32::from_rgb(0x4a, 0xe8, 0x84),
+                Color32::from_rgb(0x06, 0x14, 0x0b),
+            ),
+            (Accent::Green, false) => (
+                Color32::from_rgb(0x13, 0x7d, 0x37),
+                Color32::from_rgb(0x0f, 0x6a, 0x2e),
+                Color32::from_rgb(0xff, 0xff, 0xff),
+            ),
+            (Accent::Blue, true) => (
+                Color32::from_rgb(0x4d, 0x9f, 0xff),
+                Color32::from_rgb(0x82, 0xbc, 0xff),
+                Color32::from_rgb(0x0a, 0x28, 0x48),
+            ),
+            // Deeper than the dark theme's blue, so a playing title drawn in
+            // it still reads on white.
+            (Accent::Blue, false) => (
+                Color32::from_rgb(0x18, 0x66, 0xc8),
+                Color32::from_rgb(0x12, 0x56, 0xab),
+                Color32::from_rgb(0xff, 0xff, 0xff),
+            ),
+        };
+        self.accent = accent;
+        self.accent_hover = hover;
+        self.on_accent = on_accent;
+        self
+    }
+
     /// A colour derived from album art, softened so it can sit behind text.
     pub fn tint_from_art(&self, rgb: [u8; 3]) -> Color32 {
         let [r, g, b] = rgb.map(|c| c as f32 / 255.0);
@@ -350,6 +385,7 @@ pub enum Icon {
     House,
     Info,
     Laptop,
+    LayoutGrid,
     Library,
     ListEnd,
     ListMusic,
@@ -440,6 +476,7 @@ const ICONS: &[(Icon, &str, &[u8])] = icons! {
     House => "house",
     Info => "info",
     Laptop => "laptop",
+    LayoutGrid => "layout-grid",
     Library => "library",
     ListEnd => "list-end",
     ListMusic => "list-music",
@@ -942,16 +979,38 @@ mod tests {
         }
     }
 
+    /// The default accent is the green of Spotify's own client, as the
+    /// maintainer asked for with the current layout; blue stays as a
+    /// choice. Both keep their text readable on the accent in both themes,
+    /// and the accent itself reads as text on every layer in light mode,
+    /// where the playing title is drawn in it.
     #[test]
-    fn the_accent_is_blue_not_green() {
-        for palette in [Palette::dark(), Palette::light()] {
-            for color in [palette.accent, palette.accent_hover] {
-                assert!(
-                    color.g() < color.b(),
-                    "accent {color:?} leans green, not blue"
+    fn green_is_the_default_accent_and_blue_stays_readable_too() {
+        use crate::settings::Accent;
+        assert_eq!(Accent::default(), Accent::Green);
+        for accent in Accent::ALL {
+            for palette in [
+                Palette::dark().with_accent(accent),
+                Palette::light().with_accent(accent),
+            ] {
+                let leans_green = palette.accent.g() > palette.accent.b();
+                assert_eq!(
+                    leans_green,
+                    accent == Accent::Green,
+                    "{accent:?} {palette:?}"
                 );
+                assert!(contrast(palette.accent, palette.on_accent) >= 4.5);
+                assert!(contrast(palette.accent_hover, palette.on_accent) >= 4.5);
+                if !palette.dark {
+                    for background in [palette.window, palette.panel, palette.surface] {
+                        assert!(
+                            contrast(palette.accent, background) >= 4.5,
+                            "{accent:?} accent is unreadable as text on {background:?}"
+                        );
+                    }
+                }
             }
-            assert!(palette.window.b() >= palette.window.g());
+            assert!(Palette::dark().window.b() >= Palette::dark().window.g());
         }
     }
 }

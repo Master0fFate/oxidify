@@ -15,10 +15,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let tint = app.now_playing_tint();
     // The bar sits on the window ground under the panels, taking a trace
     // of the playing cover's colour.
-    let fill = match tint {
+    let target = match tint {
         Some(tint) => super::blend(palette.window, tint, 0.12),
         None => palette.window,
     };
+    // One song's colour fades into the next's instead of jumping.
+    let fill =
+        super::widgets::animate_color(ui.ctx(), egui::Id::new("player-bar-tint"), target, 0.6);
     egui::Panel::bottom("player-bar")
         .exact_size(theme::PLAYER_BAR_HEIGHT)
         .resizable(false)

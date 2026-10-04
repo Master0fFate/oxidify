@@ -1,6 +1,6 @@
 //! The words of the playing track, in a side panel that follows the song.
 
-use egui::{Align, Frame, Layout, Margin, Sense};
+use egui::{Align, Frame, Layout, Margin, Rect, Sense, pos2};
 
 use crate::app::App;
 use crate::model::{Action, Loadable};
@@ -184,7 +184,11 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 if is_active && follow {
-                    ui.scroll_to_rect(rect, Some(Align::Center));
+                    // The line being sung sits a third of the way down,
+                    // so the lines still to come fill the view.
+                    let lead = ui.clip_rect().height() * 0.3;
+                    let target = Rect::from_min_max(pos2(rect.left(), rect.top() - lead), rect.max);
+                    ui.scroll_to_rect(target, Some(Align::Min));
                 }
                 ui.add_space(LINE_GAP);
             }

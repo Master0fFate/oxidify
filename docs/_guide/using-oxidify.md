@@ -83,7 +83,8 @@ the block, within it, or below it.
 Use the chips to filter Your Library by Playlists, Artists, Albums, or
 Podcasts, or use the magnifier to search it. The control at the right of
 that row names the order the shelf is in, **Recents** or **Custom order**,
-and switches it back to recently played or between full and compact rows.
+and switches it back to recently played or between full rows, compact rows,
+and a grid of covers that fits as many across as the panel is wide.
 Liked Songs stays at the top. The current page is highlighted, and the
 playing playlist has a small speaker icon.
 
@@ -105,8 +106,10 @@ filter restores the Add to playlist menu's full scrollable height.
 Adding a song that is already in the playlist asks first. Dropping a song on
 Liked Songs saves it. Playlists you follow can be followed and unfollowed.
 
-Settings → Appearance can show the library as names only and track tables as
-one-line rows without covers. Date added is relative for the first month.
+Settings → Appearance chooses the accent, green as in Spotify's client or
+the older blue, and can show track tables as one-line rows without covers;
+the library's own view control chooses between full rows, compact rows, and
+the grid. Date added is relative for the first month.
 The date column is hidden when no real dates are available; rows with missing
 dates stay aligned when other rows have dates.
 

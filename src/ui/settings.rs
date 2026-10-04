@@ -686,6 +686,32 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         widgets::setting_row(
             ui,
             &palette,
+            "Accent",
+            "Green, as in Spotify's client, or the blue Oxidify used before.",
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    for choice in crate::settings::Accent::ALL {
+                        if theme::soft_button(
+                            ui,
+                            &palette,
+                            None,
+                            choice.label(),
+                            app.settings.accent == choice,
+                        )
+                        .clicked()
+                            && app.settings.accent != choice
+                        {
+                            app.settings.accent = choice;
+                            changed = true;
+                        }
+                    }
+                });
+            },
+        );
+        widgets::setting_row(
+            ui,
+            &palette,
             "Colour from album art",
             "Tint pages and the player with the playing cover.",
             |ui| {

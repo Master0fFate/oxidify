@@ -550,6 +550,21 @@ pub fn liked_control(ui: &mut Ui, app: &mut App, item: &PlayableItem, size: f32,
     }
 }
 
+/// A colour eased towards `target` over `seconds`, so a change of tint
+/// fades instead of jumping.
+pub fn animate_color(ctx: &egui::Context, id: egui::Id, target: Color32, seconds: f32) -> Color32 {
+    let channel = |index: usize, value: u8| {
+        ctx.animate_value_with_time(id.with(index), f32::from(value), seconds)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgb(
+        channel(0, target.r()),
+        channel(1, target.g()),
+        channel(2, target.b()),
+    )
+}
+
 /// Menu for a context (playlist, album, artist, show).
 pub fn context_menu_items(
     ui: &mut Ui,
@@ -1762,25 +1777,40 @@ pub fn setting_row(
     description: &str,
     control: impl FnOnce(&mut Ui),
 ) {
-    ui.horizontal(|ui| {
+    let text = |ui: &mut Ui| {
+        theme::text(ui, label, theme::medium(14.0), palette.text);
+        if !description.is_empty() {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(description)
+                        .font(theme::regular(12.5))
+                        .color(palette.secondary),
+                )
+                .wrap(),
+            );
+        }
+    };
+    // Too narrow for the words and the control side by side: the control
+    // goes on its own line under the text instead of squeezing the words
+    // into a column one letter wide.
+    if ui.available_width() < 520.0 {
         ui.vertical(|ui| {
-            // A frame can arrive before the window has its size (a fullscreen
-            // request on Wayland answers a frame late), so never go negative.
-            ui.set_width((ui.available_width() - 260.0).max(0.0));
-            theme::text(ui, label, theme::medium(14.0), palette.text);
-            if !description.is_empty() {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(description)
-                            .font(theme::regular(12.5))
-                            .color(palette.secondary),
-                    )
-                    .wrap(),
-                );
-            }
+            text(ui);
+            ui.add_space(6.0);
+            ui.horizontal(control);
         });
-        ui.with_layout(Layout::right_to_left(Align::Center), control);
-    });
+    } else {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                // A frame can arrive before the window has its size (a
+                // fullscreen request on Wayland answers a frame late), so
+                // never go negative.
+                ui.set_width((ui.available_width() - 260.0).max(0.0));
+                text(ui);
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), control);
+        });
+    }
     ui.add_space(10.0);
 }
 
