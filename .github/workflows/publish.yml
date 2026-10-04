@@ -45,15 +45,20 @@ jobs:
               raise SystemExit("Expected a stable vX.Y.Z tag")
           if not re.fullmatch(r"[0-9a-f]{40}", os.environ["SOURCE_SHA"]):
               raise SystemExit("source_sha must be a full lowercase 40-character commit SHA")
+      # The scripts come from the ref this workflow was dispatched on; the
+      # release's own source is checked out beside them, so a release cut
+      # before a script existed can still be published with it.
+      - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_sha }}
+          path: source
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - name: Verify checked release source
         shell: bash
-        run: python packaging/verify_release.py source --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"
+        run: python packaging/verify_release.py source --root source --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"
       - name: Publish the complete draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
