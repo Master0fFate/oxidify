@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Guard a draft-only GitHub release and, after validation, create its tag.
 
-The workflow calls `check` before CI and `prepare` only after artifact checks.
-Uses the runner's existing gh/GITHUB_TOKEN permissions; never moves a tag or
-publishes a release. Public releases must be replaced with a new version.
+The release workflow calls `check` before CI and `prepare` only after
+artifact checks; it never moves a tag or publishes a release. `publish` is
+the one deliberate step that makes a release public, run by the maintainer
+through the Publish release workflow once the draft holds the complete
+asset set. Public releases must be replaced with a new version.
 """
 
 import argparse
@@ -20,12 +22,12 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def api(endpoint, *, payload=None, paginate=False):
+def api(endpoint, *, payload=None, paginate=False, method="POST"):
     command = ["gh", "api", endpoint]
     if paginate:
         command += ["--paginate", "--slurp"]
     if payload is not None:
-        command += ["--method", "POST", "--input", "-"]
+        command += ["--method", method, "--input", "-"]
     return json.loads(subprocess.check_output(command, input=json.dumps(payload) if payload else None, text=True))
 
 
@@ -94,9 +96,43 @@ def verify_uploaded(repository, tag, sha, directory):
                 and asset.get("digest") == digest, f"Uploaded draft asset differs: {path.name}")
 
 
+def expected_asset_names(tag):
+    """Every file a complete draft carries: seven payloads, checksums, provenance."""
+    prefix = f"oxidify-{tag}-"
+    names = {"checksums.txt", "provenance.json", f"{prefix}macos-universal.dmg"}
+    for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"):
+        names.add(f"{prefix}{target}.tar.gz")
+    for target in ("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
+        names.update({f"{prefix}{target}.zip", f"{prefix}{target}-setup.exe"})
+    return names
+
+
+def publish(repository, tag, sha):
+    """Take the draft for `tag` public, once its tag still points at the checked
+    source and every expected asset is uploaded. Nothing else here publishes."""
+    validate_inputs(repository, tag, sha)
+    require(remote_tag_sha(repository, tag) == sha, "Release tag differs from the checked source SHA")
+    draft = assert_draft_only(repository, tag)
+    require(draft is not None, "No draft release to publish")
+    pages = api(f"repos/{repository}/releases/{draft['id']}/assets?per_page=100", paginate=True)
+    assets = [asset for page in pages for asset in page]
+    names = {asset["name"] for asset in assets}
+    expected = expected_asset_names(tag)
+    require(names == expected,
+            f"Draft assets are incomplete: missing {sorted(expected - names)}, unexpected {sorted(names - expected)}")
+    require(all(asset.get("state") == "uploaded" and asset.get("size", 0) > 0 for asset in assets),
+            "A draft asset is not fully uploaded")
+    api(f"repos/{repository}/releases/{draft['id']}",
+        payload={"draft": False, "make_latest": "true", "tag_name": tag, "target_commitish": sha},
+        method="PATCH")
+    published = api(f"repos/{repository}/releases/{draft['id']}")
+    require(published.get("draft") is False and published.get("tag_name") == tag,
+            "The release did not leave draft")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check", "prepare", "uploaded"))
+    parser.add_argument("command", choices=("check", "prepare", "uploaded", "publish"))
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--tag", required=True)
     parser.add_argument("--sha", required=True)
@@ -105,6 +141,8 @@ def main():
     args = parser.parse_args()
     if args.command == "uploaded":
         verify_uploaded(args.repository, args.tag, args.sha, args.directory)
+    elif args.command == "publish":
+        publish(args.repository, args.tag, args.sha)
     else:
         guard(args.repository, args.tag, args.sha, args.allow_missing, args.command == "prepare")
 

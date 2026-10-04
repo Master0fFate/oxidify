@@ -1,0 +1,61 @@
+name: Publish release
+
+# The Release workflow stops at a draft on purpose. This is the deliberate
+# step that makes one public: dispatched by hand with the tag and the
+# checked commit, it confirms the tag still points there, that the draft
+# holds the complete asset set, and only then takes the release out of
+# draft. A publish made with the workflow token does not fire the Docs
+# workflow's release trigger, so deploy the site afterwards by running
+# docs.yml on main.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Draft release tag to publish (vX.Y.Z)
+        required: true
+        type: string
+      source_sha:
+        description: Full commit SHA the tag points at
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate requested tag and SHA
+        shell: python
+        run: |
+          import os
+          import re
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", os.environ["RELEASE_TAG"]):
+              raise SystemExit("Expected a stable vX.Y.Z tag")
+          if not re.fullmatch(r"[0-9a-f]{40}", os.environ["SOURCE_SHA"]):
+              raise SystemExit("source_sha must be a full lowercase 40-character commit SHA")
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Verify checked release source
+        shell: bash
+        run: python packaging/verify_release.py source --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"
+      - name: Publish the complete draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: python packaging/prepare_release.py publish --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"

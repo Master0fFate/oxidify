@@ -64,10 +64,14 @@ A release is not the tag alone. Every one of these moves together:
   the tag so the binaries report the right version.
 - The `v*` tag, which runs CI and builds the release into a draft. Write
   its notes in `packaging/release-notes/<tag>.md` before tagging, and publish
-  only after the checks and the complete installer/archive set pass.
+  only after the checks and the complete installer/archive set pass: the
+  Publish release workflow, dispatched with the tag and its commit, checks
+  both again before taking the draft public.
 - The documentation version in `docs/_config.yml` and
   `docs/_data/versions.yml`. The site waits to deploy until that version is
-  publicly available; publishing the release triggers the deployment.
+  publicly available. Publishing from the GitHub web page triggers the
+  deployment; publishing through the workflow does not, so run the Docs
+  workflow on `main` afterwards.
 - The Homebrew cask in the maintainer's tap and the AUR package, both
   from the release's `checksums.txt`, when they exist.
 

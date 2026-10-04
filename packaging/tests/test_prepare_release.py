@@ -124,6 +124,49 @@ class PrepareReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "assets differ"):
                     prepare.verify_uploaded(REPO, TAG, SHA, directory)
 
+    def test_publish_takes_only_a_complete_draft_public(self):
+        draft = {"id": 42, "tag_name": TAG, "draft": True}
+        assets = [{"name": name, "size": 7, "state": "uploaded"} for name in prepare.expected_asset_names(TAG)]
+        writes = []
+        state = {"draft": True}
+
+        def api(endpoint, *, payload=None, paginate=False, method="POST"):
+            if payload is not None:
+                writes.append((method, endpoint, payload))
+                state["draft"] = payload["draft"]
+                return {}
+            if "/git/matching-refs/" in endpoint:
+                return [{"ref": f"refs/tags/{TAG}", "object": {"type": "commit", "sha": SHA}}]
+            if endpoint.endswith("releases?per_page=100"):
+                return [[draft]]
+            if endpoint.endswith("/assets?per_page=100"):
+                return [assets]
+            if endpoint.endswith("/releases/42"):
+                return {"id": 42, "tag_name": TAG, "draft": state["draft"]}
+            self.fail(f"Unexpected API call: {endpoint}")
+
+        with patch.object(prepare, "api", side_effect=api):
+            self.assertEqual(len(assets), 9)
+            missing = assets.pop()
+            with self.assertRaisesRegex(ValueError, "incomplete"):
+                prepare.publish(REPO, TAG, SHA)
+            assets.append(missing)
+            assets[0]["state"] = "pending"
+            with self.assertRaisesRegex(ValueError, "not fully uploaded"):
+                prepare.publish(REPO, TAG, SHA)
+            assets[0]["state"] = "uploaded"
+            with self.assertRaisesRegex(ValueError, "differs"):
+                prepare.publish(REPO, TAG, "2" * 40)
+            self.assertEqual(writes, [], "a failed check must not touch the release")
+            prepare.publish(REPO, TAG, SHA)
+            self.assertEqual(writes, [("PATCH", f"repos/{REPO}/releases/42",
+                                       {"draft": False, "make_latest": "true", "tag_name": TAG, "target_commitish": SHA})])
+            # Once public, the same command refuses rather than touching it again.
+            draft["draft"] = False
+            with self.assertRaisesRegex(ValueError, "already published"):
+                prepare.publish(REPO, TAG, SHA)
+            self.assertEqual(len(writes), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
