@@ -1,0 +1,54 @@
+name: Retract release
+
+# Pulls a release back: deletes the GitHub release for the tag and the tag
+# itself, so the version can be cut again from a corrected commit. It is
+# the only workflow that removes anything, so it is dispatched by hand
+# with the tag and the commit the tag points at, and does nothing unless
+# both still match. Run it before a second Release run for the same tag.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to delete (vX.Y.Z)
+        required: true
+        type: string
+      source_sha:
+        description: Full commit SHA the tag points at
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+
+jobs:
+  retract:
+    name: Retract ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate requested tag and SHA
+        shell: python
+        run: |
+          import os
+          import re
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", os.environ["RELEASE_TAG"]):
+              raise SystemExit("Expected a stable vX.Y.Z tag")
+          if not re.fullmatch(r"[0-9a-f]{40}", os.environ["SOURCE_SHA"]):
+              raise SystemExit("source_sha must be a full lowercase 40-character commit SHA")
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Delete the release and its tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: python packaging/prepare_release.py retract --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"

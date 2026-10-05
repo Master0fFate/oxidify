@@ -5,7 +5,9 @@ The release workflow calls `check` before CI and `prepare` only after
 artifact checks; it never moves a tag or publishes a release. `publish` is
 the one deliberate step that makes a release public, run by the maintainer
 through the Publish release workflow once the draft holds the complete
-asset set. Public releases must be replaced with a new version.
+asset set. Public releases must be replaced with a new version, except
+through `retract`, which the Retract release workflow runs to delete a
+release and its tag together when the maintainer pulls one back.
 """
 
 import argparse
@@ -26,6 +28,10 @@ def api(endpoint, *, payload=None, paginate=False, method="POST"):
     command = ["gh", "api", endpoint]
     if paginate:
         command += ["--paginate", "--slurp"]
+    if method == "DELETE":
+        command += ["--method", "DELETE"]
+        subprocess.check_output(command, text=True)
+        return {}
     if payload is not None:
         command += ["--method", method, "--input", "-"]
     return json.loads(subprocess.check_output(command, input=json.dumps(payload) if payload else None, text=True))
@@ -130,9 +136,24 @@ def publish(repository, tag, sha):
             "The release did not leave draft")
 
 
+def retract(repository, tag, sha):
+    """Take a release down again: delete the release for `tag` and the tag
+    itself, once the tag still points at the commit named. This is the one
+    command that removes anything, so it insists on the exact pair."""
+    validate_inputs(repository, tag, sha)
+    require(remote_tag_sha(repository, tag) == sha, "Release tag differs from the SHA given; nothing removed")
+    pages = api(f"repos/{repository}/releases?per_page=100", paginate=True)
+    matches = [item for page in pages for item in page if item.get("tag_name") == tag]
+    require(len(matches) <= 1, "Multiple releases use this tag; nothing removed")
+    for release in matches:
+        api(f"repos/{repository}/releases/{release['id']}", payload={}, method="DELETE")
+    api(f"repos/{repository}/git/refs/tags/{tag}", payload={}, method="DELETE")
+    require(remote_tag_sha(repository, tag) is None, "The tag is still there")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check", "prepare", "uploaded", "publish"))
+    parser.add_argument("command", choices=("check", "prepare", "uploaded", "publish", "retract"))
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--tag", required=True)
     parser.add_argument("--sha", required=True)
@@ -143,6 +164,8 @@ def main():
         verify_uploaded(args.repository, args.tag, args.sha, args.directory)
     elif args.command == "publish":
         publish(args.repository, args.tag, args.sha)
+    elif args.command == "retract":
+        retract(args.repository, args.tag, args.sha)
     else:
         guard(args.repository, args.tag, args.sha, args.allow_missing, args.command == "prepare")
 

@@ -167,6 +167,38 @@ class PrepareReleaseTests(unittest.TestCase):
                 prepare.publish(REPO, TAG, SHA)
             self.assertEqual(len(writes), 1)
 
+    def test_retract_removes_release_and_tag_only_for_the_exact_pair(self):
+        release = {"id": 42, "tag_name": TAG, "draft": False}
+        state = {"tag": SHA, "releases": [release]}
+        deletes = []
+
+        def api(endpoint, *, payload=None, paginate=False, method="POST"):
+            if method == "DELETE":
+                deletes.append(endpoint)
+                if endpoint.endswith(f"/git/refs/tags/{TAG}"):
+                    state["tag"] = None
+                else:
+                    state["releases"] = []
+                return {}
+            if "/git/matching-refs/" in endpoint:
+                if state["tag"] is None:
+                    return []
+                return [{"ref": f"refs/tags/{TAG}", "object": {"type": "commit", "sha": state["tag"]}}]
+            if endpoint.endswith("releases?per_page=100"):
+                return [state["releases"]]
+            self.fail(f"Unexpected API call: {endpoint}")
+
+        with patch.object(prepare, "api", side_effect=api):
+            with self.assertRaisesRegex(ValueError, "differs"):
+                prepare.retract(REPO, TAG, "2" * 40)
+            self.assertEqual(deletes, [], "a mismatched SHA must remove nothing")
+            prepare.retract(REPO, TAG, SHA)
+            self.assertEqual(deletes, [f"repos/{REPO}/releases/42", f"repos/{REPO}/git/refs/tags/{TAG}"])
+            # Gone means gone: a second retract finds no tag and refuses.
+            with self.assertRaisesRegex(ValueError, "differs"):
+                prepare.retract(REPO, TAG, SHA)
+            self.assertEqual(len(deletes), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

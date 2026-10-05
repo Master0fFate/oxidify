@@ -66,7 +66,10 @@ A release is not the tag alone. Every one of these moves together:
   its notes in `packaging/release-notes/<tag>.md` before tagging, and publish
   only after the checks and the complete installer/archive set pass: the
   Publish release workflow, dispatched with the tag and its commit, checks
-  both again before taking the draft public.
+  both again before taking the draft public. A release that has to come
+  back is pulled with the Retract release workflow, dispatched with the
+  same tag and commit, which deletes the release and the tag together; the
+  tag is then cut again from the corrected commit.
 - The documentation version in `docs/_config.yml` and
   `docs/_data/versions.yml`. The site waits to deploy until that version is
   publicly available. Publishing from the GitHub web page triggers the
