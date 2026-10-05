@@ -46,23 +46,23 @@ impl ThemeChoice {
     }
 }
 
-/// The colour that marks what is playing, selected, and saved. Green is
-/// the one Spotify's own client uses; blue is Oxidify's older accent.
+/// The colour that marks what is playing, selected, and saved. Blue is
+/// Oxidify's own; green is offered for those who want it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Accent {
     #[default]
-    Green,
     Blue,
+    Green,
 }
 
 impl Accent {
-    pub const ALL: [Accent; 2] = [Self::Green, Self::Blue];
+    pub const ALL: [Accent; 2] = [Self::Blue, Self::Green];
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Green => "Green",
             Self::Blue => "Blue",
+            Self::Green => "Green",
         }
     }
 }
@@ -111,7 +111,7 @@ pub struct Settings {
     pub audio_cache: bool,
     pub audio_cache_mb: u64,
     pub theme: ThemeChoice,
-    /// The accent colour: green as in Spotify's client, or the older blue.
+    /// The accent colour: Oxidify's blue, or green.
     pub accent: Accent,
     /// Tint the interface with the colour of the playing album's art.
     pub accent_from_art: bool,
@@ -212,7 +212,7 @@ impl Default for Settings {
             audio_cache: true,
             audio_cache_mb: 1024,
             theme: ThemeChoice::Dark,
-            accent: Accent::Green,
+            accent: Accent::Blue,
             accent_from_art: true,
             volume: (u16::MAX as u32 * 70 / 100) as u16,
             sidebar_visible: true,
@@ -401,17 +401,17 @@ mod tests {
     }
 
     #[test]
-    fn older_settings_take_the_green_accent_and_keep_blue_when_chosen() {
+    fn older_settings_keep_the_blue_accent_and_green_stays_when_chosen() {
         let settings: Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(settings.accent, super::Accent::Green);
+        assert_eq!(settings.accent, super::Accent::Blue);
         assert!(!settings.sidebar_grid);
-        let blue: Settings =
-            serde_json::from_str(r#"{"accent": "blue", "sidebar_grid": true}"#).unwrap();
-        assert_eq!(blue.accent, super::Accent::Blue);
-        assert!(blue.sidebar_grid);
-        let json = serde_json::to_string(&blue).unwrap();
+        let green: Settings =
+            serde_json::from_str(r#"{"accent": "green", "sidebar_grid": true}"#).unwrap();
+        assert_eq!(green.accent, super::Accent::Green);
+        assert!(green.sidebar_grid);
+        let json = serde_json::to_string(&green).unwrap();
         let restored: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.accent, super::Accent::Blue);
+        assert_eq!(restored.accent, super::Accent::Green);
     }
 
     #[test]

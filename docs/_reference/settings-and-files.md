@@ -105,7 +105,7 @@ interface work. Demo mode never writes settings.
 
 `--demo-page` opens a page, such as `home`, `playlist:pl1`, or `artist:art0`,
 and `--demo-show` adds surfaces on top of it: a comma separated list of
-`queue`, `now-playing`, `collapsed`, `grid`, `blue`, `podcasts`, `devices`,
+`queue`, `now-playing`, `collapsed`, `grid`, `green`, `podcasts`, `devices`,
 `shortcuts`, `create`, `light`, `focus`, `login`, `winamp`, `playlist`, and
 `eq`.
 

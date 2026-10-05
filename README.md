@@ -88,8 +88,8 @@ getting started, everyday use, and how it connects to Spotify.
 - **Album-art colour.** Pages and the player bar can take a tint from the
   cover of what you are looking at or listening to, and the bar fades from
   one song's colour to the next. Turn it off in Settings and the interface
-  stays in its neutral chrome. The accent is the green of Spotify's own
-  client; Settings → Appearance brings back the older blue.
+  stays in its neutral chrome. The accent is Oxidify's blue; Settings →
+  Appearance offers a green instead.
 - **Light and dark**, or follow the system.
 - **Winamp mini player.** `Ctrl+M`, or the button at the right end of the
   player bar, turns the window into a tiny player that

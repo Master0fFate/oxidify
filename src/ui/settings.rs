@@ -687,7 +687,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui,
             &palette,
             "Accent",
-            "Green, as in Spotify's client, or the blue Oxidify used before.",
+            "Oxidify's blue, or a green.",
             |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;

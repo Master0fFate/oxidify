@@ -580,7 +580,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
             "now-playing" => app.show_now_playing_panel = true,
             "collapsed" => app.settings.sidebar_collapsed = true,
             "grid" => app.settings.sidebar_grid = true,
-            "blue" => app.settings.accent = crate::settings::Accent::Blue,
+            "green" => app.settings.accent = crate::settings::Accent::Green,
             "podcasts" => app.home.filter = HomeFilter::Podcasts,
             "devices" => app.show_devices = true,
             "shortcuts" => app.dialog = Some(Dialog::Shortcuts),
@@ -832,14 +832,15 @@ mod tests {
             frame(&ctx, &mut app);
         }
         app.settings.sidebar_grid = false;
-        app.settings.accent = crate::settings::Accent::Blue;
-        app.actions.push(Action::SettingsChanged);
-        frame(&ctx, &mut app);
         assert!(app.palette.accent.b() > app.palette.accent.g());
         app.settings.accent = crate::settings::Accent::Green;
         app.actions.push(Action::SettingsChanged);
         frame(&ctx, &mut app);
         assert!(app.palette.accent.g() > app.palette.accent.b());
+        app.settings.accent = crate::settings::Accent::Blue;
+        app.actions.push(Action::SettingsChanged);
+        frame(&ctx, &mut app);
+        assert!(app.palette.accent.b() > app.palette.accent.g());
         app.show_now_playing_panel = false;
         for dialog in [
             Dialog::Shortcuts,

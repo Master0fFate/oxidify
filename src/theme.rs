@@ -78,9 +78,9 @@ impl Palette {
         }
     }
 
-    /// The palette with the chosen accent. Green is Spotify's own, bright
-    /// on dark and deepened on light so it still reads as text; blue is the
-    /// accent Oxidify shipped with before.
+    /// The palette with the chosen accent. Blue is Oxidify's own; green is
+    /// the alternative, bright on dark and deepened on light so it still
+    /// reads as text.
     pub fn with_accent(mut self, accent: crate::settings::Accent) -> Self {
         use crate::settings::Accent;
         let (accent, hover, on_accent) = match (accent, self.dark) {
@@ -979,15 +979,14 @@ mod tests {
         }
     }
 
-    /// The default accent is the green of Spotify's own client, as the
-    /// maintainer asked for with the current layout; blue stays as a
-    /// choice. Both keep their text readable on the accent in both themes,
-    /// and the accent itself reads as text on every layer in light mode,
-    /// where the playing title is drawn in it.
+    /// The default accent is Oxidify's blue; green is a choice. Both keep
+    /// their text readable on the accent in both themes, and the accent
+    /// itself reads as text on every layer in light mode, where the
+    /// playing title is drawn in it.
     #[test]
-    fn green_is_the_default_accent_and_blue_stays_readable_too() {
+    fn blue_is_the_default_accent_and_green_stays_readable_too() {
         use crate::settings::Accent;
-        assert_eq!(Accent::default(), Accent::Green);
+        assert_eq!(Accent::default(), Accent::Blue);
         for accent in Accent::ALL {
             for palette in [
                 Palette::dark().with_accent(accent),

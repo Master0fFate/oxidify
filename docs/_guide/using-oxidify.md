@@ -106,8 +106,8 @@ filter restores the Add to playlist menu's full scrollable height.
 Adding a song that is already in the playlist asks first. Dropping a song on
 Liked Songs saves it. Playlists you follow can be followed and unfollowed.
 
-Settings → Appearance chooses the accent, green as in Spotify's client or
-the older blue, and can show track tables as one-line rows without covers;
+Settings → Appearance chooses the accent, Oxidify's blue or a green, and
+can show track tables as one-line rows without covers;
 the library's own view control chooses between full rows, compact rows, and
 the grid. Date added is relative for the first month.
 The date column is hidden when no real dates are available; rows with missing
