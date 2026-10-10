@@ -286,6 +286,11 @@ impl SharedAudio {
         filled_bytes(&self.lock().filled)
     }
 
+    /// One past the furthest filled byte; 0 while nothing has arrived.
+    pub fn filled_end(&self) -> u64 {
+        self.lock().filled.last().map_or(0, |(_, end)| *end)
+    }
+
     pub fn content_length(&self) -> Option<u64> {
         self.lock().content_length
     }
@@ -772,6 +777,19 @@ mod tests {
         assert_eq!(audio.filled_bytes(), 14);
         assert!(audio.enable_random_access(33).is_err());
         assert!(SharedAudio::with_limit(Some(8), 4).is_err());
+    }
+
+    #[test]
+    fn filled_end_is_one_past_the_furthest_byte() {
+        let audio = SharedAudio::with_limit(Some(64), 64).unwrap();
+        assert_eq!(audio.filled_end(), 0);
+        audio.enable_random_access(64).unwrap();
+        audio.write_at(0, &[1u8; 8]).unwrap();
+        assert_eq!(audio.filled_end(), 8);
+        audio.write_at(40, &[2u8; 4]).unwrap();
+        assert_eq!(audio.filled_end(), 44);
+        audio.write_at(8, &[3u8; 4]).unwrap();
+        assert_eq!(audio.filled_end(), 44);
     }
 
     #[test]

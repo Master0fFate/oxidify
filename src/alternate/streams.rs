@@ -10,7 +10,10 @@
 //! frames. Lower-bitrate copies are not preferred — headers, not payload
 //! size, gate time-to-first-audio.
 
-#[derive(Clone, Debug, Default, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AudioStream {
     pub url: String,
     pub mime: Option<String>,

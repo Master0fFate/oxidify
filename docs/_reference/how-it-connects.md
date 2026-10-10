@@ -60,8 +60,11 @@ shows how to add one.
   selected for Free or unconfirmed accounts and available in Settings, uses a
   native YouTube resolver and can also contact the Piped endpoint you chose.
   These searches run concurrently with short timeouts. A strong result cancels
-  slower work. Bounded memory caches keep search results for six hours and
-  resolved stream URLs for ten minutes. A local yt-dlp process (the official
+  slower work. Matches are remembered in a bounded file on this computer,
+  `bin/alternate-matches.json` under the state directory: search results for
+  seven days and resolved stream URLs until the URL's own expiry, so a song
+  played again starts without a lookup. It holds video ids and stream URLs
+  only, never anything from Spotify. A local yt-dlp process (the official
   pinned build extracted on this computer, or a strictly newer one you
   installed) is the last fallback. Spotify tokens are never sent to an
   alternate provider. yt-dlp is never downloaded at runtime.

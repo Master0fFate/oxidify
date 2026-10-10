@@ -13,6 +13,13 @@ use super::streams::{AudioStream, select_audio_stream};
 
 pub const INITIAL_PREFIX: u64 = 512 * 1024;
 const COALESCE_GAP: u64 = 128 * 1024;
+/// Once playback can start, the rest of the file is pulled in windows this
+/// large, forward from the furthest filled byte, so the decoder never waits
+/// on the network and a seek lands on bytes already here. A decoder demand
+/// still comes first: it aborts the window in flight (see `should_retarget`).
+/// The body is bounded by `MAX_BYTES` before any range is asked for, so
+/// completing it never exceeds the buffer's cap.
+pub(crate) const READ_AHEAD_WINDOW: u64 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FetchPolicy {
@@ -685,7 +692,7 @@ fn next_work(
         return clip_work(hole, DEMAND_WINDOW, total);
     }
     if ready {
-        return None;
+        return read_ahead(buffer, total);
     }
     if !did_tail
         && let Some((start, end)) = probe::tail_prefetch(prefix, total)
@@ -695,6 +702,17 @@ fn next_work(
     }
     let hole = buffer.first_hole(0, total)?;
     clip_work(hole, INITIAL_PREFIX, total)
+}
+
+/// Background read-ahead: the hole right after the furthest filled byte,
+/// then, once the end is reached, whatever earlier holes a seek left behind,
+/// until the body is complete.
+fn read_ahead(buffer: &SharedAudio, total: u64) -> Option<ByteRange> {
+    let frontier = buffer.filled_end().min(total);
+    let hole = buffer
+        .first_hole(frontier, total)
+        .or_else(|| buffer.first_hole(0, total))?;
+    clip_work(hole, READ_AHEAD_WINDOW, total)
 }
 
 fn clip_work(hole: ByteRange, cap: u64, total: u64) -> Option<ByteRange> {
@@ -981,7 +999,8 @@ async fn stream_range(
 mod tests {
     use super::*;
     use crate::alternate::decode::{
-        FormatHint, TONE_M4A, TONE_MP3, spawn_decoder, wait_matching_sample, wait_nonzero_sample,
+        FormatHint, TONE_FRAG_M4A, TONE_M4A, TONE_MP3, spawn_decoder, wait_matching_sample,
+        wait_nonzero_sample,
     };
     use crate::alternate::matching::Candidate;
     use crate::alternate::provider::MediaLookup;
@@ -1561,7 +1580,18 @@ mod tests {
         }
         let total = wav.len() as u64;
         let seek_byte = 44u64 + seek_sample as u64 * 2;
-        let (url, log) = spawn_stub(wav, StubMode::Range, Duration::ZERO);
+        // Throttled so background read-ahead cannot reach the middle before
+        // the seek lands; the seek must still win the next request.
+        let ((url, log), _) = spawn_stub_cfg(StubCfg {
+            body: wav,
+            first: StubMode::Range,
+            rest: StubMode::Range,
+            header_delay: Duration::ZERO,
+            body_chunk: 8_192,
+            body_delay: Duration::from_millis(5),
+            requests: Arc::new(AtomicUsize::new(0)),
+            fail_n: 0,
+        });
         let audio = SharedAudio::new(None).unwrap();
         let http = reqwest::Client::new();
         let fetch = {
@@ -2056,6 +2086,141 @@ mod tests {
     #[tokio::test]
     async fn m4a_206_seek_while_streaming_keeps_pcm() {
         stream_compressed_seek_via_stub(TONE_M4A, "m4a", "audio/mp4").await;
+    }
+
+    #[tokio::test]
+    async fn fragmented_m4a_206_seek_while_streaming_keeps_pcm() {
+        stream_compressed_seek_via_stub(TONE_FRAG_M4A, "m4a", "audio/mp4").await;
+    }
+
+    fn range_start(range: &str) -> u64 {
+        let rest = range.trim().strip_prefix("bytes=").unwrap_or(range);
+        rest.split('-')
+            .next()
+            .and_then(|start| start.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// Once playback can start, the fetch keeps going on its own: the whole
+    /// body arrives in large windows without a decoder asking for any of it.
+    #[tokio::test]
+    async fn read_ahead_completes_the_file_without_a_reader() {
+        let mut body = vec![7u8; 3 * 1024 * 1024];
+        let header = tiny_wav(200, 8_000);
+        body[..header.len()].copy_from_slice(&header);
+        let total = body.len() as u64;
+        let (url, log) = spawn_stub(body, StubMode::Range, Duration::ZERO);
+        let audio = SharedAudio::new(None).unwrap();
+        let http = reqwest::Client::new();
+        let fetch = {
+            let audio = audio.clone();
+            tokio::spawn(async move { fetch_media(&http, &url, &[], &audio, &mut || {}).await })
+        };
+        join_fetch(fetch)
+            .await
+            .expect("fetch idled instead of reading ahead");
+        assert!(audio.is_closed());
+        assert_eq!(audio.filled_bytes(), total);
+        let logged = log.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let windows: Vec<u64> = logged
+            .iter()
+            .filter_map(|entry| entry.served.map(|(start, end)| end - start))
+            .collect();
+        assert!(
+            windows.len() <= 4,
+            "read-ahead should use large windows, got {windows:?}"
+        );
+        assert!(
+            windows
+                .iter()
+                .skip(1)
+                .any(|size| *size == READ_AHEAD_WINDOW),
+            "no full read-ahead window: {windows:?}"
+        );
+        let starts: Vec<u64> = logged
+            .iter()
+            .filter_map(|entry| entry.range.as_deref().map(range_start))
+            .collect();
+        assert!(
+            starts.windows(2).all(|pair| pair[0] < pair[1]),
+            "read-ahead did not move forward: {starts:?}"
+        );
+    }
+
+    /// A decoder demand (a seek) interrupts the read-ahead window in
+    /// flight and is served before the sequential fill continues.
+    #[tokio::test]
+    async fn demand_preempts_read_ahead() {
+        let mut body = vec![0u8; 6 * 1024 * 1024];
+        let header = tiny_wav(200, 8_000);
+        body[..header.len()].copy_from_slice(&header);
+        let ((url, log), _) = spawn_stub_cfg(StubCfg {
+            body,
+            first: StubMode::Range,
+            rest: StubMode::Range,
+            header_delay: Duration::ZERO,
+            body_chunk: 16_384,
+            body_delay: Duration::from_millis(3),
+            requests: Arc::new(AtomicUsize::new(0)),
+            fail_n: 0,
+        });
+        let audio = SharedAudio::new(None).unwrap();
+        let http = reqwest::Client::new();
+        let fetch = {
+            let audio = audio.clone();
+            tokio::spawn(async move { fetch_media(&http, &url, &[], &audio, &mut || {}).await })
+        };
+        assert!(
+            wait_until(
+                || audio.is_random_access() && audio.filled_end() > INITIAL_PREFIX,
+                Duration::from_secs(5)
+            )
+            .await,
+            "read-ahead never started"
+        );
+        let target = 5_000_000u64;
+        let blocked = {
+            let audio = audio.clone();
+            thread::spawn(move || {
+                let mut reader = audio.reader();
+                reader.seek(std::io::SeekFrom::Start(target)).unwrap();
+                let mut buf = [0u8; 1];
+                let _ = reader.read(&mut buf);
+            })
+        };
+        assert!(
+            wait_until(
+                || audio.is_range_filled(target, target + 1),
+                Duration::from_secs(3)
+            )
+            .await,
+            "demand was not served; intervals={:?}",
+            audio.filled_intervals()
+        );
+        let middle_hole = audio.first_hole(2_500_000, 3_500_000).is_some();
+        audio.cancel();
+        let _ = join_fetch(fetch).await;
+        let _ = blocked.join();
+        assert!(
+            middle_hole,
+            "the sequential fill reached the middle before the seek was served"
+        );
+        let logged = log.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let ranges: Vec<String> = logged
+            .iter()
+            .filter_map(|entry| entry.range.clone())
+            .collect();
+        let demand_at = ranges
+            .iter()
+            .position(|range| range_covers(range, target))
+            .expect("no request for the demanded byte");
+        let middle_at = ranges
+            .iter()
+            .position(|range| range_covers(range, 3_000_000));
+        assert!(
+            middle_at.is_none_or(|at| at > demand_at),
+            "demand was queued behind read-ahead: {ranges:?}"
+        );
     }
 
     #[tokio::test]

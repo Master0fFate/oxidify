@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackQuery {
     pub title: String,
@@ -9,11 +11,12 @@ pub struct TrackQuery {
     pub duration_ms: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
     pub id: String,
     pub title: String,
     pub uploader: String,
+    #[serde(default)]
     pub duration_ms: Option<u32>,
 }
 

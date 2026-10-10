@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rodio::{Source, source::SeekError};
+use tokio::sync::Notify;
 
 use super::buffer::{BufferWait, SharedAudio};
 
@@ -23,6 +24,10 @@ const PHASE_CANCEL: u8 = 4;
 pub(crate) const TONE_MP3: &[u8] = include_bytes!("fixtures/tone.mp3");
 #[cfg(test)]
 pub(crate) const TONE_M4A: &[u8] = include_bytes!("fixtures/tone.m4a");
+/// Fragmented MP4 (`moov` first, then twelve `moof`/`mdat` pairs), the
+/// shape YouTube's DASH audio takes; `mdhd` carries no duration.
+#[cfg(test)]
+pub(crate) const TONE_FRAG_M4A: &[u8] = include_bytes!("fixtures/tone_frag.m4a");
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FormatHint {
@@ -84,6 +89,9 @@ struct DecodeState {
     target_ms: AtomicU32,
     error: Mutex<Option<String>>,
     last_pcm: Mutex<Instant>,
+    /// Fires once the headers are read, so the engine can start the
+    /// output at once instead of on its next tick.
+    format_ready: Arc<Notify>,
 }
 
 impl DecodeState {
@@ -97,6 +105,7 @@ impl DecodeState {
             target_ms: AtomicU32::new(start_ms),
             error: Mutex::new(None),
             last_pcm: Mutex::new(Instant::now()),
+            format_ready: Arc::new(Notify::new()),
         }
     }
 
@@ -121,6 +130,19 @@ impl DecodeState {
         let phase = self.phase.load(Ordering::SeqCst);
         if phase == PHASE_START || phase == PHASE_ENDED {
             self.phase.store(PHASE_RUN, Ordering::SeqCst);
+        }
+        self.format_ready.notify_one();
+    }
+
+    /// Keeps the first non-zero length the decoder reports: a rebuild
+    /// never forgets what an earlier open learned.
+    fn note_duration(&self, total: Option<Duration>) {
+        let Some(total) = total else {
+            return;
+        };
+        let ms = total.as_millis().min(u128::from(u32::MAX)) as u32;
+        if ms > 0 {
+            self.duration_ms.store(ms, Ordering::SeqCst);
         }
     }
 
@@ -227,6 +249,12 @@ impl DecodeHandle {
 
     pub fn starved(&self, timeout: Duration) -> bool {
         self.state.starved(timeout)
+    }
+
+    /// Wakes once the decoder has read the headers and `format()` answers.
+    /// The permit is kept if the headers were read before anyone waited.
+    pub fn format_ready(&self) -> Arc<Notify> {
+        Arc::clone(&self.state.format_ready)
     }
 
     #[cfg(test)]
@@ -406,6 +434,17 @@ fn decode_loop(
     cmd_rx: Receiver<DecodeCmd>,
     state: Arc<DecodeState>,
 ) {
+    // While the fetch is still running, the stream is opened as if it could
+    // not seek. Symphonia's MP4 reader walks every top-level atom to the
+    // end of a seekable stream before it returns, and on a fragmented
+    // file (YouTube's DASH audio: one `moof`/`mdat` pair per couple of
+    // seconds) each atom past the filled bytes blocks on its own range
+    // request, so roughly the whole body was pulled in serial 256 KB
+    // round trips before the first sample. Opened non-seekable it stops at
+    // the first fragment and reads the rest as it arrives. The stream is
+    // rebuilt seekable when a seek is asked for, when playback must begin
+    // away from zero, or once the file is complete.
+    let mut want_seek = false;
     'rebuild: loop {
         if state.stopped() && state.phase.load(Ordering::SeqCst) != PHASE_RUN {
             return;
@@ -415,7 +454,8 @@ fn decode_loop(
                 state.cancel();
                 return;
             }
-            Some(DecodeCmd::Seek) | None => {}
+            Some(DecodeCmd::Seek) => want_seek = true,
+            None => {}
         }
         let start_ms = state.target_ms.load(Ordering::SeqCst);
         if buffer.is_cancelled() {
@@ -429,7 +469,7 @@ fn decode_loop(
         let reader = buffer.reader();
         let reader_epoch = reader.epoch();
         let closed = buffer.is_closed();
-        let seekable = buffer.is_random_access() || closed;
+        let seekable = closed || (buffer.is_random_access() && (want_seek || start_ms > 0));
         let byte_len = buffer.content_length().unwrap_or(buffer.len() as u64);
         let mut decoder = match open_decoder(reader, &hint, seekable, byte_len) {
             Ok(decoder) => decoder,
@@ -447,10 +487,14 @@ fn decode_loop(
                         state.cancel();
                         return;
                     }
-                    Some(DecodeCmd::Seek) => continue,
+                    Some(DecodeCmd::Seek) => {
+                        want_seek = true;
+                        continue;
+                    }
                     None => {}
                 }
                 if buffer.read_epoch() != reader_epoch {
+                    want_seek = true;
                     continue;
                 }
                 if closed {
@@ -463,15 +507,10 @@ fn decode_loop(
         };
         let channels = decoder.channels();
         let rate = decoder.sample_rate();
-        state.set_format(channels, rate);
         // The matched recording is rarely exactly as long as Spotify's;
         // the bar and its seeks follow this length once it is known.
-        if let Some(total) = decoder.total_duration() {
-            state.duration_ms.store(
-                total.as_millis().min(u128::from(u32::MAX)) as u32,
-                Ordering::SeqCst,
-            );
-        }
+        state.note_duration(decoder.total_duration());
+        state.set_format(channels, rate);
         if start_ms > 0 {
             let seeked = seekable
                 && native_seek_allowed(&hint)
@@ -480,6 +519,7 @@ fn decode_loop(
                     .is_ok();
             if !seeked && seekable && native_seek_allowed(&hint) {
                 if buffer.read_epoch() != reader_epoch {
+                    want_seek = true;
                     continue;
                 }
                 let end = buffer.content_length().unwrap_or(buffer.len() as u64);
@@ -503,7 +543,10 @@ fn decode_loop(
                         state.cancel();
                         return;
                     }
-                    Some(DecodeCmd::Seek) => continue,
+                    Some(DecodeCmd::Seek) => {
+                        want_seek = true;
+                        continue;
+                    }
                     None => {}
                 }
             }
@@ -521,7 +564,10 @@ fn decode_loop(
                 return;
             }
             Pump::Disconnected => return,
-            Pump::Seek => continue 'rebuild,
+            Pump::Seek => {
+                want_seek = true;
+                continue 'rebuild;
+            }
             Pump::Ended { samples } => {
                 if state.stopped() {
                     return;
@@ -531,15 +577,22 @@ fn decode_loop(
                         state.cancel();
                         return;
                     }
-                    Some(DecodeCmd::Seek) => continue 'rebuild,
+                    Some(DecodeCmd::Seek) => {
+                        want_seek = true;
+                        continue 'rebuild;
+                    }
                     None => {}
                 }
                 if buffer.read_epoch() != reader_epoch {
+                    want_seek = true;
                     continue 'rebuild;
                 }
                 match wait_out_eof(&buffer, &state, &cmd_rx, samples, start_ms, rate, channels) {
                     EofNext::Stop | EofNext::Done => return,
-                    EofNext::Seek => continue 'rebuild,
+                    EofNext::Seek => {
+                        want_seek = true;
+                        continue 'rebuild;
+                    }
                     EofNext::Rebuild { start_ms: next } => {
                         state.target_ms.store(next, Ordering::SeqCst);
                         continue 'rebuild;
@@ -1190,6 +1243,105 @@ mod tests {
     #[test]
     fn m4a_faststart_continuous_nonzero_from_zero() {
         play_compressed_from_zero(TONE_M4A, "m4a", "audio/mp4");
+    }
+
+    /// Fragmented MP4 in a random-access buffer with only the first three
+    /// fragments filled: audio must come from those bytes alone. A
+    /// seekable open would walk every `moof`/`mdat` header to the end of
+    /// the file first, blocking on the fourth one, and never play.
+    #[test]
+    fn fragmented_m4a_plays_from_the_prefix_without_walking_the_file() {
+        let total = TONE_FRAG_M4A.len() as u64;
+        let audio = SharedAudio::with_limit(Some(total), total as usize).unwrap();
+        audio.enable_random_access(total).unwrap();
+        // ftyp, moov and three moof/mdat pairs; the fourth moof at 7 494
+        // stays a hole.
+        let prefix = 7_494u64;
+        audio
+            .write_at(0, &TONE_FRAG_M4A[..prefix as usize])
+            .unwrap();
+        let hint = FormatHint::from_labels(Some("m4a"), Some("audio/mp4"), None);
+        let (mut pcm, handle) = spawn_decoder(audio.clone(), hint, 0).unwrap();
+        assert!(
+            wait_nonzero_sample(&mut pcm, Duration::from_secs(3)),
+            "no PCM from a fragmented prefix; demand={:?} status={:?}",
+            audio.current_demand(),
+            handle.status()
+        );
+        let extra = count_nonzero_until(&mut pcm, Duration::from_millis(300));
+        assert!(extra > 80, "decoder did not keep going, got {extra}");
+        if let Some(demand) = audio.current_demand() {
+            assert_eq!(
+                demand.start, prefix,
+                "the only bytes asked for are the ones right after the prefix"
+            );
+        }
+        assert_eq!(audio.filled_intervals(), vec![(0, prefix)]);
+        assert_ne!(handle.status(), DecodeStatus::Failed);
+        handle.stop();
+    }
+
+    /// A seek on a file that is still downloading rebuilds the decoder
+    /// seekable and keeps producing audio.
+    #[test]
+    fn fragmented_m4a_seek_on_a_live_buffer_keeps_pcm() {
+        let total = TONE_FRAG_M4A.len() as u64;
+        let audio = SharedAudio::with_limit(Some(total), total as usize).unwrap();
+        audio.enable_random_access(total).unwrap();
+        audio.write_at(0, TONE_FRAG_M4A).unwrap();
+        let hint = FormatHint::from_labels(Some("m4a"), Some("audio/mp4"), None);
+        let (mut pcm, handle) = spawn_decoder(audio.clone(), hint, 0).unwrap();
+        assert!(wait_nonzero_sample(&mut pcm, Duration::from_secs(3)));
+        handle.seek(4_000);
+        assert!(
+            wait_nonzero_sample(&mut pcm, Duration::from_secs(3)),
+            "no PCM after seeking a live fragmented file; status={:?}",
+            handle.status()
+        );
+        assert_ne!(handle.status(), DecodeStatus::Failed);
+        assert!(!audio.is_closed());
+        handle.stop();
+    }
+
+    /// The non-seekable first open still reads the media's length from
+    /// its headers, and a seekable rebuild keeps it.
+    #[test]
+    fn duration_is_known_before_the_file_completes_and_survives_a_seek() {
+        let total = TONE_M4A.len() as u64;
+        let audio = SharedAudio::with_limit(Some(total), total as usize).unwrap();
+        audio.enable_random_access(total).unwrap();
+        audio.write_at(0, TONE_M4A).unwrap();
+        let hint = FormatHint::from_labels(Some("m4a"), Some("audio/mp4"), None);
+        let (mut pcm, handle) = spawn_decoder(audio.clone(), hint, 0).unwrap();
+        let probe = pcm.duration_probe();
+        assert!(wait_nonzero_sample(&mut pcm, Duration::from_secs(3)));
+        let first = probe.duration_ms();
+        assert!(
+            first.is_some_and(|ms| (5_900..=6_100).contains(&ms)),
+            "expected the six-second length from the headers, got {first:?}"
+        );
+        handle.seek(1_000);
+        assert!(wait_nonzero_sample(&mut pcm, Duration::from_secs(3)));
+        assert_eq!(probe.duration_ms(), first);
+        handle.stop();
+    }
+
+    /// The engine waits on this instead of its tick: it fires once the
+    /// headers are read, and the permit is kept for a late waiter.
+    #[tokio::test]
+    async fn format_ready_fires_when_the_headers_are_read() {
+        let wav = tiny_wav(8_000);
+        let audio = SharedAudio::new(None).unwrap();
+        let hint = FormatHint::from_labels(Some("wav"), Some("audio/wav"), None);
+        let (_pcm, handle) = spawn_decoder(audio.clone(), hint, 0).unwrap();
+        let ready = handle.format_ready();
+        assert!(handle.format().is_none());
+        audio.append(&wav).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), ready.notified())
+            .await
+            .expect("format_ready never fired");
+        assert!(handle.format().is_some());
+        handle.stop();
     }
 
     #[test]

@@ -2,12 +2,14 @@
 //! Spotify credentials never enter this module.
 
 use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::task::JoinSet;
 
 use super::AlternateConfig;
@@ -23,14 +25,25 @@ const PIPED_SEARCH_TIMEOUT: Duration = Duration::from_secs(5);
 const STREAM_TIMEOUT: Duration = Duration::from_secs(7);
 const YTDLP_FALLBACK_TIMEOUT: Duration = Duration::from_secs(18);
 const STRONG_MATCH_SCORE: f32 = 0.90;
-const SEARCH_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Matches outlive the process now that they are kept on disk; a week keeps
+/// replays off the network while a removed video still gets re-searched.
+const SEARCH_CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// For a stream URL without an `expire=` query parameter.
 const STREAM_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
-const SEARCH_CACHE_CAPACITY: usize = 256;
+/// A googlevideo URL is cached until its own `expire=` minus this margin.
+const STREAM_EXPIRY_MARGIN: Duration = Duration::from_secs(5 * 60);
+const SEARCH_CACHE_CAPACITY: usize = 2000;
 const STREAM_CACHE_CAPACITY: usize = 256;
+/// The on-disk copy of both caches, next to yt-dlp's own cache directory.
+/// It holds search results and stream URLs only: no Spotify data beyond
+/// the track title and artists used as the search key, and no tokens.
+const MATCH_CACHE_FILE: &str = "alternate-matches.json";
+const MATCH_CACHE_VERSION: u32 = 1;
+const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 
 pub type LookupFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderKind {
     NativeYoutube,
     Piped,
@@ -47,7 +60,7 @@ impl ProviderKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StreamLookup {
     pub streams: Vec<AudioStream>,
     pub provider: ProviderKind,
@@ -87,8 +100,29 @@ pub struct Resolver {
     native: NativeYoutube,
     piped: Option<PipedClient>,
     ytdlp: Option<YtDlp>,
-    search_cache: std::sync::Arc<Mutex<TimedCache<Vec<Candidate>>>>,
-    stream_cache: std::sync::Arc<Mutex<TimedCache<StreamLookup>>>,
+    search_cache: Arc<Mutex<TimedCache<Vec<Candidate>>>>,
+    stream_cache: Arc<Mutex<TimedCache<StreamLookup>>>,
+    /// Where the caches are written between runs; `None` keeps them in
+    /// memory only (tests).
+    store: Option<Arc<MatchStore>>,
+}
+
+struct MatchStore {
+    path: PathBuf,
+    debounce: Duration,
+    dirty: AtomicBool,
+    scheduled: AtomicBool,
+}
+
+impl MatchStore {
+    fn new(path: PathBuf, debounce: Duration) -> Self {
+        Self {
+            path,
+            debounce,
+            dirty: AtomicBool::new(false),
+            scheduled: AtomicBool::new(false),
+        }
+    }
 }
 
 impl Resolver {
@@ -118,19 +152,226 @@ impl Resolver {
         } else {
             None
         };
-        Ok(Self {
+        Ok(Self::assemble(
             native,
             piped,
             ytdlp,
-            search_cache: std::sync::Arc::new(Mutex::new(TimedCache::new(
+            Some(MatchStore::new(
+                ytdlp_dir.join(MATCH_CACHE_FILE),
+                SAVE_DEBOUNCE,
+            )),
+        ))
+    }
+
+    fn assemble(
+        native: NativeYoutube,
+        piped: Option<PipedClient>,
+        ytdlp: Option<YtDlp>,
+        store: Option<MatchStore>,
+    ) -> Self {
+        let resolver = Self {
+            native,
+            piped,
+            ytdlp,
+            search_cache: Arc::new(Mutex::new(TimedCache::new(
                 SEARCH_CACHE_TTL,
                 SEARCH_CACHE_CAPACITY,
             ))),
-            stream_cache: std::sync::Arc::new(Mutex::new(TimedCache::new(
+            stream_cache: Arc::new(Mutex::new(TimedCache::new(
                 STREAM_CACHE_TTL,
                 STREAM_CACHE_CAPACITY,
             ))),
-        })
+            store: store.map(Arc::new),
+        };
+        if let Some(store) = &resolver.store
+            && let Some(persisted) = load_persisted(&store.path)
+        {
+            resolver.restore(persisted);
+        }
+        resolver
+    }
+
+    /// In-memory caches, optionally backed by `path`, with no providers
+    /// beyond native search.
+    #[cfg(test)]
+    fn for_test(path: Option<PathBuf>, debounce: Duration) -> Self {
+        let native = NativeYoutube::new(reqwest::Client::new()).expect("native search client");
+        Self::assemble(
+            native,
+            None,
+            None,
+            path.map(|path| MatchStore::new(path, debounce)),
+        )
+    }
+
+    fn remember_search(&self, key: String, candidates: Vec<Candidate>) {
+        self.search_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(key, candidates);
+        self.schedule_save();
+    }
+
+    fn remember_streams(&self, id: &str, lookup: &StreamLookup) {
+        let ttl = stream_cache_ttl(lookup, SystemTime::now());
+        if ttl.is_zero() {
+            return;
+        }
+        self.stream_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert_with_ttl(id.to_string(), lookup.clone(), ttl);
+        self.schedule_save();
+    }
+
+    /// Writes the caches after a quiet second; one write covers a burst.
+    fn schedule_save(&self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        store.dirty.store(true, Ordering::SeqCst);
+        if store.scheduled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let this = self.clone();
+                let debounce = store.debounce;
+                handle.spawn(async move {
+                    tokio::time::sleep(debounce).await;
+                    this.flush().await;
+                });
+            }
+            Err(_) => self.flush_blocking(),
+        }
+    }
+
+    async fn flush(&self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        store.scheduled.store(false, Ordering::SeqCst);
+        if !store.dirty.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let snapshot = self.snapshot();
+        let path = store.path.clone();
+        match tokio::task::spawn_blocking(move || write_atomic(&path, &snapshot)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => log::warn!("couldn't write the alternate match cache: {error}"),
+            Err(error) => log::warn!("alternate match cache write did not finish: {error}"),
+        }
+    }
+
+    fn flush_blocking(&self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        store.scheduled.store(false, Ordering::SeqCst);
+        if !store.dirty.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        if let Err(error) = write_atomic(&store.path, &self.snapshot()) {
+            log::warn!("couldn't write the alternate match cache: {error}");
+        }
+    }
+
+    fn snapshot(&self) -> PersistedCaches {
+        let now = Instant::now();
+        let now_ms = unix_ms_now();
+        let mut searches: Vec<PersistedSearch> = self
+            .search_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entries()
+            .into_iter()
+            .map(
+                |(key, candidates, expires_at, inserted_at)| PersistedSearch {
+                    key,
+                    inserted_at_ms: instant_to_unix_ms(inserted_at, now, now_ms),
+                    expires_at_ms: instant_to_unix_ms(expires_at, now, now_ms),
+                    candidates,
+                },
+            )
+            .collect();
+        searches.sort_by_key(|entry| std::cmp::Reverse(entry.inserted_at_ms));
+        searches.truncate(SEARCH_CACHE_CAPACITY);
+        let mut streams: Vec<PersistedStream> = self
+            .stream_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entries()
+            .into_iter()
+            .filter_map(|(id, lookup, expires_at, inserted_at)| {
+                // Only what this player can decode is worth keeping; a
+                // provider lists every format it knows.
+                let streams: Vec<AudioStream> = lookup
+                    .streams
+                    .iter()
+                    .filter(|stream| select_audio_stream(std::slice::from_ref(*stream)).is_some())
+                    .cloned()
+                    .collect();
+                (!streams.is_empty()).then(|| PersistedStream {
+                    id,
+                    inserted_at_ms: instant_to_unix_ms(inserted_at, now, now_ms),
+                    expires_at_ms: instant_to_unix_ms(expires_at, now, now_ms),
+                    lookup: StreamLookup {
+                        streams,
+                        provider: lookup.provider,
+                    },
+                })
+            })
+            .collect();
+        streams.sort_by_key(|entry| std::cmp::Reverse(entry.inserted_at_ms));
+        streams.truncate(STREAM_CACHE_CAPACITY);
+        PersistedCaches {
+            version: MATCH_CACHE_VERSION,
+            searches,
+            streams,
+        }
+    }
+
+    fn restore(&self, persisted: PersistedCaches) {
+        if persisted.version != MATCH_CACHE_VERSION {
+            return;
+        }
+        let now = Instant::now();
+        let now_ms = unix_ms_now();
+        let mut searches = persisted.searches;
+        searches.sort_by_key(|entry| entry.inserted_at_ms);
+        {
+            let mut cache = self.search_cache.lock().unwrap_or_else(|p| p.into_inner());
+            for entry in searches {
+                if entry.expires_at_ms <= now_ms || entry.key.is_empty() {
+                    continue;
+                }
+                let (Some(expires_at), Some(inserted_at)) = (
+                    unix_ms_to_instant(entry.expires_at_ms, now, now_ms),
+                    unix_ms_to_instant(entry.inserted_at_ms, now, now_ms),
+                ) else {
+                    continue;
+                };
+                cache.restore(entry.key, entry.candidates, expires_at, inserted_at);
+            }
+        }
+        let mut streams = persisted.streams;
+        streams.sort_by_key(|entry| entry.inserted_at_ms);
+        let mut cache = self.stream_cache.lock().unwrap_or_else(|p| p.into_inner());
+        for entry in streams {
+            if entry.expires_at_ms <= now_ms
+                || entry.id.is_empty()
+                || select_audio_stream(&entry.lookup.streams).is_none()
+            {
+                continue;
+            }
+            let (Some(expires_at), Some(inserted_at)) = (
+                unix_ms_to_instant(entry.expires_at_ms, now, now_ms),
+                unix_ms_to_instant(entry.inserted_at_ms, now, now_ms),
+            ) else {
+                continue;
+            };
+            cache.restore(entry.id, entry.lookup, expires_at, inserted_at);
+        }
     }
 
     pub async fn search(&self, query: &TrackQuery, min_score: f32) -> Result<Vec<Candidate>> {
@@ -190,10 +431,7 @@ impl Resolver {
         if candidates.is_empty() && !answered {
             return Err(anyhow!("no alternate search provider answered"));
         }
-        self.search_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(cache_key, candidates.clone());
+        self.remember_search(cache_key, candidates.clone());
         Ok(candidates)
     }
 
@@ -220,10 +458,7 @@ impl Resolver {
     async fn resolve_streams(&self, id: &str) -> Result<StreamLookup> {
         let resolved = self.resolve_youtube(id).await?;
         if select_audio_stream(&resolved.streams).is_some() {
-            self.stream_cache
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(id.to_string(), resolved.clone());
+            self.remember_streams(id, &resolved);
         }
         Ok(resolved)
     }
@@ -416,11 +651,25 @@ impl<T: Clone> TimedCache<T> {
     }
 
     fn insert(&mut self, key: String, value: T) {
+        self.insert_with_ttl(key, value, self.ttl);
+    }
+
+    fn insert_with_ttl(&mut self, key: String, value: T, ttl: Duration) {
+        let now = Instant::now();
+        self.restore(key, value, now + ttl, now);
+    }
+
+    /// Adds an entry with its own clock, evicting expired ones and, when
+    /// full, the oldest.
+    fn restore(&mut self, key: String, value: T, expires_at: Instant, inserted_at: Instant) {
         if self.capacity == 0 {
             return;
         }
         let now = Instant::now();
         self.entries.retain(|_, entry| entry.expires_at > now);
+        if expires_at <= now {
+            return;
+        }
         if !self.entries.contains_key(&key)
             && self.entries.len() >= self.capacity
             && let Some(oldest) = self
@@ -435,8 +684,8 @@ impl<T: Clone> TimedCache<T> {
             key,
             CacheEntry {
                 value,
-                expires_at: now + self.ttl,
-                inserted_at: now,
+                expires_at,
+                inserted_at,
             },
         );
     }
@@ -444,6 +693,130 @@ impl<T: Clone> TimedCache<T> {
     fn remove(&mut self, key: &str) {
         self.entries.remove(key);
     }
+
+    /// Live entries as (key, value, expires_at, inserted_at).
+    fn entries(&self) -> Vec<(String, T, Instant, Instant)> {
+        let now = Instant::now();
+        self.entries
+            .iter()
+            .filter(|(_, entry)| entry.expires_at > now)
+            .map(|(key, entry)| {
+                (
+                    key.clone(),
+                    entry.value.clone(),
+                    entry.expires_at,
+                    entry.inserted_at,
+                )
+            })
+            .collect()
+    }
+}
+
+/// `expire=<unix seconds>` from a stream URL's query, as googlevideo
+/// hosts carry it.
+fn url_expiry(url: &str) -> Option<SystemTime> {
+    let (_, query) = url.split_once('?')?;
+    let query = query.split('#').next().unwrap_or(query);
+    let seconds: u64 = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("expire="))?
+        .parse()
+        .ok()?;
+    UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
+}
+
+/// How long a resolved lookup stays trusted: until the chosen stream's
+/// own expiry less a margin, or the fixed TTL when the URL names none.
+/// Zero means it is not worth caching.
+fn stream_cache_ttl(lookup: &StreamLookup, now: SystemTime) -> Duration {
+    let Some(expiry) =
+        select_audio_stream(&lookup.streams).and_then(|stream| url_expiry(&stream.url))
+    else {
+        return STREAM_CACHE_TTL;
+    };
+    expiry
+        .duration_since(now)
+        .unwrap_or(Duration::ZERO)
+        .saturating_sub(STREAM_EXPIRY_MARGIN)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedCaches {
+    version: u32,
+    #[serde(default)]
+    searches: Vec<PersistedSearch>,
+    #[serde(default)]
+    streams: Vec<PersistedStream>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedSearch {
+    key: String,
+    inserted_at_ms: u64,
+    expires_at_ms: u64,
+    candidates: Vec<Candidate>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedStream {
+    id: String,
+    inserted_at_ms: u64,
+    expires_at_ms: u64,
+    lookup: StreamLookup,
+}
+
+fn unix_ms_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            since.as_millis().min(u128::from(u64::MAX)) as u64
+        })
+}
+
+fn instant_to_unix_ms(at: Instant, now: Instant, now_ms: u64) -> u64 {
+    if at >= now {
+        now_ms.saturating_add(at.duration_since(now).as_millis().min(u128::from(u64::MAX)) as u64)
+    } else {
+        now_ms.saturating_sub(now.duration_since(at).as_millis().min(u128::from(u64::MAX)) as u64)
+    }
+}
+
+fn unix_ms_to_instant(ms: u64, now: Instant, now_ms: u64) -> Option<Instant> {
+    if ms >= now_ms {
+        now.checked_add(Duration::from_millis(ms - now_ms))
+    } else {
+        now.checked_sub(Duration::from_millis(now_ms - ms))
+    }
+}
+
+fn load_persisted(path: &Path) -> Option<PersistedCaches> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            log::warn!("couldn't read the alternate match cache: {error}");
+            return None;
+        }
+    };
+    match serde_json::from_str::<PersistedCaches>(&text) {
+        Ok(persisted) => Some(persisted),
+        Err(error) => {
+            log::warn!("ignoring an unreadable alternate match cache: {error}");
+            None
+        }
+    }
+}
+
+/// Temp file beside the target, then rename, so a crash never leaves a
+/// half-written cache.
+fn write_atomic(path: &Path, caches: &PersistedCaches) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let text = serde_json::to_string(caches)?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, text)?;
+    std::fs::rename(&temporary, path)
 }
 
 #[cfg(test)]
@@ -459,6 +832,240 @@ mod tests {
         assert!(cache.entries.len() <= 2);
         std::thread::sleep(Duration::from_millis(3));
         assert_eq!(cache.get("c"), None);
+    }
+
+    #[test]
+    fn url_expiry_reads_the_googlevideo_query() {
+        let url =
+            "https://r1---sn-x.googlevideo.com/videoplayback?expire=1700000000&ei=abc&itag=140";
+        assert_eq!(
+            url_expiry(url),
+            Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000))
+        );
+        assert_eq!(url_expiry("https://cdn.example/a.m4a"), None);
+        assert_eq!(url_expiry("https://cdn.example/a.m4a?expire=soon"), None);
+        assert_eq!(url_expiry("https://cdn.example/a.m4a?expires=5"), None);
+    }
+
+    fn expiring_lookup(expire_in: Duration, now: SystemTime) -> StreamLookup {
+        let seconds = now
+            .checked_add(expire_in)
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        StreamLookup {
+            streams: vec![stream(
+                "m4a",
+                "audio/mp4",
+                "mp4a.40.2",
+                &format!("https://r1.googlevideo.com/videoplayback?expire={seconds}&itag=140"),
+                false,
+            )],
+            provider: ProviderKind::Piped,
+        }
+    }
+
+    #[test]
+    fn stream_url_expiry_sets_the_cache_ttl() {
+        // Whole seconds, as the URL carries them.
+        let now = UNIX_EPOCH
+            + Duration::from_secs(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            );
+        let hour = stream_cache_ttl(&expiring_lookup(Duration::from_secs(3_600), now), now);
+        assert_eq!(hour, Duration::from_secs(3_600) - STREAM_EXPIRY_MARGIN);
+        let soon = stream_cache_ttl(&expiring_lookup(Duration::from_secs(120), now), now);
+        assert_eq!(soon, Duration::ZERO);
+        let plain = StreamLookup {
+            streams: vec![stream(
+                "m4a",
+                "audio/mp4",
+                "mp4a.40.2",
+                "https://cdn.example/140.m4a",
+                false,
+            )],
+            provider: ProviderKind::YtDlpYoutube,
+        };
+        assert_eq!(stream_cache_ttl(&plain, now), STREAM_CACHE_TTL);
+
+        let resolver = Resolver::for_test(None, Duration::ZERO);
+        resolver.remember_streams("soon", &expiring_lookup(Duration::from_secs(120), now));
+        resolver.remember_streams("later", &expiring_lookup(Duration::from_secs(3_600), now));
+        let mut cache = resolver
+            .stream_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        assert!(
+            cache.get("soon").is_none(),
+            "a URL about to expire is not cached"
+        );
+        assert!(cache.get("later").is_some());
+    }
+
+    fn scratch_file(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("oxidify-match-cache-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("bin").join(MATCH_CACHE_FILE)
+    }
+
+    fn candidate(id: &str) -> Candidate {
+        Candidate {
+            id: id.into(),
+            title: "Song".into(),
+            uploader: "Artist - Topic".into(),
+            duration_ms: Some(1_000),
+        }
+    }
+
+    #[test]
+    fn caches_round_trip_through_the_match_file() {
+        let path = scratch_file("round-trip");
+        let now = SystemTime::now();
+        {
+            let resolver = Resolver::for_test(Some(path.clone()), Duration::ZERO);
+            resolver.remember_search("artist song|1000".into(), vec![candidate("dQw4w9WgXcQ")]);
+            let mut lookup = expiring_lookup(Duration::from_secs(3_600), now);
+            lookup.streams.push(stream(
+                "webm",
+                "audio/webm",
+                "opus",
+                "https://r1.googlevideo.com/videoplayback?itag=251",
+                false,
+            ));
+            resolver.remember_streams("dQw4w9WgXcQ", &lookup);
+            resolver
+                .stream_cache
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert_with_ttl("gone".into(), lookup.clone(), Duration::from_millis(40));
+            // Outside a runtime the save is immediate, so "gone" is in the
+            // file while still live; it must be dropped on the reload.
+            resolver.schedule_save();
+            std::thread::sleep(Duration::from_millis(60));
+        }
+        assert!(path.is_file(), "cache file was not written");
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "temporary file left behind"
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("itag=251"),
+            "an undecodable stream was persisted"
+        );
+
+        let reloaded = Resolver::for_test(Some(path.clone()), Duration::ZERO);
+        let searched = reloaded
+            .search_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get("artist song|1000");
+        assert_eq!(searched, Some(vec![candidate("dQw4w9WgXcQ")]));
+        let mut streams = reloaded
+            .stream_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let restored = streams.get("dQw4w9WgXcQ").expect("stream lookup restored");
+        assert_eq!(restored.provider, ProviderKind::Piped);
+        assert_eq!(restored.streams.len(), 1);
+        assert!(restored.streams[0].url.contains("expire="));
+        assert!(streams.get("gone").is_none(), "an expired entry came back");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn unreadable_or_foreign_match_files_are_ignored() {
+        let path = scratch_file("junk");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+        let resolver = Resolver::for_test(Some(path.clone()), Duration::ZERO);
+        assert!(
+            resolver
+                .search_cache
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entries()
+                .is_empty()
+        );
+
+        let future = unix_ms_now() + 60_000;
+        let foreign = PersistedCaches {
+            version: MATCH_CACHE_VERSION + 1,
+            searches: vec![PersistedSearch {
+                key: "k".into(),
+                inserted_at_ms: future - 1,
+                expires_at_ms: future,
+                candidates: vec![candidate("dQw4w9WgXcQ")],
+            }],
+            streams: Vec::new(),
+        };
+        write_atomic(&path, &foreign).unwrap();
+        let resolver = Resolver::for_test(Some(path.clone()), Duration::ZERO);
+        assert!(
+            resolver
+                .search_cache
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get("k")
+                .is_none(),
+            "a cache from another version was loaded"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn persisted_entries_are_bounded_newest_first() {
+        let path = scratch_file("bounded");
+        let resolver = Resolver::for_test(Some(path.clone()), Duration::ZERO);
+        let mut persisted = resolver.snapshot();
+        let now_ms = unix_ms_now();
+        for i in 0..(SEARCH_CACHE_CAPACITY as u64 + 50) {
+            persisted.searches.push(PersistedSearch {
+                key: format!("key-{i}"),
+                inserted_at_ms: now_ms.saturating_sub(10_000 - i),
+                expires_at_ms: now_ms + 60_000,
+                candidates: vec![candidate("dQw4w9WgXcQ")],
+            });
+        }
+        write_atomic(&path, &persisted).unwrap();
+        let reloaded = Resolver::for_test(Some(path.clone()), Duration::ZERO);
+        let snapshot = reloaded.snapshot();
+        assert_eq!(snapshot.searches.len(), SEARCH_CACHE_CAPACITY);
+        assert!(
+            snapshot.searches.iter().all(|entry| {
+                entry
+                    .key
+                    .strip_prefix("key-")
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .is_some_and(|n| n >= 50)
+            }),
+            "the oldest entries should have been dropped"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn saves_are_debounced_inside_the_runtime() {
+        let path = scratch_file("debounced");
+        let resolver = Resolver::for_test(Some(path.clone()), Duration::from_millis(30));
+        resolver.remember_search("one|0".into(), vec![candidate("dQw4w9WgXcQ")]);
+        resolver.remember_search("two|0".into(), vec![candidate("abcdefghijk")]);
+        assert!(!path.exists(), "written before the quiet period");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let persisted = load_persisted(&path).expect("cache written after the debounce");
+        let mut keys: Vec<&str> = persisted
+            .searches
+            .iter()
+            .map(|entry| entry.key.as_str())
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["one|0", "two|0"]);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
     }
 
     fn stream(format: &str, mime: &str, codec: &str, url: &str, video_only: bool) -> AudioStream {

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify as FormatNotify, mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::AlternateConfig;
@@ -38,6 +38,13 @@ enum Internal {
     TestLoad {
         tracks: Vec<LocalTrack>,
         play: bool,
+        /// Behave as a seeded play: the list is a single clicked track
+        /// and the rest of the context arrives with `TestHydrate`.
+        seeded: bool,
+    },
+    #[cfg(test)]
+    TestHydrate {
+        tracks: Vec<LocalTrack>,
     },
 }
 
@@ -93,6 +100,13 @@ struct Prefetched {
     video_id: String,
 }
 
+/// A background task and the track it resolves, so one can be aborted or
+/// kept on its own.
+struct Spawned {
+    uri: Option<String>,
+    handle: JoinHandle<()>,
+}
+
 pub struct AlternateHandle {
     tx: mpsc::UnboundedSender<Internal>,
     cancel: watch::Sender<bool>,
@@ -118,7 +132,25 @@ impl AlternateHandle {
 
     #[cfg(test)]
     fn test_load(&self, tracks: Vec<LocalTrack>, play: bool) {
-        let _ = self.tx.send(Internal::TestLoad { tracks, play });
+        let _ = self.tx.send(Internal::TestLoad {
+            tracks,
+            play,
+            seeded: false,
+        });
+    }
+
+    #[cfg(test)]
+    fn test_load_seeded(&self, tracks: Vec<LocalTrack>, play: bool) {
+        let _ = self.tx.send(Internal::TestLoad {
+            tracks,
+            play,
+            seeded: true,
+        });
+    }
+
+    #[cfg(test)]
+    fn test_hydrate(&self, tracks: Vec<LocalTrack>) {
+        let _ = self.tx.send(Internal::TestHydrate { tracks });
     }
 }
 
@@ -181,7 +213,10 @@ struct Engine {
     session: Session,
     matches: HashMap<String, CachedMatch>,
     play_generation: u64,
-    jobs: Vec<JoinHandle<()>>,
+    jobs: Vec<Spawned>,
+    /// A job started under an earlier generation that is still wanted:
+    /// the prefetch adopted by a Next press, as (its token, its uri).
+    adopted: Option<(u64, String)>,
     active_buffer: Option<SharedAudio>,
     active_hint: Option<FormatHint>,
     pending: Option<PendingPlay>,
@@ -189,6 +224,8 @@ struct Engine {
     active_duration: Option<DurationProbe>,
     overlap_uri: Option<String>,
     prefetch: Option<Prefetched>,
+    /// The next track's resolve while it runs, before its `Ready` lands.
+    prefetch_inflight: Option<String>,
     outgoing: Option<SharedAudio>,
     miss_skips: u32,
     seeded_play: bool,
@@ -222,12 +259,14 @@ async fn run(
         matches: HashMap::new(),
         play_generation: 0,
         jobs: Vec::new(),
+        adopted: None,
         active_buffer: None,
         active_hint: None,
         pending: None,
         active_duration: None,
         overlap_uri: None,
         prefetch: None,
+        prefetch_inflight: None,
         outgoing: None,
         miss_skips: 0,
         seeded_play: false,
@@ -241,6 +280,10 @@ async fn run(
     let mut cancel_rx = cancel_rx;
 
     loop {
+        // While a start is pending, the decoder's own signal that it has
+        // read the headers starts the output at once instead of on the
+        // next 50 ms tick.
+        let format_ready = engine.pending_format_ready();
         tokio::select! {
             _ = cancel_rx.changed() => {
                 if *cancel_rx.borrow() {
@@ -253,8 +296,15 @@ async fn run(
                     Some(Internal::Command(command)) => engine.handle_command(command),
                     Some(Internal::Job(job)) => engine.handle_job(job),
                     #[cfg(test)]
-                    Some(Internal::TestLoad { tracks, play }) => engine.test_load(tracks, play),
+                    Some(Internal::TestLoad { tracks, play, seeded }) => {
+                        engine.test_load(tracks, play, seeded)
+                    }
+                    #[cfg(test)]
+                    Some(Internal::TestHydrate { tracks }) => engine.test_hydrate(tracks),
                 }
+            }
+            _ = wait_format_ready(format_ready) => {
+                engine.try_start_pending();
             }
             _ = tick.tick() => {
                 engine.try_start_pending();
@@ -283,8 +333,48 @@ impl Engine {
 
     fn abort_jobs(&mut self) {
         for job in self.jobs.drain(..) {
-            job.abort();
+            job.handle.abort();
         }
+        self.adopted = None;
+        self.prefetch_inflight = None;
+    }
+
+    /// Aborts every job but the one resolving `keep`, whose token stays
+    /// accepted through `adopted` after the generation moves on.
+    fn abort_jobs_except(&mut self, keep: &str) {
+        let mut kept = Vec::new();
+        for job in self.jobs.drain(..) {
+            if job.uri.as_deref() == Some(keep) {
+                kept.push(job);
+            } else {
+                job.handle.abort();
+            }
+        }
+        self.jobs = kept;
+        self.adopted = Some((self.play_generation, keep.to_string()));
+    }
+
+    fn abort_job(&mut self, uri: &str) {
+        let mut kept = Vec::new();
+        for job in self.jobs.drain(..) {
+            if job.uri.as_deref() == Some(uri) {
+                job.handle.abort();
+            } else {
+                kept.push(job);
+            }
+        }
+        self.jobs = kept;
+    }
+
+    fn spawn_job(&mut self, uri: Option<String>, handle: JoinHandle<()>) {
+        self.jobs.push(Spawned { uri, handle });
+    }
+
+    fn pending_format_ready(&self) -> Option<Arc<FormatNotify>> {
+        self.pending
+            .as_ref()
+            .and_then(|pending| pending.decode.as_ref())
+            .map(DecodeHandle::format_ready)
     }
 
     fn bump(&mut self) -> u64 {
@@ -366,10 +456,12 @@ impl Engine {
             PlayerCommand::Shuffle(enabled) => {
                 self.session.set_shuffle(enabled);
                 self.emit();
+                self.sync_prefetch();
             }
             PlayerCommand::Repeat(mode) => {
                 self.session.set_repeat(mode);
                 self.emit();
+                self.sync_prefetch();
             }
             PlayerCommand::Activate => self.emit(),
             PlayerCommand::Stop => {
@@ -387,6 +479,7 @@ impl Engine {
                 }
                 self.session.add_to_queue(track);
                 self.emit();
+                self.sync_prefetch();
             }
             PlayerCommand::Load(spec) => self.start_hydrate(spec),
         }
@@ -404,14 +497,22 @@ impl Engine {
                 self.emit();
             }
             Advance::PlayCurrent => {
+                let current = self.session.current().map(|track| track.uri.clone());
                 if let Some(prefetch) = self.prefetch.take() {
-                    if self.session.current().map(|track| track.uri.as_str())
-                        == Some(prefetch.uri.as_str())
-                    {
+                    if current.as_deref() == Some(prefetch.uri.as_str()) {
                         self.play_ready(prefetch);
                         return;
                     }
                     prefetch.buffer.cancel();
+                }
+                if self.prefetch_inflight.is_some() && self.prefetch_inflight == current {
+                    // The track ended while its successor's resolve was
+                    // still running: wait for that one instead of
+                    // starting a second.
+                    self.prefetch_inflight = None;
+                    self.session.set_loading();
+                    self.emit();
+                    return;
                 }
                 self.start_resolve();
             }
@@ -444,7 +545,7 @@ impl Engine {
         let api = Arc::clone(&self.api);
         let tx = self.tx.clone();
         let mut cancel_rx = self.cancel_rx.clone();
-        self.jobs.push(tokio::spawn(async move {
+        let job = tokio::spawn(async move {
             let result = tokio::select! {
                 _ = wait_cancel(&mut cancel_rx) => return,
                 result = expand_load(&api, &spec) => result,
@@ -454,7 +555,8 @@ impl Engine {
                 spec,
                 result: result.map_err(|error| error.to_string()),
             }));
-        }));
+        });
+        self.spawn_job(None, job);
     }
 
     fn skip_keep_audio(&mut self, forward: bool) {
@@ -487,6 +589,15 @@ impl Engine {
         }
         if let Some(prefetch) = self.prefetch.take() {
             prefetch.buffer.cancel();
+        }
+        if self.prefetch_inflight.as_deref() == Some(track.uri.as_str()) {
+            // Its resolve is already running: keep it as the transition
+            // instead of aborting it and starting from the search again.
+            self.prefetch_inflight = None;
+            self.abort_jobs_except(&track.uri);
+            self.play_generation = self.play_generation.wrapping_add(1);
+            self.overlap_uri = Some(track.uri);
+            return;
         }
         self.bump_jobs();
         self.overlap_uri = Some(track.uri.clone());
@@ -522,7 +633,8 @@ impl Engine {
             .map(|entry| entry.video_id.clone());
         let tx = self.tx.clone();
         let mut cancel_rx = self.cancel_rx.clone();
-        self.jobs.push(tokio::spawn(async move {
+        let uri = track.uri.clone();
+        let job = tokio::spawn(async move {
             tokio::select! {
                 _ = wait_cancel(&mut cancel_rx) => {}
                 _ = resolve_and_stream(
@@ -535,7 +647,8 @@ impl Engine {
                     &tx,
                 ) => {}
             }
-        }));
+        });
+        self.spawn_job(Some(uri), job);
     }
 
     fn handle_job(&mut self, job: Job) {
@@ -551,44 +664,7 @@ impl Engine {
                 if token != self.play_generation {
                     return;
                 }
-                match result {
-                    Ok(tracks) => {
-                        self.miss_skips = 0;
-                        let offset = offset_index(&spec, &tracks);
-                        if self.seeded_play {
-                            let prev = self.session.current().map(|track| track.uri.clone());
-                            self.session.adopt_tracks(tracks, offset);
-                            let now = self.session.current().map(|track| track.uri.clone());
-                            if spec.play && now != prev {
-                                let _ = self.bump();
-                                self.start_resolve();
-                            } else {
-                                self.emit();
-                            }
-                        } else {
-                            self.session.load(
-                                tracks,
-                                offset,
-                                spec.play,
-                                spec.shuffle,
-                                spec.position_ms,
-                            );
-                            if spec.play {
-                                self.start_resolve();
-                            } else {
-                                self.output.stop();
-                                self.emit();
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        if self.seeded_play {
-                            return;
-                        }
-                        self.session.set_error(error);
-                        self.emit();
-                    }
-                }
+                self.on_hydrated(spec, result);
             }
             Job::Canned {
                 token,
@@ -618,6 +694,10 @@ impl Engine {
                 if !self.job_accepts(token, &uri) {
                     return;
                 }
+                self.note_job_done(&uri);
+                if self.drop_failed_prefetch(&uri, &error) {
+                    return;
+                }
                 if self.overlap_uri.as_deref() == Some(uri.as_str()) {
                     self.overlap_uri = None;
                     self.session.set_error(error);
@@ -637,6 +717,10 @@ impl Engine {
                 if !self.job_accepts(token, &uri) {
                     buffer.cancel();
                     return;
+                }
+                self.note_job_done(&uri);
+                if self.prefetch_inflight.as_deref() == Some(uri.as_str()) {
+                    self.prefetch_inflight = None;
                 }
                 let overlapping = self.overlap_uri.as_deref() == Some(uri.as_str());
                 let prefetching = !overlapping
@@ -671,6 +755,10 @@ impl Engine {
                 if !self.job_accepts(token, &uri) {
                     return;
                 }
+                self.note_job_done(&uri);
+                if self.drop_failed_prefetch(&uri, &error) {
+                    return;
+                }
                 if self.overlap_uri.as_deref() == Some(uri.as_str()) {
                     self.overlap_uri = None;
                     self.session.set_error(error);
@@ -682,8 +770,75 @@ impl Engine {
         }
     }
 
+    fn on_hydrated(&mut self, spec: LoadSpec, result: Result<Vec<LocalTrack>, String>) {
+        match result {
+            Ok(tracks) => {
+                self.miss_skips = 0;
+                let offset = offset_index(&spec, &tracks);
+                if self.seeded_play {
+                    let prev = self.session.current().map(|track| track.uri.clone());
+                    self.session.adopt_tracks(tracks, offset);
+                    let now = self.session.current().map(|track| track.uri.clone());
+                    if spec.play && now != prev {
+                        let _ = self.bump();
+                        self.start_resolve();
+                    } else {
+                        self.emit();
+                        // The clicked track may already be playing with
+                        // nothing after it; now that the rest of the
+                        // context is known, its successor can be fetched.
+                        self.sync_prefetch();
+                    }
+                } else {
+                    self.session
+                        .load(tracks, offset, spec.play, spec.shuffle, spec.position_ms);
+                    if spec.play {
+                        self.start_resolve();
+                    } else {
+                        self.output.stop();
+                        self.emit();
+                    }
+                }
+            }
+            Err(error) => {
+                if self.seeded_play {
+                    return;
+                }
+                self.session.set_error(error);
+                self.emit();
+            }
+        }
+    }
+
+    /// A job finished for `uri`; an adopted token is spent with it.
+    fn note_job_done(&mut self, uri: &str) {
+        if self.adopted.as_ref().is_some_and(|(_, kept)| kept == uri) {
+            self.adopted = None;
+        }
+    }
+
+    /// A failure that belongs to the next track's prefetch costs only the
+    /// prefetch; the track that is playing is not touched. It is resolved
+    /// again, and its miss handled, when it becomes current.
+    fn drop_failed_prefetch(&mut self, uri: &str, error: &str) -> bool {
+        if self.prefetch_inflight.as_deref() != Some(uri)
+            || self.overlap_uri.as_deref() == Some(uri)
+            || self.session.current().map(|track| track.uri.as_str()) == Some(uri)
+        {
+            return false;
+        }
+        log::info!("alternate prefetch dropped: {error}");
+        self.prefetch_inflight = None;
+        self.abort_job(uri);
+        true
+    }
+
     fn job_accepts(&self, token: u64, uri: &str) -> bool {
-        if token != self.play_generation {
+        let adopted = self
+            .adopted
+            .as_ref()
+            .is_some_and(|(kept_token, kept)| *kept_token == token && kept == uri);
+        if token != self.play_generation && !adopted {
             return false;
         }
         if self.session.current().map(|track| track.uri.as_str()) == Some(uri) {
@@ -720,16 +875,54 @@ impl Engine {
     }
 
     fn maybe_prefetch_next(&mut self) {
-        if !self.config.gapless || self.overlap_uri.is_some() || self.prefetch.is_some() {
+        if !self.config.gapless
+            || self.overlap_uri.is_some()
+            || self.prefetch.is_some()
+            || self.prefetch_inflight.is_some()
+        {
             return;
         }
         let Some(next) = self.session.peek_next().cloned() else {
             return;
         };
-        if self.session.current().map(|track| track.uri.as_str()) == Some(next.uri.as_str()) {
+        if next.is_episode
+            || self.session.current().map(|track| track.uri.as_str()) == Some(next.uri.as_str())
+        {
             return;
         }
+        self.prefetch_inflight = Some(next.uri.clone());
         self.start_resolve_track(next, false);
+    }
+
+    /// Points the prefetch at whatever follows the current track now:
+    /// after the queue, shuffle or repeat changed, or the context arrived.
+    /// A prefetch for a track that no longer comes next is dropped; one is
+    /// started when the current track is already going and none is held.
+    fn sync_prefetch(&mut self) {
+        if !self.config.gapless {
+            return;
+        }
+        let next = self.session.peek_next().map(|track| track.uri.clone());
+        if self
+            .prefetch
+            .as_ref()
+            .is_some_and(|ready| Some(ready.uri.as_str()) != next.as_deref())
+            && let Some(stale) = self.prefetch.take()
+        {
+            stale.buffer.cancel();
+        }
+        if let Some(inflight) = self.prefetch_inflight.clone()
+            && Some(inflight.as_str()) != next.as_deref()
+        {
+            self.abort_job(&inflight);
+            self.prefetch_inflight = None;
+        }
+        if self.pending.is_none()
+            && self.active_buffer.is_some()
+            && self.session.playback() != Playback::Loading
+        {
+            self.maybe_prefetch_next();
+        }
     }
 
     fn cache_match(&mut self, uri: String, video_id: String) {
@@ -923,15 +1116,40 @@ impl Engine {
     }
 
     #[cfg(test)]
-    fn test_load(&mut self, tracks: Vec<LocalTrack>, play: bool) {
+    fn test_load(&mut self, tracks: Vec<LocalTrack>, play: bool, seeded: bool) {
         self.bump();
         self.miss_skips = 0;
         self.session.load(tracks, 0, play, Some(false), 0);
+        self.seeded_play = seeded;
         if play {
             self.start_resolve();
         } else {
             self.emit();
         }
+    }
+
+    /// The rest of a seeded context arriving, as `Job::Hydrated` would
+    /// deliver it for the current generation.
+    #[cfg(test)]
+    fn test_hydrate(&mut self, tracks: Vec<LocalTrack>) {
+        let spec = LoadSpec {
+            context_uri: None,
+            uris: tracks.iter().map(|track| track.uri.clone()).collect(),
+            offset_uri: self.session.current().map(|track| track.uri.clone()),
+            offset_index: None,
+            position_ms: 0,
+            play: true,
+            shuffle: Some(false),
+            known_tracks: Vec::new(),
+        };
+        self.on_hydrated(spec, Ok(tracks));
+    }
+}
+
+async fn wait_format_ready(notify: Option<Arc<FormatNotify>>) {
+    match notify {
+        Some(notify) => notify.notified().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -2375,6 +2593,309 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(searches.load(Ordering::SeqCst), 1);
+        handle.shutdown().await;
+    }
+
+    /// Scripted WAV for every track; one title's search can be held back
+    /// or made to fail, to pin down what the prefetch does.
+    struct TitleLookup {
+        searches: Arc<AtomicUsize>,
+        body: ScriptedBody,
+        hold_title: Option<String>,
+        hold: Mutex<Option<oneshot::Receiver<()>>>,
+        fail_title: Option<String>,
+    }
+
+    impl TitleLookup {
+        fn new(searches: Arc<AtomicUsize>) -> Self {
+            Self {
+                searches,
+                body: ScriptedBody {
+                    chunks: vec![wav_bytes(8_000)],
+                    fail: None,
+                    content_length: None,
+                    fail_after_ms: 0,
+                },
+                hold_title: None,
+                hold: Mutex::new(None),
+                fail_title: None,
+            }
+        }
+    }
+
+    impl MediaLookup for TitleLookup {
+        fn search(
+            &self,
+            query: &TrackQuery,
+            _min_score: f32,
+        ) -> super::super::provider::LookupFuture<
+            Result<Vec<super::super::matching::Candidate>, String>,
+        > {
+            self.searches.fetch_add(1, Ordering::SeqCst);
+            let held = self.hold_title.as_deref() == Some(query.title.as_str());
+            let rx = if held {
+                self.hold.lock().unwrap_or_else(|p| p.into_inner()).take()
+            } else {
+                None
+            };
+            let fail = self.fail_title.as_deref() == Some(query.title.as_str());
+            Box::pin(async move {
+                if let Some(rx) = rx {
+                    let _ = rx.await;
+                }
+                if fail {
+                    return Err("search provider failed".into());
+                }
+                Ok(vec![super::super::matching::Candidate {
+                    id: "dQw4w9WgXcQ".into(),
+                    title: "Song".into(),
+                    uploader: "Artist - Topic".into(),
+                    duration_ms: Some(1_000),
+                }])
+            })
+        }
+
+        fn streams(
+            &self,
+            _id: &str,
+        ) -> super::super::provider::LookupFuture<
+            Result<super::super::provider::StreamLookup, String>,
+        > {
+            Box::pin(async {
+                Ok(super::super::provider::StreamLookup {
+                    streams: vec![super::super::streams::AudioStream {
+                        url: "https://example.invalid/a.wav".into(),
+                        mime: Some("audio/wav".into()),
+                        codec: Some("pcm".into()),
+                        format: Some("wav".into()),
+                        bitrate: Some(8_000),
+                        video_only: false,
+                        quality: None,
+                        http_headers: Vec::new(),
+                    }],
+                    provider: super::super::provider::ProviderKind::YtDlpYoutube,
+                })
+            })
+        }
+
+        fn scripted_body(&self) -> Option<ScriptedBody> {
+            Some(self.body.clone())
+        }
+    }
+
+    fn gapless_config() -> AlternateConfig {
+        let mut config = test_config();
+        config.gapless = true;
+        config
+    }
+
+    async fn wait_searches(searches: &Arc<AtomicUsize>, want: usize, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while tokio::time::Instant::now() < deadline && searches.load(Ordering::SeqCst) < want {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        searches.load(Ordering::SeqCst) == want
+    }
+
+    /// A clicked track plays alone until its context arrives; once it
+    /// does, the track after it is fetched without waiting for the next
+    /// start.
+    #[tokio::test]
+    async fn prefetch_follows_the_hydration_of_a_seeded_play() {
+        let searches = Arc::new(AtomicUsize::new(0));
+        let plays = Arc::new(AtomicUsize::new(0));
+        let handle = spawn_test(
+            gapless_config(),
+            RecordingOutput {
+                plays: Arc::clone(&plays),
+                resumes: Arc::new(AtomicUsize::new(0)),
+                pauses: Arc::new(AtomicUsize::new(0)),
+            },
+            Arc::new(TitleLookup::new(Arc::clone(&searches))),
+            Arc::new(|_| {}),
+        );
+        handle.test_load_seeded(vec![track("a")], true);
+        wait_plays(&plays, 1).await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(
+            searches.load(Ordering::SeqCst),
+            1,
+            "nothing to prefetch yet"
+        );
+        handle.test_hydrate(vec![track("a"), track("b")]);
+        assert!(
+            wait_searches(&searches, 2, Duration::from_secs(2)).await,
+            "the second track was not prefetched after hydration, searches={}",
+            searches.load(Ordering::SeqCst)
+        );
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(
+            plays.load(Ordering::SeqCst),
+            1,
+            "the prefetch must not play"
+        );
+        assert_eq!(searches.load(Ordering::SeqCst), 2);
+        handle.shutdown().await;
+    }
+
+    /// The next track's resolve failing is the prefetch's problem only.
+    #[tokio::test]
+    async fn prefetch_failure_leaves_the_playing_track_alone() {
+        let searches = Arc::new(AtomicUsize::new(0));
+        let plays = Arc::new(AtomicUsize::new(0));
+        let states = Arc::new(Mutex::new(Vec::new()));
+        let mut lookup = TitleLookup::new(Arc::clone(&searches));
+        lookup.fail_title = Some("b".into());
+        let handle = spawn_test(
+            gapless_config(),
+            RecordingOutput {
+                plays: Arc::clone(&plays),
+                resumes: Arc::new(AtomicUsize::new(0)),
+                pauses: Arc::new(AtomicUsize::new(0)),
+            },
+            Arc::new(lookup),
+            collect_states(Arc::clone(&states)),
+        );
+        handle.test_load(vec![track("a"), track("b")], true);
+        wait_plays(&plays, 1).await;
+        assert!(wait_searches(&searches, 2, Duration::from_secs(2)).await);
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let logged = states.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(
+            logged.iter().all(|(_, error)| error.is_none()),
+            "a prefetch failure reached the player: {logged:?}"
+        );
+        assert_eq!(
+            logged.last().map(|(playback, _)| *playback),
+            Some(Playback::Playing)
+        );
+        assert_eq!(plays.load(Ordering::SeqCst), 1);
+        handle.shutdown().await;
+    }
+
+    /// Next, while the next track's prefetch is mid-flight, waits for that
+    /// resolve instead of throwing it away and searching again.
+    #[tokio::test]
+    async fn next_adopts_the_in_flight_prefetch() {
+        let (hold_tx, hold_rx) = oneshot::channel();
+        let searches = Arc::new(AtomicUsize::new(0));
+        let plays = Arc::new(AtomicUsize::new(0));
+        let mut lookup = TitleLookup::new(Arc::clone(&searches));
+        lookup.hold_title = Some("b".into());
+        lookup.hold = Mutex::new(Some(hold_rx));
+        let handle = spawn_test(
+            gapless_config(),
+            RecordingOutput {
+                plays: Arc::clone(&plays),
+                resumes: Arc::new(AtomicUsize::new(0)),
+                pauses: Arc::new(AtomicUsize::new(0)),
+            },
+            Arc::new(lookup),
+            Arc::new(|_| {}),
+        );
+        handle.test_load(vec![track("a"), track("b")], true);
+        wait_plays(&plays, 1).await;
+        assert!(wait_searches(&searches, 2, Duration::from_secs(2)).await);
+        handle.command(PlayerCommand::Next).unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(
+            searches.load(Ordering::SeqCst),
+            2,
+            "Next restarted the resolve already in flight"
+        );
+        assert_eq!(plays.load(Ordering::SeqCst), 1);
+        let _ = hold_tx.send(());
+        wait_plays(&plays, 2).await;
+        assert_eq!(searches.load(Ordering::SeqCst), 2);
+        handle.shutdown().await;
+    }
+
+    /// A track that ends while its successor is still resolving waits
+    /// for that resolve rather than starting a duplicate.
+    #[tokio::test]
+    async fn end_of_track_waits_for_the_in_flight_prefetch() {
+        let (hold_tx, hold_rx) = oneshot::channel();
+        let searches = Arc::new(AtomicUsize::new(0));
+        let plays = Arc::new(AtomicUsize::new(0));
+        let status = Arc::new(Mutex::new(OutputStatus::Playing));
+        let mut lookup = TitleLookup::new(Arc::clone(&searches));
+        lookup.hold_title = Some("b".into());
+        lookup.hold = Mutex::new(Some(hold_rx));
+        let handle = spawn_inner(
+            gapless_config(),
+            Arc::new(ApiClient::new(
+                reqwest::Client::new(),
+                Arc::new(crate::api::NetActivity::default()),
+                20,
+                50,
+                crate::api::ApiSource::Shared,
+            )),
+            reqwest::Client::new(),
+            Arc::new(|_| {}),
+            Box::new(DeviceOutput {
+                status: Arc::clone(&status),
+                recover_fails: Arc::new(AtomicUsize::new(0)),
+                recovers: Arc::new(AtomicUsize::new(0)),
+                plays: Arc::clone(&plays),
+                pauses: Arc::new(AtomicUsize::new(0)),
+                pcm: Arc::new(Mutex::new(None)),
+                decode: Arc::new(Mutex::new(None)),
+            }),
+            Arc::new(lookup),
+        );
+        handle.test_load(vec![track("a"), track("b")], true);
+        wait_plays(&plays, 1).await;
+        assert!(wait_searches(&searches, 2, Duration::from_secs(2)).await);
+        *status.lock().unwrap_or_else(|p| p.into_inner()) = OutputStatus::Ended;
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert_eq!(
+            searches.load(Ordering::SeqCst),
+            2,
+            "the end of the track started a second resolve"
+        );
+        *status.lock().unwrap_or_else(|p| p.into_inner()) = OutputStatus::Playing;
+        let _ = hold_tx.send(());
+        wait_plays(&plays, 2).await;
+        assert_eq!(searches.load(Ordering::SeqCst), 2);
+        handle.shutdown().await;
+    }
+
+    /// Queueing a track in front of the prefetched one moves the prefetch
+    /// to the track that now comes next.
+    #[tokio::test]
+    async fn queue_change_retargets_the_prefetch() {
+        let searches = Arc::new(AtomicUsize::new(0));
+        let plays = Arc::new(AtomicUsize::new(0));
+        let handle = spawn_test(
+            gapless_config(),
+            RecordingOutput {
+                plays: Arc::clone(&plays),
+                resumes: Arc::new(AtomicUsize::new(0)),
+                pauses: Arc::new(AtomicUsize::new(0)),
+            },
+            Arc::new(TitleLookup::new(Arc::clone(&searches))),
+            Arc::new(|_| {}),
+        );
+        handle.test_load(vec![track("a"), track("b")], true);
+        wait_plays(&plays, 1).await;
+        assert!(wait_searches(&searches, 2, Duration::from_secs(2)).await);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        handle
+            .command(PlayerCommand::AddToQueue(track("c")))
+            .unwrap();
+        assert!(
+            wait_searches(&searches, 3, Duration::from_secs(2)).await,
+            "the queued track was not prefetched, searches={}",
+            searches.load(Ordering::SeqCst)
+        );
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        handle.command(PlayerCommand::Next).unwrap();
+        wait_plays(&plays, 2).await;
+        assert_eq!(
+            searches.load(Ordering::SeqCst),
+            3,
+            "Next to the queued track should use its prefetch"
+        );
         handle.shutdown().await;
     }
 
