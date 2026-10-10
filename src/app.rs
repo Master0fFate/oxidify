@@ -30,6 +30,12 @@ use crate::util;
 
 const REMOTE_POLL_ACTIVE: Duration = Duration::from_secs(4);
 const REMOTE_POLL_IDLE: Duration = Duration::from_secs(20);
+/// With the window minimised and nothing playing, the poll only keeps a
+/// hidden device list fresh.
+const REMOTE_POLL_HIDDEN: Duration = Duration::from_secs(30);
+/// How often the resume point is noted while music plays, so a crash or
+/// a hard shutdown resumes near where it was.
+const RESUME_NOTE_INTERVAL: Duration = Duration::from_secs(30);
 const REMOTE_FRESH: Duration = Duration::from_secs(45);
 const DEVICES_FRESH: Duration = Duration::from_secs(12);
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
@@ -692,6 +698,12 @@ impl App {
         self.now_playing().map(|now| now.uri)
     }
 
+    /// Whether `uri` is the context being played, or paused in, now.
+    pub fn is_current_context(&self, uri: &str) -> bool {
+        self.playing_context_uri()
+            .is_some_and(|playing| util::same_context(&playing, uri))
+    }
+
     /// Whether something plays, as the interface should show it: what it
     /// just asked for, before any state reports back.
     pub fn believed_playing(&self) -> bool {
@@ -1271,6 +1283,9 @@ impl App {
         self.resume_context = self.playing_context_uri();
         self.resume_track = Some(now.uri.clone());
         self.resume_position_ms = 0;
+        // A new song is a new resume point; it goes to disk shortly rather
+        // than waiting for something else to mark the session.
+        self.session_dirty = true;
         if now.local
             && !now.is_episode
             && let Some(id) = &now.id
@@ -1386,8 +1401,14 @@ impl App {
             self.check_for_updates(false);
         }
 
+        if self.believed_playing() && self.last_session_save.elapsed() >= RESUME_NOTE_INTERVAL {
+            self.session_dirty = true;
+        }
+
         if self.is_connected() && !self.offline {
+            let minimised = ctx.input(|input| input.viewport().minimized.unwrap_or(false));
             let interval = match self.target() {
+                _ if minimised && !self.believed_playing() => REMOTE_POLL_HIDDEN,
                 Target::Local if self.local.is_active() => REMOTE_POLL_IDLE,
                 _ => REMOTE_POLL_ACTIVE,
             };

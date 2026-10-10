@@ -264,7 +264,7 @@ fn made_for_you(app: &mut App, ui: &mut egui::Ui) {
                 &playlist.name,
                 &subtitle,
                 false,
-                true,
+                Some(&playlist.uri),
             );
             widgets::card_context_menu(app, &card, &playlist.uri, &playlist.name);
             if card.play {
@@ -324,7 +324,7 @@ fn recently_played(app: &mut App, ui: &mut egui::Ui) {
                 &track.name,
                 &track.artist_names(),
                 false,
-                true,
+                Some(&track.uri),
             );
             widgets::card_context_menu(app, &card, &track.uri, &track.name);
             if card.play {
@@ -374,7 +374,7 @@ fn top_artists(app: &mut App, ui: &mut egui::Ui) {
                 &artist.name,
                 "Artist",
                 true,
-                true,
+                Some(&artist.uri),
             );
             widgets::card_context_menu(app, &card, &artist.uri, &artist.name);
             if card.play {
@@ -441,7 +441,7 @@ fn your_podcasts(app: &mut App, ui: &mut egui::Ui, load: bool) {
                     &show.name,
                     &show.publisher,
                     false,
-                    false,
+                    None,
                 );
                 widgets::card_context_menu(app, &card, &show.uri, &show.name);
                 if card.clicked {

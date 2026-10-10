@@ -155,6 +155,21 @@ pub fn uri_kind(uri: &str) -> Option<&str> {
     parts.next()
 }
 
+/// Whether two context uris name the same thing. Spotify reports a
+/// personalised playlist with its owner embedded, `spotify:user:<id>:
+/// playlist:<id>`, while cards and rows hold the plain form.
+pub fn same_context(a: &str, b: &str) -> bool {
+    a == b || canonical_context(a) == canonical_context(b)
+}
+
+fn canonical_context(uri: &str) -> String {
+    let parts: Vec<&str> = uri.split(':').collect();
+    match parts.as_slice() {
+        ["spotify", "user", _, kind, id] if *kind == "playlist" => format!("spotify:{kind}:{id}"),
+        _ => uri.to_string(),
+    }
+}
+
 pub fn open_spotify_url(uri: &str) -> Option<String> {
     let kind = uri_kind(uri)?;
     let id = uri_id(uri)?;
@@ -303,6 +318,23 @@ pub fn strip_html(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A personalised playlist's context carries the owner; the card does
+    /// not, and they still mean the same playlist. A user's collection
+    /// keeps its owner, since that is what names it.
+    #[test]
+    fn contexts_match_with_or_without_the_owner() {
+        assert!(same_context(
+            "spotify:user:spotify:playlist:37i9",
+            "spotify:playlist:37i9"
+        ));
+        assert!(same_context("spotify:album:a", "spotify:album:a"));
+        assert!(!same_context("spotify:playlist:a", "spotify:playlist:b"));
+        assert!(!same_context(
+            "spotify:user:me:collection",
+            "spotify:user:you:collection"
+        ));
+    }
 
     #[test]
     fn durations() {

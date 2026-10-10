@@ -394,7 +394,7 @@ fn artist_card(app: &mut App, ui: &mut egui::Ui, artist: &Artist) {
         &artist.name,
         "Artist",
         true,
-        true,
+        Some(&artist.uri),
     );
     widgets::card_context_menu(app, &card, &artist.uri, &artist.name);
     if card.play {
@@ -445,7 +445,7 @@ fn album_card(app: &mut App, ui: &mut egui::Ui, album: &crate::api::models::Albu
         &album.name,
         subtitle.trim_start_matches(" • "),
         false,
-        true,
+        Some(&album.uri),
     );
     widgets::card_context_menu(app, &card, &album.uri, &album.name);
     if card.play {
@@ -491,7 +491,7 @@ fn playlist_card(app: &mut App, ui: &mut egui::Ui, playlist: &crate::api::models
         &playlist.name,
         &format!("By {}", playlist.owner_name()),
         false,
-        true,
+        Some(&playlist.uri),
     );
     widgets::card_context_menu(app, &card, &playlist.uri, &playlist.name);
     if card.play {
@@ -541,7 +541,7 @@ fn show_card(app: &mut App, ui: &mut egui::Ui, show: &crate::api::models::Show) 
         &show.name,
         &show.publisher,
         false,
-        false,
+        None,
     );
     widgets::card_context_menu(app, &card, &show.uri, &show.name);
     if card.clicked {

@@ -624,13 +624,29 @@ fn view_indices(items: &[TableItem], needle: &str, sort: Option<TableSort>) -> V
         .map(|(index, _)| index)
         .collect();
     if let Some(sort) = sort {
+        // An album's name and, to tell two of the same name apart, its id
+        // or uri; same-named albums stay separate groups.
         let album_of = |item: &PlayableItem| match item {
             PlayableItem::Track(track) => track
                 .album
                 .as_ref()
-                .map(|album| album.name.to_lowercase())
+                .map(|album| {
+                    let key = if album.id.is_empty() {
+                        album.uri.clone()
+                    } else {
+                        album.id.clone()
+                    };
+                    (album.name.to_lowercase(), key)
+                })
                 .unwrap_or_default(),
-            PlayableItem::Episode(_) => String::new(),
+            PlayableItem::Episode(_) => (String::new(), String::new()),
+        };
+        let place_of = |item: &PlayableItem| match item {
+            PlayableItem::Track(track) => (
+                track.disc_number.unwrap_or(0),
+                track.track_number.unwrap_or(0),
+            ),
+            PlayableItem::Episode(_) => (0, 0),
         };
         let duration_of = |item: &PlayableItem| match item {
             PlayableItem::Track(track) => track.duration_ms,
@@ -644,7 +660,15 @@ fn view_indices(items: &[TableItem], needle: &str, sort: Option<TableSort>) -> V
                     .name()
                     .to_lowercase()
                     .cmp(&item_b.name().to_lowercase()),
-                SortColumn::Album => album_of(item_a).cmp(&album_of(item_b)),
+                SortColumn::Album => {
+                    let albums = album_of(item_a).cmp(&album_of(item_b));
+                    if albums == std::cmp::Ordering::Equal {
+                        // Within an album the songs keep their disc and
+                        // track order, whichever way the albums run.
+                        return place_of(item_a).cmp(&place_of(item_b));
+                    }
+                    albums
+                }
                 SortColumn::Added => added_a.cmp(added_b),
                 SortColumn::Index => a.cmp(b),
                 SortColumn::AddedBy => adder_a
@@ -1279,6 +1303,60 @@ fn palette_of(app: &App) -> Palette {
 mod tests {
     use super::*;
     use crate::api::models::{Album, ArtistRef, Track};
+
+    /// Sorting by album groups each album's songs in disc and track
+    /// order, whichever way the albums run, and keeps two albums of the
+    /// same name apart.
+    #[test]
+    fn album_sort_keeps_each_album_in_track_order() {
+        let song = |title: &str, album_id: &str, album: &str, disc: u32, number: u32| {
+            (
+                PlayableItem::Track(Track {
+                    name: title.into(),
+                    uri: format!("spotify:track:{title}"),
+                    album: Some(Album {
+                        id: album_id.into(),
+                        name: album.into(),
+                        ..Album::default()
+                    }),
+                    disc_number: Some(disc),
+                    track_number: Some(number),
+                    ..Track::default()
+                }),
+                None,
+                None,
+            )
+        };
+        let items = vec![
+            song("b3", "b", "Blue", 1, 3),
+            song("a2", "a", "Amber", 1, 2),
+            song("b1", "b", "Blue", 1, 1),
+            song("a1", "a", "Amber", 1, 1),
+            song("b2", "b", "Blue", 2, 1),
+            song("a1-again", "a2", "Amber", 1, 1),
+        ];
+        let names = |sort: TableSort| -> Vec<&str> {
+            view_indices(&items, "", Some(sort))
+                .into_iter()
+                .map(|index| items[index].0.name())
+                .collect()
+        };
+        assert_eq!(
+            names(TableSort {
+                column: SortColumn::Album,
+                ascending: true
+            }),
+            vec!["a1", "a2", "a1-again", "b1", "b3", "b2"]
+        );
+        assert_eq!(
+            names(TableSort {
+                column: SortColumn::Album,
+                ascending: false
+            }),
+            vec!["b1", "b3", "b2", "a1-again", "a1", "a2"],
+            "descending reverses the albums, not the songs inside each"
+        );
+    }
 
     fn make_test_tracks() -> Vec<TableItem> {
         let titles = [

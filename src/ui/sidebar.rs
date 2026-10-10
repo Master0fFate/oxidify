@@ -818,7 +818,13 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                             CornerRadius::same(if entry.round { 22 } else { 6 }),
                             egui::Color32::from_black_alpha(120),
                         );
-                        Icon::PlayFilled
+                        // The playing playlist offers pause, not a restart.
+                        let glyph = if playing {
+                            Icon::PauseFilled
+                        } else {
+                            Icon::PlayFilled
+                        };
+                        glyph
                             .image(
                                 if play_hover {
                                     palette.accent
@@ -830,8 +836,7 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                             .paint_at(
                                 ui,
                                 Rect::from_center_size(
-                                    cover_rect.center()
-                                        + theme::play_glyph_offset(Icon::PlayFilled, 18.0),
+                                    cover_rect.center() + theme::play_glyph_offset(glyph, 18.0),
                                     Vec2::splat(18.0),
                                 ),
                             );
@@ -839,7 +844,10 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                             play.clone().on_hover_cursor(egui::CursorIcon::PointingHand);
                         }
                     }
-                    if play_response.is_some_and(|play| play.clicked()) {
+                    let play_clicked = play_response.is_some_and(|play| play.clicked());
+                    if play_clicked && playing {
+                        app.actions.push(Action::TogglePlay);
+                    } else if play_clicked {
                         let uri = if entry.liked {
                             app.user
                                 .as_ref()

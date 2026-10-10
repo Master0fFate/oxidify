@@ -1358,6 +1358,9 @@ pub struct CardResponse {
 }
 
 /// A cover-and-title card for grids and shelves.
+/// A cover card. `context` is what its play button plays; a card whose
+/// context is playing shows pause instead, and toggles playback rather
+/// than starting the context over.
 pub fn card(
     ui: &mut Ui,
     app: &mut App,
@@ -1365,9 +1368,12 @@ pub fn card(
     title: &str,
     subtitle: &str,
     round: bool,
-    playable: bool,
+    context: Option<&str>,
 ) -> CardResponse {
     let palette = app.palette;
+    let playable = context.is_some();
+    let current = context.is_some_and(|uri| app.is_current_context(uri));
+    let playing = current && app.believed_playing();
     const PAD: f32 = 12.0;
     const TITLE_GAP: f32 = 10.0;
     const SUBTITLE_GAP: f32 = 2.0;
@@ -1444,7 +1450,8 @@ pub fn card(
         ui.painter()
             .galley(subtitle_pos, subtitle_galley, palette.secondary);
 
-        if playable && hovered {
+        // The playing context keeps its button up, as Spotify's cards do.
+        if playable && (hovered || playing) {
             let button_rect = Rect::from_center_size(
                 pos2(image_rect.right() - 26.0, image_rect.bottom() - 26.0),
                 Vec2::splat(44.0),
@@ -1454,21 +1461,32 @@ pub fn card(
                     .max_rect(button_rect)
                     .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
             );
+            let (icon, tooltip) = if playing {
+                (Icon::PauseFilled, "Pause")
+            } else {
+                (Icon::PlayFilled, "Play")
+            };
             play = theme::circle_button(
                 &mut child,
-                Icon::PlayFilled,
+                icon,
                 44.0,
                 palette.accent,
                 palette.accent_hover,
                 palette.on_accent,
-                "Play",
+                tooltip,
             )
             .clicked();
         }
     }
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let clicked = response.clicked() && !play;
+    if play && current {
+        // Already on this context: pause it, or carry on with it.
+        app.actions.push(Action::TogglePlay);
+        play = false;
+    }
     CardResponse {
-        clicked: response.clicked() && !play,
+        clicked,
         play,
         response,
     }

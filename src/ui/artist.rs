@@ -189,7 +189,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
                                 &album.name,
                                 subtitle.trim_start_matches(" • "),
                                 false,
-                                true,
+                                Some(&album.uri),
                             );
                             if card.play {
                                 app.actions.push(Action::PlayContext {
@@ -236,7 +236,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
                             &artist.name,
                             "Artist",
                             true,
-                            true,
+                            Some(&artist.uri),
                         );
                         if card.play {
                             app.actions.push(Action::PlayContext {

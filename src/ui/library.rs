@@ -54,7 +54,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, page: Page) {
                         &album.name,
                         &subtitle,
                         false,
-                        true,
+                        Some(&album.uri),
                     );
                     if card.play {
                         app.actions.push(Action::PlayContext {
@@ -100,7 +100,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, page: Page) {
                         &artist.name,
                         "Artist",
                         true,
-                        true,
+                        Some(&artist.uri),
                     );
                     if card.play {
                         app.actions.push(Action::PlayContext {
@@ -152,7 +152,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, page: Page) {
                         &show.name,
                         &show.publisher,
                         false,
-                        false,
+                        None,
                     );
                     if card.clicked {
                         app.actions.push(Action::Open(Page::Show(show.id.clone())));

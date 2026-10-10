@@ -304,13 +304,26 @@ impl Sink for RodioSink {
             * u64::from(NUM_CHANNELS as u32)
             * REFILL.as_millis() as u64
             / 1_000;
+        let mut failed = false;
         while output.sink.len() > QUEUE_LIMIT {
             if output.failed() {
-                let message = "The audio output stopped working".to_string();
-                (self.on_error)(message.clone());
-                return Err(SinkError::OnWrite(message));
+                failed = true;
+                break;
             }
             output.queued.wait_for_room(refill);
+        }
+        if failed {
+            // Headphones connected or the default output changed: the old
+            // stream is gone, so open the output to use now and carry on.
+            // Only an output that will not open stops the music.
+            log::warn!("the audio output stopped working; reopening it");
+            self.output = None;
+            self.applied_volume = -1.0;
+            self.ensure_open()?;
+            self.apply_volume();
+            if let Some(output) = &self.output {
+                output.sink.play();
+            }
         }
         Ok(())
     }
