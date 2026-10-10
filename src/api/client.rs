@@ -649,7 +649,18 @@ impl ApiClient {
     }
 
     pub async fn playlist(&self, id: &str) -> Result<Playlist> {
-        self.get(&format!("/playlists/{id}"), &[]).await
+        // Without `fields` the answer carries the first hundred songs too,
+        // which the items pages fetch anyway: a long download for nothing.
+        self.get(
+            &format!("/playlists/{id}"),
+            &[(
+                "fields",
+                "id,name,uri,description,images,owner,public,collaborative,snapshot_id,\
+                 external_urls,tracks.total,items.total"
+                    .to_string(),
+            )],
+        )
+        .await
     }
 
     pub async fn playlist_items(

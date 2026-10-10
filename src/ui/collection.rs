@@ -272,7 +272,7 @@ pub fn actions_row(
 }
 
 /// One table row's data: the item, when it was added, who added it.
-pub type TableItem = (PlayableItem, Option<String>, Option<String>);
+pub use crate::model::TableItem;
 
 /// A track table with virtualised rows and paging.
 pub struct Table<'a> {
@@ -769,14 +769,44 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
     };
     let palette = app.palette;
     let user_id = app.user_id().unwrap_or("").to_string();
-    match &page.playlist {
-        Loadable::Loaded(playlist) => {
-            let items = items_of(
-                &page.items,
-                playlist.owner.id.as_deref(),
-                playlist.owner_name(),
-                &app.user_names,
-            );
+    // Rows show as soon as any are here, under what the library already
+    // knows of the playlist, while its own details are still on the way.
+    let provisional = match &page.playlist {
+        Loadable::Loading | Loadable::NotLoaded if page.items.loaded_once => {
+            Some(provisional_playlist(app, id))
+        }
+        _ => None,
+    };
+    let playlist = match (&page.playlist, &provisional) {
+        (Loadable::Loaded(playlist), _) => Some(playlist),
+        (_, Some(playlist)) => Some(playlist),
+        _ => None,
+    };
+    match playlist {
+        Some(playlist) => {
+            let names_revision = app.user_names_revision;
+            let items = match &page.table_rows {
+                Some(rows)
+                    if rows.items_revision == page.items.revision
+                        && rows.names_revision == names_revision =>
+                {
+                    std::sync::Arc::clone(&rows.rows)
+                }
+                _ => {
+                    let rows = std::sync::Arc::new(items_of(
+                        &page.items,
+                        playlist.owner.id.as_deref(),
+                        playlist.owner_name(),
+                        &app.user_names,
+                    ));
+                    page.table_rows = Some(crate::model::TableRows {
+                        items_revision: page.items.revision,
+                        names_revision,
+                        rows: std::sync::Arc::clone(&rows),
+                    });
+                    rows
+                }
+            };
             let count = playlist.track_total().max(items.len() as u32);
             // Spotify's collaborative flag covers secret collaborations; a
             // playlist made together today is recognised by who added songs.
@@ -897,17 +927,35 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 },
             );
         }
-        Loadable::Loading | Loadable::NotLoaded => {
-            ui.add_space(40.0);
-            widgets::loading_row(ui, &palette);
-        }
-        Loadable::Failed(error) => {
-            let error = error.clone();
-            ui.add_space(40.0);
-            widgets::error_row(ui, app, &error, Some(Page::Playlist(id.to_string())));
-        }
+        None => match &page.playlist {
+            Loadable::Failed(error) => {
+                let error = error.clone();
+                ui.add_space(40.0);
+                widgets::error_row(ui, app, &error, Some(Page::Playlist(id.to_string())));
+            }
+            _ => {
+                ui.add_space(40.0);
+                widgets::loading_row(ui, &palette);
+            }
+        },
     }
     app.playlist_pages.insert(id.to_string(), page);
+}
+
+/// What the library knows of a playlist before its own page answers:
+/// enough for a header over the rows.
+fn provisional_playlist(app: &App, id: &str) -> Playlist {
+    app.library
+        .playlists
+        .get()
+        .and_then(|playlists| playlists.iter().find(|playlist| playlist.id == id))
+        .cloned()
+        .unwrap_or_else(|| Playlist {
+            id: id.to_string(),
+            uri: format!("spotify:playlist:{id}"),
+            name: "Playlist".into(),
+            ..Default::default()
+        })
 }
 
 pub fn album(app: &mut App, ui: &mut egui::Ui, id: &str) {
@@ -1079,19 +1127,32 @@ fn album_hero(
 
 pub fn liked(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let items: Vec<TableItem> = app
-        .library
-        .liked
-        .items
-        .iter()
-        .map(|saved| {
-            (
-                PlayableItem::Track(saved.track.clone()),
-                saved.added_at.clone(),
-                None,
-            )
-        })
-        .collect();
+    let revision = app.library.liked.revision;
+    let items = match &app.liked_rows {
+        Some(rows) if rows.items_revision == revision => std::sync::Arc::clone(&rows.rows),
+        _ => {
+            let rows: std::sync::Arc<Vec<TableItem>> = std::sync::Arc::new(
+                app.library
+                    .liked
+                    .items
+                    .iter()
+                    .map(|saved| {
+                        (
+                            PlayableItem::Track(saved.track.clone()),
+                            saved.added_at.clone(),
+                            None,
+                        )
+                    })
+                    .collect(),
+            );
+            app.liked_rows = Some(crate::model::TableRows {
+                items_revision: revision,
+                names_revision: 0,
+                rows: std::sync::Arc::clone(&rows),
+            });
+            rows
+        }
+    };
     let total = app.library.liked.total.unwrap_or(items.len() as u32);
     let user = app
         .user

@@ -515,7 +515,7 @@ impl PlaylistItem {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct SavedTrack {
     #[serde(default)]
     pub added_at: Option<String>,

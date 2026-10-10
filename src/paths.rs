@@ -202,6 +202,12 @@ impl AppDirs {
         self.playlist_cache_dir().join(account_id)
     }
 
+    /// The library as last seen, per account: the playlist list and Liked
+    /// Songs, so they show the moment the app opens.
+    pub fn account_library_cache_dir(&self, account_id: &str) -> PathBuf {
+        self.cache.join("library").join(account_id)
+    }
+
     pub fn ensure(&self) -> std::io::Result<()> {
         for dir in [&self.config, &self.state, &self.cache] {
             std::fs::create_dir_all(dir)?;

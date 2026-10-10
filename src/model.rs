@@ -138,16 +138,38 @@ pub(crate) fn next_view_revision() -> u64 {
     REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// An offset-paginated list that loads on demand as the user scrolls.
+/// How many pages of one list are asked for at once. Spotify answers each
+/// page in its own round trip, so a long playlist fetched one page at a
+/// time took one round trip per fifty songs; a few in flight together
+/// fill it in a fraction of the time without flooding the rate limit.
+pub const PAGE_WINDOW: usize = 4;
+
+/// How many items a list fetches on its own, ahead of the scroll. Past
+/// this the rest comes as the listener scrolls, so a library of many
+/// thousands of liked songs does not cost hundreds of requests on open.
+pub const EAGER_ITEMS: u32 = 1_500;
+
+/// An offset-paginated list. Pages are fetched several at a time and may
+/// land in any order: a page that arrives ahead of the contiguous end
+/// waits in `parked` until the gap before it is filled, so `items` is
+/// always a prefix of the list and rows never show with holes.
 #[derive(Clone, Debug)]
 pub struct PagedList<T> {
     pub items: Vec<T>,
     pub total: Option<u32>,
+    /// The first offset not yet held or parked, if any is known to exist.
     pub next_offset: Option<u32>,
+    /// Something is on its way.
     pub loading: bool,
     pub error: Option<String>,
     pub loaded_once: bool,
     pub revision: u64,
+    /// Offsets requested and not yet answered.
+    pub pending: std::collections::BTreeSet<u32>,
+    /// Pages that arrived before the ones ahead of them.
+    parked: std::collections::BTreeMap<u32, Vec<T>>,
+    /// The page size Spotify answered with, once known.
+    page_size: u32,
 }
 
 impl<T> Default for PagedList<T> {
@@ -160,6 +182,9 @@ impl<T> Default for PagedList<T> {
             error: None,
             loaded_once: false,
             revision: next_view_revision(),
+            pending: std::collections::BTreeSet::new(),
+            parked: std::collections::BTreeMap::new(),
+            page_size: 50,
         }
     }
 }
@@ -169,29 +194,101 @@ impl<T> PagedList<T> {
         *self = Self::default();
     }
 
+    /// Whether a page can be asked for now: nothing in flight and more
+    /// known to exist. The scroll path asks one page at a time this way;
+    /// [`Self::fill_ahead`] asks for several.
     pub fn can_load_more(&self) -> bool {
         !self.loading && self.next_offset.is_some()
     }
 
     pub fn is_complete(&self) -> bool {
-        self.loaded_once && self.next_offset.is_none()
+        self.loaded_once && self.next_offset.is_none() && self.pending.is_empty()
+    }
+
+    /// Marks one offset as requested.
+    pub fn begin(&mut self, offset: u32) {
+        self.pending.insert(offset);
+        self.loading = true;
+    }
+
+    /// The offsets to ask for now so that up to `window` pages are in
+    /// flight, marked as requested. Nothing past `limit` items is asked for
+    /// here; the scroll path fetches the rest. An empty answer means
+    /// nothing more is wanted right now.
+    pub fn fill_ahead(&mut self, window: usize, limit: u32) -> Vec<u32> {
+        let mut offsets = Vec::new();
+        let Some(total) = self.total else {
+            // Nothing known yet: the first page tells the size.
+            if self.pending.is_empty() && self.next_offset == Some(0) {
+                self.begin(0);
+                offsets.push(0);
+            }
+            return offsets;
+        };
+        let page = self.page_size.max(1);
+        let mut offset = self.items.len() as u32;
+        while self.pending.len() + offsets.len() < window && offset < total && offset < limit {
+            if !self.pending.contains(&offset) && !self.parked.contains_key(&offset) {
+                offsets.push(offset);
+            }
+            offset += page;
+        }
+        for offset in &offsets {
+            self.begin(*offset);
+        }
+        offsets
     }
 
     pub fn absorb(&mut self, offset: u32, page: Page_<T>) {
-        if offset == 0 {
-            self.items.clear();
+        self.pending.remove(&offset);
+        if page.limit > 0 {
+            self.page_size = page.limit;
         }
-        if (offset as usize) < self.items.len() {
-            self.items.truncate(offset as usize);
-        }
-        let next_offset = page.next_offset();
-        self.items.extend(page.items);
         self.total = Some(page.total);
-        self.next_offset = next_offset;
-        self.loading = false;
-        self.error = None;
         self.loaded_once = true;
+        self.error = None;
+        let held = self.items.len() as u32;
+        if offset == 0 {
+            // A fresh start: whatever was parked belongs to the old list
+            // only if it was fetched under the same total; keep it, since
+            // the offsets still mean the same rows.
+            self.items.clear();
+            self.items.extend(page.items);
+        } else if offset < held {
+            self.items.truncate(offset as usize);
+            self.items.extend(page.items);
+        } else if offset == held {
+            self.items.extend(page.items);
+        } else {
+            self.parked.insert(offset, page.items);
+        }
+        // Pages that waited for this one follow it in.
+        while let Some(items) = self.parked.remove(&(self.items.len() as u32)) {
+            self.items.extend(items);
+        }
+        self.parked
+            .retain(|parked, _| *parked > self.items.len() as u32);
+        self.settle();
         self.revision = next_view_revision();
+    }
+
+    /// Works out what is still to come from what is held, parked and in
+    /// flight.
+    fn settle(&mut self) {
+        let held = self.items.len() as u32;
+        let page = self.page_size.max(1);
+        self.next_offset = match self.total {
+            Some(total) if held < total => {
+                let mut offset = held;
+                while self.pending.contains(&offset) || self.parked.contains_key(&offset) {
+                    offset += page;
+                }
+                (offset < total).then_some(offset)
+            }
+            Some(_) => None,
+            None => Some(held),
+        };
+        self.loading = !self.pending.is_empty();
     }
 
     pub fn retain<F>(&mut self, f: F)
@@ -215,13 +312,25 @@ impl<T> PagedList<T> {
         self.total = Some(items.len() as u32);
         self.items = items;
         self.next_offset = None;
+        self.pending.clear();
+        self.parked.clear();
         self.loading = false;
         self.loaded_once = true;
         self.error = None;
         self.revision = next_view_revision();
     }
 
+    /// One page failed: the others in flight keep going, and the failed
+    /// offset can be asked for again.
+    pub fn fail_page(&mut self, offset: u32, error: String) {
+        self.pending.remove(&offset);
+        self.error = Some(error);
+        self.loaded_once = true;
+        self.settle();
+    }
+
     pub fn fail(&mut self, error: String) {
+        self.pending.clear();
         self.loading = false;
         self.error = Some(error);
         self.loaded_once = true;
@@ -264,11 +373,28 @@ impl<T> CursorList<T> {
     }
 }
 
+/// The rows a table draws, built once per change of the list behind them
+/// rather than on every frame.
+pub type TableItem = (PlayableItem, Option<String>, Option<String>);
+
+#[derive(Clone)]
+pub struct TableRows {
+    pub items_revision: u64,
+    pub names_revision: u64,
+    pub rows: std::sync::Arc<Vec<TableItem>>,
+}
+
 #[derive(Default)]
 pub struct Library {
     pub playlists: Loadable<Vec<Playlist>>,
-    pub playlists_next: Option<u32>,
+    /// The pages of the playlist list as they come in; `playlists` is
+    /// published from it.
+    pub playlist_fetch: PagedList<Playlist>,
+    /// `playlists` came from disk and the live list is still on its way.
+    pub playlists_cached: bool,
     pub liked: PagedList<SavedTrack>,
+    /// `liked` came from disk and the live first page has yet to confirm it.
+    pub liked_cached: bool,
     pub albums: PagedList<SavedAlbum>,
     pub artists: CursorList<Artist>,
     pub shows: PagedList<SavedShow>,
@@ -398,6 +524,14 @@ pub struct PlaylistPage {
     pub cache_complete: bool,
     /// Items read from disk, waiting for the live snapshot to confirm.
     pub pending_cache: Option<(String, Vec<PlaylistItem>)>,
+    /// The rows on show came from disk under `cache_snapshot` and the live
+    /// playlist has yet to say whether they are still true.
+    pub cache_provisional: bool,
+    pub cache_snapshot: Option<String>,
+    /// Live pages that landed while the disk rows were provisional, kept
+    /// in case the snapshot turns out to have moved on.
+    pub held_live: Vec<(u32, Page_<PlaylistItem>)>,
+    pub table_rows: Option<TableRows>,
 }
 
 #[derive(Default)]
@@ -715,4 +849,91 @@ pub enum Action {
     /// Roll the main window up to its title bar, or down again.
     ToggleWinampShade,
     Quit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(offset: u32, total: u32, items: Vec<u32>) -> Page_<u32> {
+        let limit = 50;
+        let next = (offset + limit < total).then(|| "next".to_string());
+        Page_ {
+            items,
+            total,
+            limit,
+            offset,
+            next,
+        }
+    }
+
+    /// Several pages go out together; a page that lands before the one
+    /// ahead of it waits, so the rows on show are always a prefix of the
+    /// list, and the fill stops at the eager bound until a scroll asks on.
+    #[test]
+    fn pages_in_flight_together_land_in_order() {
+        let mut list: PagedList<u32> = PagedList::default();
+        assert_eq!(list.fill_ahead(4, EAGER_ITEMS), vec![0]);
+        assert!(list.loading);
+        assert_eq!(
+            list.fill_ahead(4, EAGER_ITEMS),
+            Vec::<u32>::new(),
+            "the first page tells the size"
+        );
+        list.absorb(0, page(0, 230, (0..50).collect()));
+        assert_eq!(list.fill_ahead(4, EAGER_ITEMS), vec![50, 100, 150, 200]);
+        assert_eq!(list.pending.len(), 4);
+        // The third page arrives first and waits out of sight.
+        list.absorb(150, page(150, 230, (150..200).collect()));
+        assert_eq!(list.items.len(), 50);
+        assert!(list.loading);
+        list.absorb(50, page(50, 230, (50..100).collect()));
+        assert_eq!(list.items.len(), 100);
+        list.absorb(100, page(100, 230, (100..150).collect()));
+        assert_eq!(
+            list.items.len(),
+            200,
+            "the parked page followed its predecessor in"
+        );
+        assert_eq!(list.next_offset, None, "the last page is still in flight");
+        assert!(!list.is_complete());
+        list.absorb(200, page(200, 230, (200..230).collect()));
+        assert!(list.is_complete());
+        assert_eq!(list.items, (0..230).collect::<Vec<_>>());
+        assert!(!list.loading);
+    }
+
+    #[test]
+    fn the_eager_fill_stops_at_its_bound_and_a_scroll_continues() {
+        let mut list: PagedList<u32> = PagedList::default();
+        list.begin(0);
+        list.absorb(0, page(0, 10_000, (0..50).collect()));
+        let offsets = list.fill_ahead(4, 100);
+        assert_eq!(offsets, vec![50]);
+        list.absorb(50, page(50, 10_000, (50..100).collect()));
+        assert!(
+            list.fill_ahead(4, 100).is_empty(),
+            "eager loading ends at the bound"
+        );
+        assert_eq!(list.next_offset, Some(100));
+        assert!(list.can_load_more());
+        assert_eq!(list.fill_ahead(4, u32::MAX), vec![100, 150, 200, 250]);
+    }
+
+    #[test]
+    fn a_failed_page_leaves_the_others_in_flight_and_can_be_asked_again() {
+        let mut list: PagedList<u32> = PagedList::default();
+        list.begin(0);
+        list.absorb(0, page(0, 150, (0..50).collect()));
+        assert_eq!(list.fill_ahead(4, u32::MAX), vec![50, 100]);
+        list.fail_page(50, "rate limited".into());
+        assert!(list.loading, "the other page is still coming");
+        assert_eq!(list.next_offset, Some(50));
+        list.absorb(100, page(100, 150, (100..150).collect()));
+        assert_eq!(list.items.len(), 50);
+        assert_eq!(list.fill_ahead(4, u32::MAX), vec![50]);
+        list.absorb(50, page(50, 150, (50..100).collect()));
+        assert!(list.is_complete());
+        assert_eq!(list.items.len(), 150);
+    }
 }

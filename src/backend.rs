@@ -483,6 +483,14 @@ pub enum Command {
         snapshot: String,
         items: Vec<PlaylistItem>,
     },
+    /// Read the playlist list as last seen from disk.
+    LoadLibraryCache,
+    /// Remember the playlist list on disk.
+    StoreLibraryCache(Vec<Playlist>),
+    /// Read Liked Songs as last seen from disk.
+    LoadLikedCache,
+    /// Remember Liked Songs on disk.
+    StoreLikedCache(Vec<SavedTrack>),
     /// Resolve user ids to display names through the streaming session.
     UserNames(Vec<String>),
 }
@@ -531,6 +539,16 @@ pub enum Event {
         generation: u64,
         snapshot: String,
         items: Vec<PlaylistItem>,
+    },
+    /// The playlist list as last cached.
+    LibraryCache {
+        account_id: String,
+        playlists: Vec<Playlist>,
+    },
+    /// Liked Songs as last cached.
+    LikedCache {
+        account_id: String,
+        items: Vec<SavedTrack>,
     },
     /// A user id resolved to a display name (`None` when nothing answers).
     UserName {
@@ -919,6 +937,12 @@ impl Worker {
                     snapshot,
                     items,
                 } => self.store_playlist_cache(id, snapshot, items),
+                Command::LoadLibraryCache => self.load_library_cache(),
+                Command::StoreLibraryCache(playlists) => {
+                    self.store_library_cache("playlists.json", &playlists)
+                }
+                Command::LoadLikedCache => self.load_liked_cache(),
+                Command::StoreLikedCache(items) => self.store_library_cache("liked.json", &items),
                 Command::UserNames(ids) => self.fetch_user_names(ids),
                 Command::ConfigurePersonalWebApp(client_id) => {
                     self.configure_personal_web_app(client_id)
@@ -1662,6 +1686,67 @@ impl Worker {
         });
     }
 
+    /// The playlist list as last seen, so Your Library is there before
+    /// Spotify answers; the live list replaces it when it lands.
+    fn load_library_cache(&self) {
+        let Some(account) = self.api.account() else {
+            return;
+        };
+        let path = self
+            .dirs
+            .account_library_cache_dir(account.as_str())
+            .join("playlists.json");
+        let account_id = account.as_str().to_string();
+        let events = self.events.clone();
+        let waker = self.waker.clone();
+        tokio::spawn(async move {
+            let Some(playlists) = read_json::<Vec<Playlist>>(&path).await else {
+                return;
+            };
+            let _ = events.send(Event::LibraryCache {
+                account_id,
+                playlists,
+            });
+            waker.wake();
+        });
+    }
+
+    /// Liked Songs as last seen; the live first page says whether they
+    /// are still current.
+    fn load_liked_cache(&self) {
+        let Some(account) = self.api.account() else {
+            return;
+        };
+        let path = self
+            .dirs
+            .account_library_cache_dir(account.as_str())
+            .join("liked.json");
+        let account_id = account.as_str().to_string();
+        let events = self.events.clone();
+        let waker = self.waker.clone();
+        tokio::spawn(async move {
+            let Some(items) = read_json::<Vec<SavedTrack>>(&path).await else {
+                return;
+            };
+            let _ = events.send(Event::LikedCache { account_id, items });
+            waker.wake();
+        });
+    }
+
+    fn store_library_cache<T: serde::Serialize>(&self, name: &str, value: &T) {
+        let Some(account) = self.api.account() else {
+            return;
+        };
+        let path = self
+            .dirs
+            .account_library_cache_dir(account.as_str())
+            .join(name);
+        let Ok(text) = serde_json::to_string(value) else {
+            return;
+        };
+        tokio::spawn(write_atomically(path, text));
+    }
+
     /// Ask Spotify who is behind each user id. Only the streaming session
     /// can ask; without one the interface shows the bare ids.
     fn fetch_user_names(&self, ids: Vec<String>) {
@@ -2271,6 +2356,23 @@ async fn spotify_lyrics(
 struct CachedPlaylist {
     snapshot: String,
     items: Vec<PlaylistItem>,
+}
+
+async fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
+    let text = tokio::fs::read_to_string(path).await.ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Writes through a temporary file, so a write cut short leaves the
+/// previous file whole.
+async fn write_atomically(path: std::path::PathBuf, text: String) {
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let temporary = path.with_extension("json.tmp");
+    if tokio::fs::write(&temporary, text).await.is_ok() {
+        let _ = tokio::fs::rename(temporary, path).await;
+    }
 }
 
 #[cfg(test)]

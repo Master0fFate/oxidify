@@ -21,6 +21,7 @@ Oxidify follows each platform's conventions. On Linux:
 | Lyrics cache | `~/.cache/oxidify/lyrics/` | Always |
 | Account-tagged Top songs cache (six-hour lifetime, at most 1 MiB) | `~/.cache/oxidify/top-tracks.json` | Always |
 | Account-scoped playlist cache | `~/.cache/oxidify/playlists/<account-id>/` | Always |
+| Account-scoped library snapshot (the playlist list and Liked Songs as last seen) | `~/.cache/oxidify/library/<account-id>/` | Always |
 | Last run's log | `~/.local/state/oxidify/oxidify.log` | Always |
 | Crash log | `~/.local/state/oxidify/panic.log` | Always |
 | Bundled yt-dlp | `~/.local/state/oxidify/bin/` | Yes; the app extracts it again |

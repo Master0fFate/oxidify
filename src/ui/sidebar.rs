@@ -412,15 +412,13 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
             match &app.library.playlists {
                 Loadable::Loaded(playlists) => {
                     // Recently played first, the way Spotify orders its own
-                    // sidebar; the rest keep the library's order.
-                    let rank = |uri: &str| {
-                        app.recent_contexts
-                            .iter()
-                            .position(|held| held == uri)
-                            .unwrap_or(usize::MAX)
-                    };
+                    // sidebar; the rest keep the library's order. The ranks
+                    // are looked up once each: searching the recents for
+                    // every comparison made a large library slow to scroll.
+                    let recent = rank_of(&app.recent_contexts);
+                    let rank = |uri: &str| recent.get(uri).copied().unwrap_or(usize::MAX);
                     let mut ordered: Vec<_> = playlists.iter().enumerate().collect();
-                    ordered.sort_by_key(|(index, playlist)| (rank(&playlist.uri), *index));
+                    ordered.sort_by_cached_key(|(index, playlist)| (rank(&playlist.uri), *index));
                     for (index, playlist) in ordered {
                         if !needle.is_empty() && !playlist.name.to_lowercase().contains(&needle) {
                             continue;
@@ -533,24 +531,15 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
     // the playlists shelf has an order of its own, that order wins there:
     // rows sit where they were dropped, and playlists the saved order has
     // not met yet, the newly created and followed, wait at the top.
-    let pin_rank = |uri: &str| {
-        app.settings
-            .pinned_contexts
-            .iter()
-            .position(|held| held == uri)
-            .unwrap_or(usize::MAX)
-    };
+    let pinned = rank_of(&app.settings.pinned_contexts);
+    let pin_rank = |uri: &str| pinned.get(uri).copied().unwrap_or(usize::MAX);
     let custom_order = filter == Filter::Playlists && !app.settings.sidebar_order.is_empty();
-    let saved_rank = |uri: &str| {
-        app.settings
-            .sidebar_order
-            .iter()
-            .position(|held| held == uri)
-    };
+    let saved = rank_of(&app.settings.sidebar_order);
+    let saved_rank = |uri: &str| saved.get(uri).copied();
     // Pins are pins, whatever orders the rest: Liked Songs, then the
     // pinned block, then everyone else by the listener's own order or,
     // failing one, by recency.
-    entries.sort_by_key(|entry| {
+    entries.sort_by_cached_key(|entry| {
         if entry.liked {
             (0, 0)
         } else {
@@ -1232,30 +1221,18 @@ fn full_playlist_order(app: &App) -> Vec<String> {
     };
     let mut ordered: Vec<_> = playlists.iter().enumerate().collect();
     if app.settings.sidebar_order.is_empty() {
-        let recent = |uri: &str| {
-            app.recent_contexts
-                .iter()
-                .position(|held| held == uri)
-                .unwrap_or(usize::MAX)
-        };
-        let pinned = |uri: &str| {
-            app.settings
-                .pinned_contexts
-                .iter()
-                .position(|held| held == uri)
-        };
-        ordered.sort_by_key(|(index, playlist)| match pinned(&playlist.uri) {
+        let recents = rank_of(&app.recent_contexts);
+        let recent = |uri: &str| recents.get(uri).copied().unwrap_or(usize::MAX);
+        let pins = rank_of(&app.settings.pinned_contexts);
+        let pinned = |uri: &str| pins.get(uri).copied();
+        ordered.sort_by_cached_key(|(index, playlist)| match pinned(&playlist.uri) {
             Some(rank) => (0, rank, 0),
             None => (1, recent(&playlist.uri), *index),
         });
     } else {
-        let saved = |uri: &str| {
-            app.settings
-                .sidebar_order
-                .iter()
-                .position(|held| held == uri)
-        };
-        ordered.sort_by_key(|(index, playlist)| match saved(&playlist.uri) {
+        let saved_order = rank_of(&app.settings.sidebar_order);
+        let saved = |uri: &str| saved_order.get(uri).copied();
+        ordered.sort_by_cached_key(|(index, playlist)| match saved(&playlist.uri) {
             Some(rank) => (1, rank, 0),
             None => (0, *index, 0),
         });
@@ -1266,6 +1243,16 @@ fn full_playlist_order(app: &App) -> Vec<String> {
         // Pins live in their own list; the saved order holds the rest.
         .filter(|uri| !app.settings.pinned_contexts.contains(uri))
         .collect()
+}
+
+/// Each uri's place in an ordered list, for lookups while sorting: the
+/// first occurrence counts, as `position` did.
+fn rank_of(order: &[String]) -> std::collections::HashMap<&str, usize> {
+    let mut ranks = std::collections::HashMap::with_capacity(order.len());
+    for (index, uri) in order.iter().enumerate() {
+        ranks.entry(uri.as_str()).or_insert(index);
+    }
+    ranks
 }
 
 /// A dropped album, artist, or podcast row lands in the pinned block:
