@@ -80,13 +80,23 @@ go back; dragging a row switches to your own order again.
 The Albums, Artists, and Podcasts shelves pin the same way: drag into
 the block, within it, or below it.
 
+Your Library is written to disk as you use it: the playlist list, Liked
+Songs, and the songs of every playlist you open. The next start shows
+them at once, and Spotify's answer replaces them only where something
+changed. A playlist's pages are asked for several at a time and show in
+order, so a long playlist fills in seconds; past the first fifteen
+hundred songs the rest comes as you scroll, or all at once when you sort.
+
 Use the chips to filter Your Library by Playlists, Artists, Albums, or
 Podcasts, or use the magnifier to search it. The control at the right of
 that row names the order the shelf is in, **Recents** or **Custom order**,
 and switches it back to recently played or between full rows, compact rows,
 and a grid of covers that fits as many across as the panel is wide.
 Liked Songs stays at the top. The current page is highlighted, and the
-playing playlist has a small speaker icon.
+playing playlist has a small speaker icon; hovering its cover, or the
+card of whatever is playing on Home, offers pause rather than a restart.
+Sorting a playlist by album keeps each album's songs in disc and track
+order, whichever way the albums run.
 
 Click **Your Library** to fold the panel down to a rail of covers; each
 still opens its page, takes a dropped song, and answers a right-click, and

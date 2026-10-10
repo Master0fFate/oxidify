@@ -44,6 +44,11 @@ getting started, everyday use, and how it connects to Spotify.
   search, and your account; Your Library, the page, and an optional side
   panel sit beneath it as separate rounded panels, with the player bar
   along the bottom.
+- **Opens at once.** The playlist list, Liked Songs, and every playlist
+  you have opened before are kept on disk and show the moment the app
+  starts; Spotify's answer replaces them only where something changed.
+  A playlist's pages are fetched several at a time and show in order,
+  so a long one fills in seconds instead of a page per scroll.
 - **Library access.** Playlists, Liked Songs, saved albums, followed
   artists, podcasts, and saved episodes, filterable in Your Library and as
   full pages. Library rows pin to the top and drag into your own order, and
