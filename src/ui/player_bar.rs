@@ -66,12 +66,21 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
     let cy = region.center().y;
     let cover_rect = Rect::from_min_size(pos2(region.left() + 4.0, cy - 28.0), Vec2::splat(56.0));
 
+    // The band the words sit in comes from the fonts in use, not a guess:
+    // a title row, a gap, and a row of names, centred on the bar.
+    let (title_height, names_height) = ui.ctx().fonts_mut(|fonts| {
+        (
+            fonts.row_height(&theme::medium(14.0)),
+            fonts.row_height(&theme::regular(12.0)),
+        )
+    });
+    let band = (title_height + 2.0 + names_height).ceil();
     let Some(now) = now else {
         super::widgets::paint_cover(ui, &palette, None, cover_rect, 6.0, Icon::Music);
         let text_left = cover_rect.right() + 12.0;
         let text_rect = Rect::from_min_size(
-            pos2(text_left, cy - 17.0),
-            vec2((region.right() - text_left - 8.0).max(40.0), 34.0),
+            pos2(text_left, cy - band / 2.0),
+            vec2((region.right() - text_left - 8.0).max(40.0), band),
         );
         let mut text_ui = ui.new_child(
             UiBuilder::new()
@@ -175,7 +184,7 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
     let heart_width = if now.is_episode { 0.0 } else { 42.0 };
     let text_left = cover_rect.right() + 12.0;
     let text_width = (region.right() - text_left - heart_width).max(40.0);
-    let text_rect = Rect::from_min_size(pos2(text_left, cy - 18.0), vec2(text_width, 36.0));
+    let text_rect = Rect::from_min_size(pos2(text_left, cy - band / 2.0), vec2(text_width, band));
     let info_response = ui.interact(
         text_rect,
         egui::Id::new("now-playing-info"),
@@ -197,12 +206,12 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
             .max_rect(text_rect)
             .layout(Layout::top_down(Align::Min)),
     );
-    text_ui.set_clip_rect(text_rect.intersect(ui.clip_rect()));
+    // The clip keeps long names from running under the controls; it is
+    // loose vertically so a fallback face taller than Inter, or a row
+    // rounded up to whole pixels, never cuts the glyphs.
+    text_ui.set_clip_rect(text_rect.expand2(vec2(0.0, 8.0)).intersect(ui.clip_rect()));
     text_ui.spacing_mut().item_spacing.y = 2.0;
-    // The artists sit in a horizontal row, which egui makes as tall as a
-    // button unless told otherwise; at that height the row fell below the
-    // band and the names were cut off.
-    text_ui.spacing_mut().interact_size.y = 16.0;
+    text_ui.spacing_mut().interact_size.y = names_height;
     let title_response = theme::link(&mut text_ui, &now.title, theme::medium(14.0), palette.text);
     if title_response.clicked() {
         if let Some(id) = &now.album_id {
@@ -225,8 +234,11 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
         }
         response
     } else {
+        // Top-aligned, so the names sit under the title whatever height
+        // egui gives the row; a centred row hung below the band and the
+        // names were cut in half.
         text_ui
-            .horizontal(|ui| {
+            .horizontal_top(|ui| {
                 ui.set_max_width(text_width);
                 ui.spacing_mut().item_spacing.x = 0.0;
                 for (index, artist) in now.artists.iter().enumerate() {

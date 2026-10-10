@@ -873,16 +873,25 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
             .max_rect(title_rect)
             .layout(Layout::top_down(Align::LEFT)),
     );
-    child.set_clip_rect(title_rect.intersect(ui.clip_rect()));
+    // Loose vertically: the clip is there to stop a long title running into
+    // the next column, not to cut a row that rounds up a pixel.
+    child.set_clip_rect(title_rect.expand2(vec2(0.0, 4.0)).intersect(ui.clip_rect()));
     child.spacing_mut().item_spacing = vec2(6.0, 1.0);
-    child.spacing_mut().interact_size.y = 16.0;
-    let vertical_pad = ((row_height - 37.0) / 2.0).max(4.0);
+    let (title_height, names_height) = ui.ctx().fonts_mut(|fonts| {
+        (
+            fonts.row_height(&theme::medium(14.5)),
+            fonts.row_height(&theme::regular(12.5)),
+        )
+    });
+    child.spacing_mut().interact_size.y = names_height;
+    let block = title_height + 1.0 + names_height;
+    let vertical_pad = ((row_height - block) / 2.0).max(4.0);
     child.add_space(vertical_pad);
-    child.horizontal(|ui| {
+    child.horizontal_top(|ui| {
         ui.set_max_width(title_rect.width());
         theme::text(ui, row.item.name(), theme::medium(14.5), title_color);
     });
-    child.horizontal(|ui| {
+    child.horizontal_top(|ui| {
         ui.set_max_width(title_rect.width());
         match row.item {
             PlayableItem::Track(track) => {
