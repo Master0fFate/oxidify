@@ -159,6 +159,9 @@ impl LocalTrack {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LocalState {
     pub playback: Playback,
+    /// The next track is being fetched while the last still shows as
+    /// playing, as on a skip; the transport spins for it.
+    pub loading: bool,
     pub track: Option<LocalTrack>,
     pub position_ms: u32,
     /// When `position_ms` was observed; `None` while not advancing.
@@ -603,6 +606,7 @@ fn apply_event(state: &mut LocalState, event: PlayerEvent) -> bool {
     match event {
         PlayerEvent::Stopped { .. } => {
             let mut changed = set(&mut state.playback, Playback::Stopped);
+            changed |= set(&mut state.loading, false);
             changed |= set(&mut state.position_ms, 0);
             changed |= set(&mut state.position_at, None);
             changed
@@ -613,6 +617,9 @@ fn apply_event(state: &mut LocalState, event: PlayerEvent) -> bool {
             } else {
                 false
             };
+            // A skip or an end-of-track advance loads while the last track
+            // still shows as playing; the flag is what the spinner follows.
+            changed |= set(&mut state.loading, true);
             changed |= set(&mut state.position_ms, position_ms);
             changed |= set(&mut state.position_at, None);
             changed |= set(&mut state.error, None);
@@ -620,12 +627,14 @@ fn apply_event(state: &mut LocalState, event: PlayerEvent) -> bool {
         }
         PlayerEvent::Playing { position_ms, .. } => {
             let mut changed = set(&mut state.playback, Playback::Playing);
+            changed |= set(&mut state.loading, false);
             changed |= set(&mut state.position_ms, position_ms);
             state.position_at = Some(Instant::now());
             changed || true
         }
         PlayerEvent::Paused { position_ms, .. } => {
             let mut changed = set(&mut state.playback, Playback::Paused);
+            changed |= set(&mut state.loading, false);
             changed |= set(&mut state.position_ms, position_ms);
             changed |= set(&mut state.position_at, None);
             changed
@@ -651,13 +660,19 @@ fn apply_event(state: &mut LocalState, event: PlayerEvent) -> bool {
             changed |= set(&mut state.error, None);
             changed
         }
-        PlayerEvent::Unavailable { track_id, .. } => set(
-            &mut state.error,
-            Some(format!(
-                "This item isn't available: {}",
-                track_id.to_uri().unwrap_or_default()
-            )),
-        ),
+        PlayerEvent::Unavailable { track_id, .. } => {
+            // A failed load never reaches Playing, so the spinner is
+            // turned off here.
+            let mut changed = set(&mut state.loading, false);
+            changed |= set(
+                &mut state.error,
+                Some(format!(
+                    "This item isn't available: {}",
+                    track_id.to_uri().unwrap_or_default()
+                )),
+            );
+            changed
+        }
         PlayerEvent::VolumeChanged { volume } => set(&mut state.volume, volume),
         PlayerEvent::SessionConnected { user_name, .. } => {
             let mut changed = set(&mut state.connected, true);
@@ -796,6 +811,33 @@ mod tests {
             },
         );
         assert_eq!(state.playback, Playback::Playing);
+        assert!(state.loading, "the transport spins for the load");
+        apply_event(
+            &mut state,
+            PlayerEvent::Playing {
+                play_request_id: 1,
+                track_id: uri(),
+                position_ms: 0,
+            },
+        );
+        assert!(!state.loading);
+        // A load that fails never reaches Playing; it stops the spinner too.
+        apply_event(
+            &mut state,
+            PlayerEvent::Loading {
+                play_request_id: 1,
+                track_id: uri(),
+                position_ms: 0,
+            },
+        );
+        apply_event(
+            &mut state,
+            PlayerEvent::Unavailable {
+                play_request_id: 1,
+                track_id: uri(),
+            },
+        );
+        assert!(!state.loading);
     }
 
     #[test]

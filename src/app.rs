@@ -787,7 +787,7 @@ impl App {
                 duration_ms: track.duration_ms,
                 position_ms: self.local.position_now(),
                 playing,
-                loading: self.local.playback == Playback::Loading,
+                loading: self.local.playback == Playback::Loading || self.local.loading,
                 shuffle: self.shuffle_wanted,
                 repeat: self.local.repeat,
                 volume_percent: volume_to_percent(self.local.volume),
@@ -6699,6 +6699,7 @@ mod tests {
         let mut app = headless_app();
         app.handle_local(LocalState {
             playback: Playback::Playing,
+            loading: false,
             track: Some(crate::player::LocalTrack {
                 uri: "spotify:track:t1".to_owned(),
                 title: "Go".to_owned(),

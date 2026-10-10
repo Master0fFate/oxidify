@@ -419,6 +419,7 @@ impl Session {
     pub fn snapshot(&self) -> LocalState {
         LocalState {
             playback: self.playback,
+            loading: false,
             track: self.current().cloned(),
             position_ms: self.position_now(),
             position_at: self.position_at,
