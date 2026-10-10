@@ -22,6 +22,8 @@ pub enum Page {
     Show(String),
     Queue,
     Settings,
+    /// Your listening, counted on this computer.
+    Stats,
 }
 
 impl Page {
@@ -41,6 +43,7 @@ impl Page {
             Page::Show(id) => format!("show:{id}"),
             Page::Queue => "queue".into(),
             Page::Settings => "settings".into(),
+            Page::Stats => "stats".into(),
         }
     }
 
@@ -56,6 +59,7 @@ impl Page {
             "episodes" => Page::Episodes,
             "queue" => Page::Queue,
             "settings" => Page::Settings,
+            "stats" => Page::Stats,
             other => {
                 let (kind, id) = other.split_once(':')?;
                 match kind {
@@ -838,6 +842,10 @@ pub enum Action {
         to: u32,
     },
     ShowDialog(Dialog),
+    /// Which span the listening page sums up.
+    SetStatsPeriod(crate::history::Period),
+    /// Forget every play counted on this computer.
+    ClearHistory,
     CloseDialog,
     CreatePlaylist {
         name: String,

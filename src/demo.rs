@@ -429,6 +429,42 @@ pub fn populate(app: &mut App) {
             })
             .collect(),
     );
+    // Sixty days of plays, heavier lately, so the listening page has a
+    // chart with a shape, favourites, and a streak.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    app.plays = (0..420u64)
+        .map(|index| {
+            let days_back = (index * 7 % 61) * (index % 3 + 1) / 3;
+            let track = &tracks[(index as usize * 13 + (index as usize / 9)) % 23];
+            crate::history::PlayRecord {
+                at: now - days_back * 86_400 - (index * 977) % 70_000,
+                uri: track.uri.clone(),
+                name: track.name.clone(),
+                artists: track
+                    .artists
+                    .iter()
+                    .map(|artist| artist.name.clone())
+                    .collect(),
+                artist_ids: track
+                    .artists
+                    .iter()
+                    .map(|artist| artist.id.clone())
+                    .collect(),
+                album: track
+                    .album
+                    .as_ref()
+                    .map(|album| album.name.clone())
+                    .unwrap_or_default(),
+                album_id: track.album.as_ref().map(|album| album.id.clone()),
+                image: track.image(64).map(str::to_string),
+                duration_ms: track.duration_ms,
+            }
+        })
+        .collect();
+    app.plays.sort_by_key(|record| record.at);
     app.home.top_artists = Loadable::Loaded((0..8).map(artist).collect());
     app.home.top_tracks = Loadable::Loaded(tracks.iter().skip(10).take(10).cloned().collect());
     app.home.top_songs = Loadable::Loaded(tracks.iter().skip(10).cloned().collect());
@@ -784,6 +820,7 @@ mod tests {
             Page::Artists,
             Page::Podcasts,
             Page::Episodes,
+            Page::Stats,
             Page::Playlist("pl1".into()),
             Page::Playlist("missing".into()),
             Page::Album("alb0".into()),

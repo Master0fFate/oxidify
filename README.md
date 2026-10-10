@@ -113,6 +113,11 @@ getting started, everyday use, and how it connects to Spotify.
   playlists you can edit, filtered as you type (Enter takes the first
   match, playlists already holding the song are marked), or out of Liked
   Songs again.
+- **Your listening.** A page of what you actually played: hours, plays,
+  the songs, artists and albums you played most, a chart by day or month,
+  and your streak, by week, month, year or all time. A play is counted on
+  this computer once a song has run for half a minute, kept in a file you
+  can clear, and nothing about it leaves the machine.
 - **Jump anywhere.** `Ctrl+K` opens a palette over the page that finds any
   song, playlist, album, artist or podcast already in your library as you
   type, offline and at once, plus a handful of commands. Enter plays a song

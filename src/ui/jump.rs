@@ -448,6 +448,12 @@ fn commands(app: &App) -> Vec<JumpEntry> {
             Action::Reload(app.page().clone()),
         ),
         command(
+            "Your listening",
+            "The songs, artists and albums you played most",
+            Icon::TrendingUp,
+            Action::Open(Page::Stats),
+        ),
+        command(
             "Settings",
             "Open Settings",
             Icon::Settings,

@@ -489,6 +489,12 @@ pub enum Command {
     StoreLibraryCache(Vec<Playlist>),
     /// Read Liked Songs as last seen from disk.
     LoadLikedCache,
+    /// Read the plays counted on this computer.
+    LoadHistory,
+    /// Note one play on disk.
+    RecordPlay(Box<crate::history::PlayRecord>),
+    /// Forget every play counted on this computer.
+    ClearHistory,
     /// Remember Liked Songs on disk.
     StoreLikedCache(Vec<SavedTrack>),
     /// Resolve user ids to display names through the streaming session.
@@ -549,6 +555,11 @@ pub enum Event {
     LikedCache {
         account_id: String,
         items: Vec<SavedTrack>,
+    },
+    /// The plays counted on this computer, oldest first.
+    History {
+        account_id: String,
+        records: Vec<crate::history::PlayRecord>,
     },
     /// A user id resolved to a display name (`None` when nothing answers).
     UserName {
@@ -942,6 +953,9 @@ impl Worker {
                     self.store_library_cache("playlists.json", &playlists)
                 }
                 Command::LoadLikedCache => self.load_liked_cache(),
+                Command::LoadHistory => self.load_history(),
+                Command::RecordPlay(record) => self.record_play(*record),
+                Command::ClearHistory => self.clear_history(),
                 Command::StoreLikedCache(items) => self.store_library_cache("liked.json", &items),
                 Command::UserNames(ids) => self.fetch_user_names(ids),
                 Command::ConfigurePersonalWebApp(client_id) => {
@@ -1730,6 +1744,46 @@ impl Worker {
             };
             let _ = events.send(Event::LikedCache { account_id, items });
             waker.wake();
+        });
+    }
+
+    fn load_history(&self) {
+        let Some(account) = self.api.account() else {
+            return;
+        };
+        let path = self.dirs.history_file(account.as_str());
+        let account_id = account.as_str().to_string();
+        let events = self.events.clone();
+        let waker = self.waker.clone();
+        tokio::task::spawn_blocking(move || {
+            let records = crate::history::read(&path);
+            let _ = events.send(Event::History {
+                account_id,
+                records,
+            });
+            waker.wake();
+        });
+    }
+
+    fn record_play(&self, record: crate::history::PlayRecord) {
+        let Some(account) = self.api.account() else {
+            return;
+        };
+        let path = self.dirs.history_file(account.as_str());
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) = crate::history::append(&path, &record) {
+                log::warn!("could not note a play: {error}");
+            }
+        });
+    }
+
+    fn clear_history(&self) {
+        let Some(account) = self.api.account() else {
+            return;
+        };
+        let path = self.dirs.history_file(account.as_str());
+        tokio::task::spawn_blocking(move || {
+            let _ = std::fs::remove_file(path);
         });
     }
 

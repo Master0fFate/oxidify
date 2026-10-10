@@ -25,6 +25,8 @@ Oxidify follows each platform's conventions. On Linux:
 | Last run's log | `~/.local/state/oxidify/oxidify.log` | Always |
 | Crash log | `~/.local/state/oxidify/panic.log` | Always |
 | Bundled yt-dlp | `~/.local/state/oxidify/bin/` | Yes; the app extracts it again |
+| Alternate audio match memory (video ids and stream URLs, bounded) | `~/.local/state/oxidify/bin/alternate-matches.json` | Always |
+| Listening history (the plays counted on this computer, one line each) | `~/.local/state/oxidify/history/<account-id>.jsonl` | Yes; the Your listening page can clear it too |
 
 Clearing caches never signs you out; credentials live in *state*, not
 *cache*. Web API token files are written with owner-only permissions.

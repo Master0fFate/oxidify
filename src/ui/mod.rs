@@ -25,6 +25,7 @@ pub mod search;
 pub mod settings;
 pub mod show;
 pub mod sidebar;
+pub mod stats;
 pub mod topbar;
 pub mod widgets;
 pub mod winamp;
@@ -164,7 +165,7 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
             if let Some(tint) = tint {
                 let strength = if matches!(
                     app.page(),
-                    Page::Home | Page::Search | Page::Settings | Page::Queue
+                    Page::Home | Page::Search | Page::Settings | Page::Queue | Page::Stats
                 ) {
                     0.45
                 } else {
@@ -214,6 +215,7 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                                 Page::Show(id) => show::show(app, ui, &id),
                                 Page::Queue => queue::page(app, ui),
                                 Page::Settings => settings::show(app, ui),
+                                Page::Stats => stats::show(app, ui),
                             }
                         });
                 });

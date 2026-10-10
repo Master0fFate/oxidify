@@ -145,6 +145,13 @@ impl AppDirs {
         self.state.join("session.json")
     }
 
+    /// The plays counted on this computer, one line each, per account.
+    pub fn history_file(&self, account_id: &str) -> PathBuf {
+        self.state
+            .join("history")
+            .join(format!("{account_id}.jsonl"))
+    }
+
     pub fn shared_web_token_file(&self) -> PathBuf {
         self.state.join("shared_web_api_token.json")
     }

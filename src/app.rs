@@ -70,6 +70,13 @@ struct AssumedContext {
     at: Instant,
 }
 
+/// A song on its way to counting as a play.
+struct PlayClock {
+    uri: String,
+    recorded: bool,
+    last_position_ms: u32,
+}
+
 /// The playing item as the interface sees it, whichever device plays it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NowPlaying {
@@ -213,6 +220,19 @@ pub struct App {
 
     pub dialog: Option<Dialog>,
     pub jump: JumpState,
+    /// The plays counted on this computer, oldest first.
+    pub plays: Vec<crate::history::PlayRecord>,
+    history_loaded: bool,
+    pub stats_period: crate::history::Period,
+    /// The summary shown, for the period and the number of plays it was
+    /// built from.
+    stats_cache: Option<(
+        crate::history::Period,
+        usize,
+        std::sync::Arc<crate::history::Summary>,
+    )>,
+    /// The song being timed towards a counted play.
+    play_clock: Option<PlayClock>,
     pub show_queue_panel: bool,
     pub show_lyrics_panel: bool,
     /// The Now Playing view is open beside the page.
@@ -442,6 +462,11 @@ impl App {
             accent_pending: HashSet::new(),
             dialog: None,
             jump: JumpState::default(),
+            plays: Vec::new(),
+            history_loaded: false,
+            stats_period: crate::history::Period::default(),
+            stats_cache: None,
+            play_clock: None,
             show_queue_panel: session.queue_open.unwrap_or(false),
             show_lyrics_panel: false,
             show_now_playing_panel: session.now_playing_open.unwrap_or(false),
@@ -1059,6 +1084,16 @@ impl App {
                 Event::LikedCache { account_id, items } => {
                     self.adopt_liked_cache(&account_id, items)
                 }
+                Event::History {
+                    account_id,
+                    records,
+                } => {
+                    if self.user_id() == Some(account_id.as_str()) {
+                        self.plays = records;
+                        self.history_loaded = true;
+                        self.stats_cache = None;
+                    }
+                }
                 Event::UserName { id, name } => {
                     self.set_user_name(id, name);
                 }
@@ -1406,6 +1441,7 @@ impl App {
         if self.believed_playing() && self.last_session_save.elapsed() >= RESUME_NOTE_INTERVAL {
             self.session_dirty = true;
         }
+        self.note_play();
 
         if self.is_connected() && !self.offline {
             let minimised = ctx.input(|input| input.viewport().minimized.unwrap_or(false));
@@ -2018,7 +2054,82 @@ impl App {
             }
             Page::Queue => self.refresh_queue(true),
             Page::Settings => {}
+            Page::Stats => {
+                if !self.history_loaded {
+                    self.backend.send(Command::LoadHistory);
+                }
+            }
         }
+    }
+
+    /// The listening summary for the chosen period, rebuilt only when the
+    /// period or the plays change.
+    pub fn stats_summary(&mut self) -> std::sync::Arc<crate::history::Summary> {
+        let period = self.stats_period;
+        if let Some((held, count, summary)) = &self.stats_cache
+            && *held == period
+            && *count == self.plays.len()
+        {
+            return std::sync::Arc::clone(summary);
+        }
+        let summary =
+            std::sync::Arc::new(crate::history::summarize(&self.plays, period, unix_now()));
+        self.stats_cache = Some((period, self.plays.len(), std::sync::Arc::clone(&summary)));
+        summary
+    }
+
+    /// Times the playing song towards a counted play: thirty seconds in,
+    /// or half of a shorter song, once per run through it. A song started
+    /// over counts again.
+    fn note_play(&mut self) {
+        let Some(now) = self.now_playing() else {
+            self.play_clock = None;
+            return;
+        };
+        if now.is_episode {
+            return;
+        }
+        let counts_at = if now.duration_ms > 0 {
+            crate::history::COUNTS_AFTER_MS.min(now.duration_ms / 2)
+        } else {
+            crate::history::COUNTS_AFTER_MS
+        };
+        let clock = match &mut self.play_clock {
+            Some(clock) if clock.uri == now.uri => clock,
+            _ => self.play_clock.insert(PlayClock {
+                uri: now.uri.clone(),
+                recorded: false,
+                last_position_ms: now.position_ms,
+            }),
+        };
+        if clock.recorded && now.position_ms < 5_000 && clock.last_position_ms > counts_at {
+            clock.recorded = false;
+        }
+        clock.last_position_ms = now.position_ms;
+        if clock.recorded || now.position_ms < counts_at {
+            return;
+        }
+        clock.recorded = true;
+        let record = crate::history::PlayRecord {
+            at: unix_now(),
+            uri: now.uri.clone(),
+            name: now.title.clone(),
+            artists: now
+                .artists
+                .iter()
+                .map(|artist| artist.name.clone())
+                .collect(),
+            artist_ids: now.artists.iter().map(|artist| artist.id.clone()).collect(),
+            album: now.album_name.clone(),
+            album_id: now.album_id.clone(),
+            image: now.art_small.clone().or_else(|| now.art_url.clone()),
+            duration_ms: now.duration_ms,
+        };
+        if !self.offline {
+            self.backend
+                .send(Command::RecordPlay(Box::new(record.clone())));
+        }
+        self.plays.push(record);
     }
 
     fn load_artist_albums(&mut self, id: &str, filter: DiscographyFilter) {
@@ -4413,6 +4524,13 @@ impl App {
                 self.jump.entries = None;
                 self.jump.ranked = None;
             }
+            Action::SetStatsPeriod(period) => self.stats_period = period,
+            Action::ClearHistory => {
+                self.plays.clear();
+                self.stats_cache = None;
+                self.backend.send(Command::ClearHistory);
+                self.toast("Listening history cleared");
+            }
             Action::CreatePlaylist {
                 name,
                 public,
@@ -5397,6 +5515,14 @@ fn cap_uris(uris: Vec<String>, index: u32) -> (Vec<String>, u32) {
     let start = (index as usize).min(uris.len() - 1);
     let end = (start + MAX).min(uris.len());
     (uris[start..end].to_vec(), 0)
+}
+
+/// Seconds since the Unix epoch, for the listening history.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

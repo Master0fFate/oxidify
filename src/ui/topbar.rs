@@ -420,6 +420,9 @@ fn account_menu(app: &mut App, ui: &mut egui::Ui) {
                 });
             }
             super::widgets::menu_separator(ui, &palette);
+            if super::widgets::menu_item(ui, &palette, Some(Icon::TrendingUp), "Your listening") {
+                app.actions.push(Action::Open(Page::Stats));
+            }
             if super::widgets::menu_item(ui, &palette, Some(Icon::Settings), "Settings") {
                 app.actions.push(Action::Open(Page::Settings));
             }

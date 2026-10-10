@@ -54,6 +54,17 @@ time to return to the list's own order. Sorted and filtered views are reused
 until the list, filter, sort, or contributor names change, rather than sorted
 again on every frame. The play button in Liked Songs follows the sorted view.
 
+## Your listening
+
+**Your listening**, from the account menu at the top right or from Jump,
+sums up what you played: time listened, plays, different songs and
+artists, the songs, artists and albums you played most, a chart of plays
+by day or by month, and how many days in a row you have listened. Chips
+switch between this week, this month, this year and all time. A play is
+counted once a song has run for half a minute (half of a shorter song),
+on this computer, in a file under the state directory; the page's
+**Clear history** forgets it. Nothing about it is sent anywhere.
+
 ## Jump
 
 `Ctrl+K` opens Jump over whatever page you are on: a field that finds any
