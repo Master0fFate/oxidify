@@ -54,6 +54,19 @@ time to return to the list's own order. Sorted and filtered views are reused
 until the list, filter, sort, or contributor names change, rather than sorted
 again on every frame. The play button in Liked Songs follows the sorted view.
 
+## Jump
+
+`Ctrl+K` opens Jump over whatever page you are on: a field that finds any
+song, playlist, album, artist or podcast the app already holds as you
+type, with no request to Spotify, so the matches are there the moment you
+stop typing. Songs come from Liked Songs and every playlist and album you
+have opened; a song plays on from the playlist it was found in. The arrows
+move the choice, Enter plays a song or opens anything else, `Ctrl+Enter`
+plays a playlist, album or artist straight away, and Esc closes it. A few
+commands live there too: Home, the queue, the lyrics, shuffle, repeat, the
+mini player, Settings, and the shortcuts list. With nothing typed it lists
+what can be opened, then the commands.
+
 ## Search
 
 Type in the field at the top and the results page opens as you type. A
@@ -259,6 +272,7 @@ Connect devices and conflicting media-key handlers.
 | `S` / `R` | Shuffle / cycle repeat |
 | `Q` | Queue panel |
 | `Ctrl+F` or `/` | Search |
+| `Ctrl+K` | Jump to anything in your library |
 | `Ctrl+B` | Show or hide Your Library |
 | `Alt+←` / `Alt+→`, or mouse side buttons | Back or forward |
 | `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |

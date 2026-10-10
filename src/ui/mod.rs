@@ -13,6 +13,7 @@ pub mod collection;
 mod devices;
 mod dialogs;
 pub mod home;
+pub mod jump;
 mod keys;
 pub mod library;
 pub mod login;

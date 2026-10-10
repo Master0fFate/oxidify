@@ -651,7 +651,7 @@ pub struct DragEntry {
     pub image: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Dialog {
     CreatePlaylist {
         name: String,
@@ -677,6 +677,85 @@ pub enum Dialog {
         position: Option<u32>,
     },
     Shortcuts,
+    /// The Jump palette: find anything already loaded, offline.
+    Jump,
+}
+
+/// What kind of thing a Jump entry is, in the order ties are broken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JumpKind {
+    Song,
+    Liked,
+    Playlist,
+    Album,
+    Artist,
+    Podcast,
+    Command,
+}
+
+impl JumpKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Song => "Song",
+            Self::Liked | Self::Playlist => "Playlist",
+            Self::Album => "Album",
+            Self::Artist => "Artist",
+            Self::Podcast => "Podcast",
+            Self::Command => "Command",
+        }
+    }
+
+    pub fn icon(self) -> crate::theme::Icon {
+        use crate::theme::Icon;
+        match self {
+            Self::Song => Icon::Music,
+            Self::Liked | Self::Playlist => Icon::ListMusic,
+            Self::Album => Icon::Disc,
+            Self::Artist => Icon::User,
+            Self::Podcast => Icon::Mic,
+            Self::Command => Icon::Sparkles,
+        }
+    }
+
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Song => 0,
+            Self::Liked => 1,
+            Self::Playlist => 2,
+            Self::Album => 3,
+            Self::Artist => 4,
+            Self::Podcast => 5,
+            Self::Command => 6,
+        }
+    }
+}
+
+/// One thing the Jump palette can open or play.
+#[derive(Clone, Debug)]
+pub struct JumpEntry {
+    /// What makes it unique, so a song in two playlists is listed once.
+    pub key: String,
+    pub kind: JumpKind,
+    pub name: String,
+    pub subtitle: String,
+    pub image: Option<String>,
+    pub icon: Option<crate::theme::Icon>,
+    /// What Enter does: play a song, open anything else.
+    pub primary: Action,
+    /// What Ctrl+Enter does, for things that can be played whole.
+    pub play: Option<Action>,
+}
+
+/// The Jump palette's state while it is open.
+#[derive(Default)]
+pub struct JumpState {
+    pub query: String,
+    pub selected: usize,
+    pub focus_pending: bool,
+    /// Everything that can be jumped to, built when the palette opens.
+    pub entries: Option<Vec<JumpEntry>>,
+    /// The matches for the query they were ranked for.
+    pub ranked: Option<(String, Vec<usize>)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

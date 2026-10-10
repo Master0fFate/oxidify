@@ -113,6 +113,10 @@ getting started, everyday use, and how it connects to Spotify.
   playlists you can edit, filtered as you type (Enter takes the first
   match, playlists already holding the song are marked), or out of Liked
   Songs again.
+- **Jump anywhere.** `Ctrl+K` opens a palette over the page that finds any
+  song, playlist, album, artist or podcast already in your library as you
+  type, offline and at once, plus a handful of commands. Enter plays a song
+  or opens anything else; `Ctrl+Enter` plays a playlist, album or artist.
 - **Keyboard-first.** Every common action has a shortcut (`Ctrl+/` or `?` lists
   them).
 - **Keeps playing when you close the window.** The window closes for real,

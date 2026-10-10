@@ -40,6 +40,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             );
         }
         key(Modifiers::COMMAND, Key::F, Action::FocusSearch);
+        key(Modifiers::COMMAND, Key::K, Action::ShowDialog(Dialog::Jump));
         key(Modifiers::COMMAND, Key::B, Action::ToggleSidebar);
         key(Modifiers::COMMAND, Key::Comma, Action::Open(Page::Settings));
         key(Modifiers::COMMAND, Key::Q, Action::Quit);
@@ -162,6 +163,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
 }
 
 pub const SHORTCUTS: &[(&str, &str)] = &[
+    ("Ctrl+K", "Jump to anything in your library"),
     ("Space", "Play or pause"),
     ("Ctrl+←  /  Ctrl+→", "Previous or next"),
     ("Shift+←  /  Shift+→", "Seek 10 seconds"),

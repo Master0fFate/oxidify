@@ -584,6 +584,10 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
             "podcasts" => app.home.filter = HomeFilter::Podcasts,
             "devices" => app.show_devices = true,
             "shortcuts" => app.dialog = Some(Dialog::Shortcuts),
+            "jump" => {
+                app.dialog = Some(Dialog::Jump);
+                app.jump.query = "night".into();
+            }
             "update" => {
                 app.update = Some(crate::updates::Release {
                     version: "1.0.0".into(),
@@ -844,6 +848,7 @@ mod tests {
         app.show_now_playing_panel = false;
         for dialog in [
             Dialog::Shortcuts,
+            Dialog::Jump,
             Dialog::CreatePlaylist {
                 name: "x".into(),
                 public: true,

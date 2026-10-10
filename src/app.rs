@@ -212,6 +212,7 @@ pub struct App {
     accent_pending: HashSet<String>,
 
     pub dialog: Option<Dialog>,
+    pub jump: JumpState,
     pub show_queue_panel: bool,
     pub show_lyrics_panel: bool,
     /// The Now Playing view is open beside the page.
@@ -440,6 +441,7 @@ impl App {
             accents: HashMap::new(),
             accent_pending: HashSet::new(),
             dialog: None,
+            jump: JumpState::default(),
             show_queue_panel: session.queue_open.unwrap_or(false),
             show_lyrics_panel: false,
             show_now_playing_panel: session.now_playing_open.unwrap_or(false),
@@ -4397,8 +4399,20 @@ impl App {
                     snapshot_id,
                 });
             }
-            Action::ShowDialog(dialog) => self.dialog = Some(dialog),
-            Action::CloseDialog => self.dialog = None,
+            Action::ShowDialog(dialog) => {
+                if dialog == Dialog::Jump {
+                    self.jump = JumpState {
+                        focus_pending: true,
+                        ..JumpState::default()
+                    };
+                }
+                self.dialog = Some(dialog);
+            }
+            Action::CloseDialog => {
+                self.dialog = None;
+                self.jump.entries = None;
+                self.jump.ranked = None;
+            }
             Action::CreatePlaylist {
                 name,
                 public,

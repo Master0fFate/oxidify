@@ -26,8 +26,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         .frame(frame)
         .backdrop_color(egui::Color32::from_black_alpha(if palette.dark { 150 } else { 80 }))
         .show(ctx, |ui| {
-            ui.set_width(420.0);
+            ui.set_width(if dialog == Dialog::Jump { 600.0 } else { 420.0 });
             match dialog {
+                Dialog::Jump => super::jump::show(app, ui),
                 Dialog::CreatePlaylist { .. } => create_playlist(app, ui),
                 Dialog::EditPlaylist { .. } => edit_playlist(app, ui),
                 Dialog::ConfirmAddToPlaylist {
