@@ -1,5 +1,5 @@
 title: Oxidify
-oxidify_version: "0.6.0"
+oxidify_version: "0.6.1"
 description: A fast, native music player for your Spotify library, for Linux, macOS, and Windows, written in Rust.
 lang: en-US
 url: https://master0ffate.github.io
