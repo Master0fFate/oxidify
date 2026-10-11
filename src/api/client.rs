@@ -5,7 +5,7 @@
 //! honours `Retry-After`, and maps error bodies to messages a person can
 //! read. The gateway supplies capability differences before dispatch.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -76,6 +76,104 @@ impl From<reqwest::Error> for ApiError {
 }
 
 pub type Result<T> = std::result::Result<T, ApiError>;
+
+/// Whether an answer from the single library endpoint means the classic
+/// endpoints should be used instead: it is refused, missing or unsupported
+/// for this app or account, rather than rate limited or signed out.
+fn prefers_classic_library(error: &ApiError) -> bool {
+    matches!(
+        error,
+        ApiError::Status { status, .. } if matches!(status, 400 | 403 | 404 | 405 | 410 | 501)
+    )
+}
+
+/// One classic library request: the ids of one kind for its endpoint, or a
+/// playlist's own follow endpoint.
+#[derive(Debug, PartialEq, Eq)]
+enum ClassicTarget {
+    Ids {
+        path: &'static str,
+        kind: Option<&'static str>,
+        ids: Vec<String>,
+    },
+    PlaylistFollow(String),
+}
+
+/// The classic endpoint for a uri kind: its path and, for artists, the
+/// `type` the following endpoint wants.
+fn classic_library_path(kind: &str) -> Option<(&'static str, Option<&'static str>)> {
+    match kind {
+        "track" => Some(("/me/tracks", None)),
+        "album" => Some(("/me/albums", None)),
+        "show" => Some(("/me/shows", None)),
+        "episode" => Some(("/me/episodes", None)),
+        "artist" => Some(("/me/following", Some("artist"))),
+        _ => None,
+    }
+}
+
+/// Groups uris by the classic endpoint that writes them, in the order the
+/// kinds first appear; a kind no classic endpoint takes is an error.
+fn classic_library_targets(uris: &[String]) -> Result<Vec<ClassicTarget>> {
+    let mut targets: Vec<ClassicTarget> = Vec::new();
+    for uri in uris {
+        let kind = crate::util::uri_kind(uri).unwrap_or_default();
+        let id = crate::util::uri_id(uri).ok_or_else(|| ApiError::Status {
+            status: 400,
+            message: format!("not a Spotify uri: {uri}"),
+        })?;
+        if kind == "playlist" {
+            targets.push(ClassicTarget::PlaylistFollow(id.to_string()));
+            continue;
+        }
+        let (path, kind) = classic_library_path(kind).ok_or_else(|| ApiError::Status {
+            status: 400,
+            message: format!("nothing in the library takes {uri}"),
+        })?;
+        match targets
+            .iter_mut()
+            .find(|target| matches!(target, ClassicTarget::Ids { path: held, .. } if *held == path))
+        {
+            Some(ClassicTarget::Ids { ids, .. }) => ids.push(id.to_string()),
+            _ => targets.push(ClassicTarget::Ids {
+                path,
+                kind,
+                ids: vec![id.to_string()],
+            }),
+        }
+    }
+    Ok(targets)
+}
+
+/// Groups uris by the classic endpoint that checks them, with where each
+/// answer goes in the list asked for. Playlists have no classic check an
+/// app can make for its listener, so a batch of them is refused and the
+/// library list stays the source of truth.
+#[allow(clippy::type_complexity)]
+fn classic_contains_groups(
+    uris: &[String],
+) -> Result<Vec<(&'static str, Option<&'static str>, Vec<usize>)>> {
+    let mut groups: Vec<(&'static str, Option<&'static str>, Vec<usize>)> = Vec::new();
+    for (index, uri) in uris.iter().enumerate() {
+        let kind = crate::util::uri_kind(uri).unwrap_or_default();
+        let (path, kind) = classic_library_path(kind).ok_or_else(|| ApiError::Status {
+            status: 400,
+            message: format!("nothing in the library can be checked for {uri}"),
+        })?;
+        let path: &'static str = match path {
+            "/me/tracks" => "/me/tracks/contains",
+            "/me/albums" => "/me/albums/contains",
+            "/me/shows" => "/me/shows/contains",
+            "/me/episodes" => "/me/episodes/contains",
+            _ => "/me/following/contains",
+        };
+        match groups.iter_mut().find(|(held, _, _)| *held == path) {
+            Some((_, _, indices)) => indices.push(index),
+            None => groups.push((path, kind, vec![index])),
+        }
+    }
+    Ok(groups)
+}
 
 fn is_quota_exhausted(body: &str) -> bool {
     serde_json::from_str::<ApiErrorBody>(body)
@@ -299,6 +397,9 @@ pub struct ApiClient {
     artist_albums_limit: u32,
     source: ApiSource,
     activity: Arc<NetActivity>,
+    /// The single library endpoint refused this app or account once, so
+    /// library writes and checks go to the classic endpoint of each kind.
+    classic_library: AtomicBool,
 }
 
 impl ApiClient {
@@ -314,6 +415,7 @@ impl ApiClient {
             tokens: Mutex::new(None),
             limiter: Semaphore::new(MAX_IN_FLIGHT),
             cooldown_until: tokio::sync::Mutex::new(Instant::now()),
+            classic_library: AtomicBool::new(false),
             search_limit,
             artist_albums_limit,
             source,
@@ -893,9 +995,51 @@ impl ApiClient {
         .await
     }
 
+    /// Library writes go to the single library endpoint; an app or account
+    /// it refuses falls back to the classic endpoint of each kind, which
+    /// is what made a like or a follow silently fail for some accounts,
+    /// and the client goes there first from then on.
     async fn library_write(&self, method: Method, uris: &[String]) -> Result<()> {
-        self.write(method, "/me/library", &[("uris", uris.join(","))], None)
-            .await?;
+        if !self.classic_library.load(Ordering::Relaxed) {
+            match self
+                .write(
+                    method.clone(),
+                    "/me/library",
+                    &[("uris", uris.join(","))],
+                    None,
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(error) if prefers_classic_library(&error) => {
+                    log::info!(
+                        "the library endpoint answered {error}; using the classic endpoints"
+                    );
+                    self.classic_library.store(true, Ordering::Relaxed);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        for target in classic_library_targets(uris)? {
+            match target {
+                ClassicTarget::Ids { path, kind, ids } => {
+                    let mut query = vec![("ids", ids.join(","))];
+                    if let Some(kind) = kind {
+                        query.push(("type", kind.to_string()));
+                    }
+                    self.write(method.clone(), path, &query, None).await?;
+                }
+                ClassicTarget::PlaylistFollow(id) => {
+                    self.write(
+                        method.clone(),
+                        &format!("/playlists/{id}/followers"),
+                        &[],
+                        None,
+                    )
+                    .await?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -910,8 +1054,43 @@ impl ApiClient {
 
     /// Whether each URI is in the library, in the same order as `uris`.
     pub async fn contains(&self, uris: &[String]) -> Result<Vec<bool>> {
-        self.get("/me/library/contains", &[("uris", uris.join(","))])
-            .await
+        if !self.classic_library.load(Ordering::Relaxed) {
+            match self
+                .get::<Vec<bool>>("/me/library/contains", &[("uris", uris.join(","))])
+                .await
+            {
+                Ok(flags) => return Ok(flags),
+                Err(error) if prefers_classic_library(&error) => {
+                    log::info!(
+                        "the library endpoint answered {error}; using the classic endpoints"
+                    );
+                    self.classic_library.store(true, Ordering::Relaxed);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let mut answers: Vec<Option<bool>> = vec![None; uris.len()];
+        for (path, kind, indices) in classic_contains_groups(uris)? {
+            let ids: Vec<String> = indices
+                .iter()
+                .filter_map(|index| crate::util::uri_id(&uris[*index]))
+                .map(str::to_string)
+                .collect();
+            let mut query = vec![("ids", ids.join(","))];
+            if let Some(kind) = kind {
+                query.push(("type", kind.to_string()));
+            }
+            let flags: Vec<bool> = self.get(path, &query).await?;
+            for (position, index) in indices.iter().enumerate() {
+                answers[*index] = flags.get(position).copied();
+            }
+        }
+        answers
+            .into_iter()
+            .map(|answer| {
+                answer.ok_or_else(|| ApiError::Decode("a library check answered short".into()))
+            })
+            .collect()
     }
 
     // ---- catalog -----------------------------------------------------------
@@ -1060,6 +1239,64 @@ struct SeveralTracks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The classic endpoints take ids of one kind each: a mixed batch is
+    /// split in the order the kinds appear, artists name their type, a
+    /// playlist goes to its own follow endpoint, and a check puts each
+    /// answer back where its uri was asked. Only an endpoint that refuses
+    /// the single library call switches the client over.
+    #[test]
+    fn classic_library_endpoints_take_each_kind_separately() {
+        let uris: Vec<String> = [
+            "spotify:track:t1",
+            "spotify:album:a1",
+            "spotify:track:t2",
+            "spotify:artist:r1",
+            "spotify:playlist:p1",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(
+            classic_library_targets(&uris).unwrap(),
+            vec![
+                ClassicTarget::Ids {
+                    path: "/me/tracks",
+                    kind: None,
+                    ids: vec!["t1".into(), "t2".into()],
+                },
+                ClassicTarget::Ids {
+                    path: "/me/albums",
+                    kind: None,
+                    ids: vec!["a1".into()],
+                },
+                ClassicTarget::Ids {
+                    path: "/me/following",
+                    kind: Some("artist"),
+                    ids: vec!["r1".into()],
+                },
+                ClassicTarget::PlaylistFollow("p1".into()),
+            ]
+        );
+        assert!(classic_library_targets(&["spotify:user:x".to_string()]).is_err());
+        let groups = classic_contains_groups(&uris[..4]).unwrap();
+        assert_eq!(groups[0], ("/me/tracks/contains", None, vec![0, 2]));
+        assert_eq!(groups[1], ("/me/albums/contains", None, vec![1]));
+        assert_eq!(
+            groups[2],
+            ("/me/following/contains", Some("artist"), vec![3])
+        );
+        assert!(classic_contains_groups(&uris[4..]).is_err());
+        assert!(prefers_classic_library(&ApiError::Status {
+            status: 403,
+            message: "forbidden".into()
+        }));
+        assert!(!prefers_classic_library(&ApiError::RateLimited));
+        assert!(!prefers_classic_library(&ApiError::Status {
+            status: 500,
+            message: "down".into()
+        }));
+    }
 
     #[test]
     fn play_request_body_shapes() {
