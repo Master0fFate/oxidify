@@ -109,10 +109,11 @@ getting started, everyday use, and how it connects to Spotify.
   the graph uses the same digital filters as playback. Alternate audio does
   not yet use the equalizer.
 - **Liked Songs in two presses.** The plus beside a song adds it to Liked
-  Songs. Once it is there, the check opens the places it can go: the
-  playlists you can edit, filtered as you type (Enter takes the first
-  match, playlists already holding the song are marked), or out of Liked
-  Songs again.
+  Songs. Once it is there, the check opens the Add to playlist sheet:
+  Liked Songs and the playlists you can edit, the ones already holding the
+  song under Saved in with a check, the rest with an empty circle. Tick or
+  untick any of them, Liked Songs included, and Done applies it all at
+  once; Enter in the search adds to the first match straight away.
 - **Your listening.** A page of what you actually played: hours, plays,
   the songs, artists and albums you played most, a chart by day or month,
   and your streak, by week, month, year or all time. A play is counted on
