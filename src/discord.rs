@@ -8,6 +8,7 @@ use crate::app::NowPlaying;
 
 const CLIENT_ID: &str = "1561781510099697806";
 const LOGO_ASSET: &str = "oxidify";
+const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const RETRY: Duration = Duration::from_secs(15);
 const SEND_SPACING: Duration = Duration::from_secs(1);
 const FIELD_LIMIT: usize = 128;
@@ -60,6 +61,12 @@ impl Presence {
         if self.cover.is_some() {
             assets["small_image"] = json!(LOGO_ASSET);
             assets["small_text"] = json!("Oxidify");
+            assets["small_url"] = json!(REPOSITORY);
+            if let Some(link) = &self.link {
+                assets["large_url"] = json!(link);
+            }
+        } else {
+            assets["large_url"] = json!(REPOSITORY);
         }
         let mut activity = json!({
             "type": 2,
