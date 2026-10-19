@@ -740,14 +740,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     playback_dirty = true;
                 }
                 ui.add_space(4.0);
-                theme::subtle(
-                    ui,
-                    &palette,
-                    if crate::alternate::has_bundled_ytdlp() {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(if crate::alternate::has_bundled_ytdlp() {
                         "Native YouTube and optional Piped searches use one shared HTTP client. yt-dlp runs only after native providers fail. You are responsible for provider endpoints and terms. The bundled yt-dlp is extracted locally and never downloaded at runtime. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
                     } else {
                         "Native YouTube and optional Piped searches use one shared HTTP client. yt-dlp runs only after native providers fail. You are responsible for provider endpoints and terms. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
-                    },
+                    })
+                        .font(theme::regular(13.0))
+                        .color(palette.secondary),
+                    )
+                    .wrap(),
                 );
                 ui.add_space(8.0);
             }

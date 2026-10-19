@@ -2215,6 +2215,8 @@ pub fn setting_row(
     description: &str,
     control: impl FnOnce(&mut Ui),
 ) {
+    const CONTROL_GAP: f32 = 16.0;
+    const MIN_TEXT_WIDTH: f32 = 240.0;
     let text = |ui: &mut Ui| {
         theme::text(ui, label, theme::medium(14.0), palette.text);
         if !description.is_empty() {
@@ -2228,26 +2230,32 @@ pub fn setting_row(
             );
         }
     };
-    // Too narrow for the words and the control side by side: the control
-    // goes on its own line under the text instead of squeezing the words
-    // into a column one letter wide.
-    if ui.available_width() < 520.0 {
+    let width_id = ui.id().with(("setting-control-width", label));
+    let remembered = ui.data(|data| data.get_temp::<f32>(width_id));
+    let control_width = remembered.unwrap_or(0.0);
+    let text_width =
+        ui.available_width() - control_width - CONTROL_GAP - ui.spacing().item_spacing.x * 2.0;
+    let measured = if text_width < MIN_TEXT_WIDTH {
         ui.vertical(|ui| {
             text(ui);
             ui.add_space(6.0);
-            ui.horizontal(control);
-        });
+            ui.horizontal(control).response.rect.width()
+        })
+        .inner
     } else {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                // A frame can arrive before the window has its size (a
-                // fullscreen request on Wayland answers a frame late), so
-                // never go negative.
-                ui.set_width((ui.available_width() - 260.0).max(0.0));
+                ui.set_width(text_width);
                 text(ui);
             });
-            ui.with_layout(Layout::right_to_left(Align::Center), control);
-        });
+            ui.add_space(CONTROL_GAP);
+            ui.horizontal(control).response.rect.width()
+        })
+        .inner
+    };
+    if remembered.is_none_or(|width| (width - measured).abs() > 0.5) {
+        ui.data_mut(|data| data.insert_temp(width_id, measured));
+        ui.ctx().request_discard("setting row control width");
     }
     ui.add_space(10.0);
 }
