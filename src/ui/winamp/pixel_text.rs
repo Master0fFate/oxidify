@@ -127,10 +127,10 @@ impl PixelText {
 
     /// A line, drawn now if it has not been.
     pub fn line(&mut self, ctx: &egui::Context, text: &str) -> &Line {
-        if self.lines.len() >= CACHE_LIMIT {
-            self.lines.clear();
-        }
         if !self.lines.contains_key(text) {
+            if self.lines.len() >= CACHE_LIMIT {
+                self.lines.clear();
+            }
             let image = self.rasterise(text);
             let [width, height] = image.size;
             let texture =
@@ -327,5 +327,20 @@ mod tests {
             (drawn - long).abs() <= long * 0.15,
             "drawn {drawn}, measured {long}"
         );
+    }
+
+    #[test]
+    fn a_cached_line_survives_when_the_cache_is_full() {
+        let ctx = egui::Context::default();
+        let mut text = PixelText::default();
+        let _ = text.line(&ctx, "keep");
+        for i in 0..(CACHE_LIMIT - 1) {
+            let _ = text.line(&ctx, &format!("r{i}"));
+        }
+        assert_eq!(text.lines.len(), CACHE_LIMIT);
+        assert!(text.lines.contains_key("keep"));
+        let _ = text.line(&ctx, "keep");
+        assert!(text.lines.contains_key("keep"));
+        assert_eq!(text.lines.len(), CACHE_LIMIT);
     }
 }

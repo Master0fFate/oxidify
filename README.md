@@ -304,6 +304,7 @@ responsibility; see the section above.
 | `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
 | `Ctrl+M` | Winamp mini player |
+| `F11` | Full-screen lyrics |
 | `Ctrl+,` | Settings |
 | `Ctrl+/` or `?` | All shortcuts |
 | `Ctrl+Q` | Quit |
@@ -365,7 +366,14 @@ autoplay, gapless playback, the audio backend (PulseAudio/PipeWire or ALSA
 on Linux), audio cache size, theme, accent, whether Your Library is shown,
 folded to a rail, or a grid, whether pages take colour from artwork, the mini player's skin and size, and the alternate
 playback fields (`playback_backend`, `piped_api_base`, `ytdlp_path`,
-`alternate_min_score`, `alternate_skip_on_miss`).
+`alternate_min_score`, `alternate_skip_on_miss`) and the proxy choice
+(`proxy_mode`, `proxy_host`, `proxy_port`, `proxy_username`). A proxy
+carries everything Oxidify asks of the network: `system` follows the
+environment and platform settings, `off` connects directly no matter
+what, `http` and `socks5` use one named proxy. Its optional password
+never sits in the settings file; it is kept alone, with owner-only
+permissions, in the credentials directory. A changed proxy applies the
+next time Oxidify starts.
 Playback settings apply when you press **Apply and restart playback**.
 Switching source stops the other engine so both never run at once. The
 default remains Spotify Connect.

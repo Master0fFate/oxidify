@@ -92,6 +92,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             );
             key(Modifiers::SHIFT, Key::ArrowLeft, Action::SeekBy(-10_000));
             key(Modifiers::SHIFT, Key::ArrowRight, Action::SeekBy(10_000));
+            key(Modifiers::NONE, Key::F11, Action::ToggleFullscreenLyrics);
             key(Modifiers::NONE, Key::Space, Action::TogglePlay);
             key(Modifiers::NONE, Key::M, Action::ToggleMute);
             key(Modifiers::NONE, Key::S, Action::ToggleShuffle);
@@ -156,6 +157,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     if ctx.input(|input| input.key_pressed(Key::Escape)) {
         if app.dialog.is_some() {
             app.actions.push(Action::CloseDialog);
+        } else if app.fullscreen_lyrics {
+            app.actions.push(Action::ToggleFullscreenLyrics);
         } else if app.show_devices {
             app.show_devices = false;
         }
@@ -174,6 +177,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("R", "Cycle repeat"),
     ("Q", "Show the queue"),
     ("L", "Show the lyrics"),
+    ("F11", "Full-screen lyrics"),
     ("Ctrl+F  or  /", "Search"),
     ("Ctrl+B", "Show or hide the sidebar"),
     ("Alt+←  /  Alt+→", "Back or forward"),
@@ -418,6 +422,23 @@ mod tests {
             assert!(app.actions.is_empty());
             app.remote = None;
             dispatch(app, vec![key_event(Key::B, Modifiers::NONE, false)], false);
+            assert!(app.actions.is_empty());
+        });
+    }
+
+    #[test]
+    fn f11_toggles_full_screen_lyrics_outside_of_text_fields() {
+        with_app("fullscreen", |app| {
+            dispatch(
+                app,
+                vec![key_event(Key::F11, Modifiers::NONE, false)],
+                false,
+            );
+            assert!(matches!(
+                app.actions.as_slice(),
+                [Action::ToggleFullscreenLyrics]
+            ));
+            dispatch(app, vec![key_event(Key::F11, Modifiers::NONE, false)], true);
             assert!(app.actions.is_empty());
         });
     }

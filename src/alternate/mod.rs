@@ -23,7 +23,7 @@ mod ytdlp;
 
 pub use bundle::has_bundled_ytdlp;
 pub use engine::{AlternateHandle, spawn};
-pub use hydrate::local_from_track;
+pub use hydrate::{MAX_TRACKS as MAX_QUEUE_TRACKS, local_from_track};
 pub use matching::{Candidate, TrackQuery, normalize_query, rank_candidates};
 pub use session::Session;
 pub use streams::{AudioStream, select_audio_stream};
@@ -39,6 +39,7 @@ pub struct AlternateConfig {
     pub min_score: f32,
     pub skip_on_miss: bool,
     pub gapless: bool,
+    pub autoplay: bool,
     pub volume: u16,
 }
 
@@ -54,6 +55,7 @@ impl AlternateConfig {
             },
             skip_on_miss: settings.alternate_skip_on_miss,
             gapless: settings.gapless,
+            autoplay: settings.autoplay,
             volume: settings.volume,
         }
     }

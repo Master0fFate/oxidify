@@ -15,13 +15,14 @@ Oxidify follows each platform's conventions. On Linux:
 | Shared Web API sign-in | `~/.local/state/oxidify/shared_web_api_token.json` | Yes, you sign in again |
 | Personal Web API sign-in | `~/.local/state/oxidify/personal_web_api_token.json` | Yes, personal acceleration is removed |
 | Playback credential | `~/.local/state/oxidify/credentials/` | Yes, you approve playback again |
+| Proxy password | `~/.local/state/oxidify/credentials/proxy-password` | Yes, you type it again |
 | Last session | `~/.local/state/oxidify/session.json` | Yes |
 | Audio cache | `~/.cache/oxidify/audio/` | Always |
 | Artwork cache | `~/.cache/oxidify/art/` | Always |
 | Lyrics cache | `~/.cache/oxidify/lyrics/` | Always |
 | Account-tagged Top songs cache (six-hour lifetime, at most 1 MiB) | `~/.cache/oxidify/top-tracks.json` | Always |
-| Account-scoped playlist cache | `~/.cache/oxidify/playlists/<account-id>/` | Always |
-| Account-scoped library snapshot (the playlist list and Liked Songs as last seen) | `~/.cache/oxidify/library/<account-id>/` | Always |
+| Account-scoped playlist cache (shown first, then revalidated; at most 2 MiB per playlist; Settings can clear it) | `~/.cache/oxidify/playlists/<account-id>/` | Always |
+| Account-scoped library snapshot (the playlist list and Liked Songs as last seen; Settings can clear it) | `~/.cache/oxidify/library/<account-id>/` | Always |
 | Last run's log | `~/.local/state/oxidify/oxidify.log` | Always |
 | Crash log | `~/.local/state/oxidify/panic.log` | Always |
 | Bundled yt-dlp | `~/.local/state/oxidify/bin/` | Yes; the app extracts it again |
@@ -85,6 +86,24 @@ without resetting preferences. Its main fields are:
 | `ytdlp_path` | empty | Last-resort user yt-dlp; used only if strictly newer than the official pin |
 | `alternate_min_score` | `0.55` | Minimum match score; weaker hits are never played |
 | `alternate_skip_on_miss` | `true` | Skip forward when no match meets the score. Transient network errors retry; terminal transport and decode failures stop instead of skipping. |
+| `proxy_mode` | `system` | `system` (environment and platform settings), `off` (direct, always), `http`, or `socks5` |
+| `proxy_host` | empty | Host name or IP of a manual proxy, without scheme or port |
+| `proxy_port` | empty | Port of the manual proxy |
+| `proxy_username` | empty | Optional user for the Web API through the manual proxy |
+
+### Proxy settings
+
+A manual proxy covers everything Oxidify asks of the network: catalog and
+playback control through the Web API, and the audio connection itself.
+The proxy password is never written to `settings.json`; it lives alone in
+`credentials/proxy-password` with owner-only permissions, and only the
+Web API client carries it. The audio connection (librespot) cannot sign
+in to a proxy, so an authenticating proxy blocks streaming unless it also
+accepts anonymous connections.
+
+A changed proxy is picked up the next time Oxidify starts. `off` ignores
+environment variables and platform settings; `system` leaves them in
+charge.
 
 ## Command line
 

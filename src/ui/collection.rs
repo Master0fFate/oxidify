@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
-use egui::{Align, Layout, Rect, Sense, Vec2, pos2, vec2};
+use egui::{Align, Layout, Sense, Vec2};
 
 use crate::api::models::{Album, PlayableItem, Playlist, pick_image};
 use crate::app::App;
 use crate::model::{
-    Action, Dialog, DragTrack, Loadable, Page, PagedList, RowContext, SortColumn, TableSort,
+    Action, DragTrack, Loadable, Page, PagedList, RowContext, SortColumn, TableSort,
 };
-use crate::theme::{self, Icon, Palette};
+use crate::theme::{self, Icon};
 use crate::util;
 
 use super::widgets::{self, TrackRow};
@@ -1275,34 +1275,11 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
     );
 }
 
-#[allow(dead_code)]
-fn playlist_dialog(app: &mut App, playlist: &Playlist) {
-    app.actions.push(Action::ShowDialog(Dialog::EditPlaylist {
-        id: playlist.id.clone(),
-        name: playlist.name.clone(),
-        description: playlist.description.clone().unwrap_or_default(),
-        public: playlist.public.unwrap_or(false),
-    }));
-}
-
-#[allow(dead_code)]
-fn rect_after(ui: &egui::Ui, height: f32) -> Rect {
-    let cursor = ui.cursor();
-    Rect::from_min_size(
-        pos2(cursor.left(), cursor.top()),
-        vec2(ui.available_width(), height),
-    )
-}
-
-#[allow(dead_code)]
-fn palette_of(app: &App) -> Palette {
-    app.palette
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::api::models::{Album, ArtistRef, Track};
+    use egui::{Rect, vec2};
 
     /// Sorting by album groups each album's songs in disc and track
     /// order, whichever way the albums run, and keeps two albums of the

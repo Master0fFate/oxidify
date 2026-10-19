@@ -197,6 +197,8 @@ The microphone button in the player bar (or `L`) opens lyrics for the playing
 track beside the page. For timed lyrics, the current line is
 highlighted and the panel scrolls automatically; click a line to seek to it.
 Manual scrolling pauses automatic following, and **Follow** resumes it.
+The expand button in the panel, or `F11`, shows the lyrics over the whole
+screen; `Esc` or `F11` comes back.
 Oxidify requests lyrics from Spotify when local playback is authorized.
 Otherwise, or when Spotify has no lyrics for a track, it uses
 [LRCLIB](https://lrclib.net), an open database that needs no account. Podcasts
@@ -292,6 +294,7 @@ Connect devices and conflicting media-key handlers.
 | `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
 | `Ctrl+M` | Winamp mini player |
+| `F11` | Full-screen lyrics |
 | `Ctrl+,` | Settings |
 | `Ctrl+/` or `?` | All shortcuts |
 | `Ctrl+Q` | Quit |
@@ -305,4 +308,5 @@ Settings (Ctrl+,) includes the Connect device name, audio quality up to
 320 kbps, volume normalisation, autoplay, gapless playback, the audio backend
 on Linux, the audio cache size, the equalizer, themes, album-art tinting,
 the mini player's skin and size, and close-to-tray behaviour. Applying playback settings restarts the local player. Other
-settings take effect immediately.
+settings take effect immediately. The search field at the top keeps only the
+settings whose words match.

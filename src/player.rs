@@ -33,7 +33,7 @@ use librespot_playback::{
 };
 use sha1::{Digest, Sha1};
 
-use crate::sink::{ErrorHook, RodioSink};
+use crate::sink::{ErrorHook, OutputControl, RodioSink};
 use crate::vis::{AudioTap, Tapped};
 
 #[derive(Clone, Debug)]
@@ -50,6 +50,7 @@ pub struct EngineConfig {
     pub volume_dir: PathBuf,
     pub audio_cache_dir: Option<PathBuf>,
     pub audio_cache_limit: Option<u64>,
+    pub proxy: Option<String>,
     /// Where the samples on their way out are copied for the visualiser.
     pub tap: Arc<AudioTap>,
     /// The equalizer's settings, shared with the window that sets them.
@@ -265,6 +266,12 @@ impl Engine {
         let session_config = SessionConfig {
             device_id: device_id.clone(),
             autoplay: Some(config.autoplay),
+            proxy: config
+                .proxy
+                .as_deref()
+                .map(url::Url::parse)
+                .transpose()
+                .map_err(|error| anyhow!("the proxy address is not a URL: {error}"))?,
             ..SessionConfig::default()
         };
         let player_config = PlayerConfig {
@@ -293,11 +300,22 @@ impl Engine {
             ..LocalState::default()
         }));
         let session = Session::new(session_config, Some(cache));
-        let (sink_builder, volume) =
-            sink_builder(config, Arc::clone(&state), Arc::clone(&notify), &mixer);
+        let output = OutputControl::new();
+        let (sink_builder, volume) = sink_builder(
+            config,
+            Arc::clone(&state),
+            Arc::clone(&notify),
+            &mixer,
+            &output,
+        );
         let player = Player::new(player_config, session.clone(), volume, sink_builder);
         let events = player.get_player_event_channel();
-        tokio::spawn(run_events(events, Arc::clone(&state), Arc::clone(&notify)));
+        tokio::spawn(run_events(
+            events,
+            Arc::clone(&state),
+            Arc::clone(&notify),
+            output,
+        ));
 
         let connect_config = ConnectConfig {
             name: config.device_name.clone(),
@@ -517,6 +535,7 @@ fn sink_builder(
     state: Arc<Mutex<LocalState>>,
     notify: Notify,
     mixer: &Arc<dyn Mixer>,
+    control: &OutputControl,
 ) -> SinkAndVolume {
     let device = config.audio_device.clone();
     let tap = Arc::clone(&config.tap);
@@ -551,9 +570,10 @@ fn sink_builder(
         }
     }
     let volume = mixer.get_soft_volume();
+    let control = control.clone();
     (
         Box::new(move || {
-            let sink = Box::new(RodioSink::new(device, report, volume));
+            let sink = Box::new(RodioSink::new(device, report, volume, control.clone()));
             Box::new(Tapped::new(sink, tap, None, eq)) as Box<dyn Sink>
         }),
         Box::new(NoOpVolume),
@@ -564,6 +584,7 @@ async fn run_events(
     mut events: tokio::sync::mpsc::UnboundedReceiver<PlayerEvent>,
     state: Arc<Mutex<LocalState>>,
     notify: Notify,
+    output: OutputControl,
 ) {
     let mut play_request_id = None;
     while let Some(event) = events.recv().await {
@@ -578,6 +599,9 @@ async fn run_events(
             && current != incoming
         {
             continue;
+        }
+        if matches!(event, PlayerEvent::Seeked { .. }) {
+            output.discard_queued();
         }
         let snapshot = {
             let mut current = state.lock().unwrap_or_else(|p| p.into_inner());
@@ -865,6 +889,7 @@ mod tests {
             volume_dir: PathBuf::new(),
             audio_cache_dir: None,
             audio_cache_limit: None,
+            proxy: None,
         };
         let id = config.device_id();
         assert_eq!(id.len(), 40);

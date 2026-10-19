@@ -9,6 +9,7 @@ use crate::theme::{self, Icon};
 use super::widgets;
 
 const LINE_SIZE: f32 = 19.0;
+const FULLSCREEN_LINE_SIZE: f32 = 34.0;
 const LINE_GAP: f32 = 10.0;
 /// How long a line takes to light up or fade.
 const LIGHT_UP_SECONDS: f32 = 0.22;
@@ -47,6 +48,18 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
                         {
                             app.actions.push(Action::ToggleLyricsPanel);
                         }
+                        if theme::icon_button(
+                            ui,
+                            Icon::Shrink,
+                            18.0,
+                            palette.secondary,
+                            palette.text,
+                            "Full screen",
+                        )
+                        .clicked()
+                        {
+                            app.actions.push(Action::ToggleFullscreenLyrics);
+                        }
                         let loaded = matches!(&app.lyrics, Loadable::Loaded(Some(_)));
                         if loaded
                             && !app.lyrics_following
@@ -58,7 +71,7 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
                     });
                 });
                 ui.add_space(8.0);
-                contents(app, ui);
+                contents(app, ui, LINE_SIZE, false);
             });
     });
     let current_width = response.response.rect.width();
@@ -68,7 +81,36 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-fn contents(app: &mut App, ui: &mut egui::Ui) {
+pub fn fullscreen(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    egui::CentralPanel::default()
+        .frame(
+            Frame::new()
+                .fill(palette.panel)
+                .inner_margin(Margin::symmetric(28, 16)),
+        )
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::icon_button(
+                        ui,
+                        Icon::X,
+                        18.0,
+                        palette.secondary,
+                        palette.text,
+                        "Leave full screen",
+                    )
+                    .clicked()
+                    {
+                        app.actions.push(Action::ToggleFullscreenLyrics);
+                    }
+                });
+            });
+            contents(app, ui, FULLSCREEN_LINE_SIZE, true);
+        });
+}
+
+fn contents(app: &mut App, ui: &mut egui::Ui, line_size: f32, centered: bool) {
     let palette = app.palette;
     let Some(now) = app.now_playing() else {
         widgets::empty_state(
@@ -124,90 +166,104 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     // line is quiet, regular text, the same before and after it has been
     // sung. A line takes 220 ms to light up or fade, as in omarchy-lyrics.
     let quiet = palette.text.gamma_multiply(0.45);
+    let body = if centered {
+        Layout::top_down(Align::Center)
+    } else {
+        Layout::default()
+    };
     let scroll = egui::ScrollArea::vertical()
         .id_salt("lyrics-scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            // Before the first line there is nothing to highlight, so the
-            // panel sits at the top rather than wherever it was left.
-            if follow && lyrics.synced && active.is_none() {
-                let top = ui.cursor().min;
-                ui.scroll_to_rect(
-                    egui::Rect::from_min_size(top, egui::vec2(1.0, 1.0)),
-                    Some(Align::Min),
-                );
-            }
-            ui.add_space(12.0);
-            for (index, line) in lyrics.lines.iter().enumerate() {
-                let is_active = active == Some(index);
-                let lit = ui.ctx().animate_bool_with_time(
-                    egui::Id::new("lyric-line").with(index),
-                    is_active,
-                    LIGHT_UP_SECONDS,
-                );
-                let color = blend(quiet, palette.accent, lit);
-                let font = if lit > 0.5 {
-                    theme::bold(LINE_SIZE)
-                } else {
-                    theme::regular(LINE_SIZE)
-                };
-                // A timed line with no words is the band playing on.
-                let text = if line.text.is_empty() && lyrics.synced {
-                    "\u{266a}"
-                } else {
-                    line.text.as_str()
-                };
-                let sense = if lyrics.synced {
-                    Sense::click()
-                } else {
-                    Sense::hover()
-                };
-                let display = crate::bidi::display_text(text);
-                let halign = crate::bidi::halign_for(text);
-                let response = ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(display.into_owned())
-                            .font(font)
-                            .color(color),
-                    )
-                    .halign(halign)
-                    .sense(sense),
-                );
-                let rect = response.rect;
-                if lyrics.synced {
-                    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                    if response.clicked()
-                        && let Some(at_ms) = line.at_ms
-                    {
-                        app.actions.push(Action::Seek(at_ms));
-                        app.lyrics_following = true;
+            ui.with_layout(body, |ui| {
+                // Before the first line there is nothing to highlight, so the
+                // panel sits at the top rather than wherever it was left.
+                if follow && lyrics.synced && active.is_none() {
+                    let top = ui.cursor().min;
+                    ui.scroll_to_rect(
+                        egui::Rect::from_min_size(top, egui::vec2(1.0, 1.0)),
+                        Some(Align::Min),
+                    );
+                }
+                ui.add_space(12.0);
+                for (index, line) in lyrics.lines.iter().enumerate() {
+                    let is_active = active == Some(index);
+                    let lit = ui.ctx().animate_bool_with_time(
+                        egui::Id::new("lyric-line").with(index),
+                        is_active,
+                        LIGHT_UP_SECONDS,
+                    );
+                    let color = blend(quiet, palette.accent, lit);
+                    let font = if lit > 0.5 {
+                        theme::bold(line_size)
+                    } else {
+                        theme::regular(line_size)
+                    };
+                    // A timed line with no words is the band playing on.
+                    let text = if line.text.is_empty() && lyrics.synced {
+                        "\u{266a}"
+                    } else {
+                        line.text.as_str()
+                    };
+                    let sense = if lyrics.synced {
+                        Sense::click()
+                    } else {
+                        Sense::hover()
+                    };
+                    let display = crate::bidi::display_text(text);
+                    let halign = if centered {
+                        Align::Center
+                    } else {
+                        crate::bidi::halign_for(text)
+                    };
+                    let response = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(display.into_owned())
+                                .font(font)
+                                .color(color),
+                        )
+                        .halign(halign)
+                        .sense(sense),
+                    );
+                    let rect = response.rect;
+                    if lyrics.synced {
+                        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if response.clicked()
+                            && let Some(at_ms) = line.at_ms
+                        {
+                            app.actions.push(Action::Seek(at_ms));
+                            app.lyrics_following = true;
+                        }
                     }
+                    if is_active && follow && centered {
+                        ui.scroll_to_rect(rect, Some(Align::Center));
+                    } else if is_active && follow {
+                        // The line being sung sits a third of the way down,
+                        // so the lines still to come fill the view.
+                        let lead = ui.clip_rect().height() * 0.3;
+                        let target =
+                            Rect::from_min_max(pos2(rect.left(), rect.top() - lead), rect.max);
+                        ui.scroll_to_rect(target, Some(Align::Min));
+                    }
+                    ui.add_space(LINE_GAP);
                 }
-                if is_active && follow {
-                    // The line being sung sits a third of the way down,
-                    // so the lines still to come fill the view.
-                    let lead = ui.clip_rect().height() * 0.3;
-                    let target = Rect::from_min_max(pos2(rect.left(), rect.top() - lead), rect.max);
-                    ui.scroll_to_rect(target, Some(Align::Min));
+                // Words without timing can only be followed by the clock: sit
+                // at the part of the text the song is probably at.
+                if app.lyrics_following && !lyrics.synced && now.duration_ms > 0 {
+                    let fraction =
+                        (f64::from(now.position_ms) / f64::from(now.duration_ms)).clamp(0.0, 1.0);
+                    let content = ui.min_rect();
+                    let y = content.top() + content.height() * fraction as f32;
+                    ui.scroll_to_rect(
+                        egui::Rect::from_min_max(
+                            egui::pos2(content.left(), y),
+                            egui::pos2(content.right(), y + 1.0),
+                        ),
+                        Some(Align::Center),
+                    );
                 }
-                ui.add_space(LINE_GAP);
-            }
-            // Words without timing can only be followed by the clock: sit
-            // at the part of the text the song is probably at.
-            if app.lyrics_following && !lyrics.synced && now.duration_ms > 0 {
-                let fraction =
-                    (f64::from(now.position_ms) / f64::from(now.duration_ms)).clamp(0.0, 1.0);
-                let content = ui.min_rect();
-                let y = content.top() + content.height() * fraction as f32;
-                ui.scroll_to_rect(
-                    egui::Rect::from_min_max(
-                        egui::pos2(content.left(), y),
-                        egui::pos2(content.right(), y + 1.0),
-                    ),
-                    Some(Align::Center),
-                );
-            }
-            ui.add_space(60.0);
+                ui.add_space(60.0);
+            });
         });
     // Scrolling by hand means the reader wants to look elsewhere; the
     // Follow button in the header picks the song back up.

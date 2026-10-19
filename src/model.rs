@@ -894,6 +894,7 @@ pub enum Action {
     ToggleNowPlayingPanel,
     /// Which of Home's shelves to show.
     SetHomeFilter(HomeFilter),
+    ToggleFullscreenLyrics,
     ToggleDevicesPopup,
     CheckForUpdates,
     SettingsChanged,
@@ -902,6 +903,8 @@ pub enum Action {
     ShowWindow,
     HideWindow,
     ClearArtCache,
+    ClearLibraryCache,
+    SaveProxyPassword,
     /// Open or close the Winamp window.
     ToggleWinampWindow,
     /// Wear a skin from the skins folder, or the built-in one for `None`.

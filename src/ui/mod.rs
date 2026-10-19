@@ -95,6 +95,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         toasts(app, ctx, 20.0);
         return;
     }
+    if app.fullscreen_lyrics {
+        lyrics::fullscreen(app, ui);
+        toasts(app, ctx, 16.0);
+        return;
+    }
     player_bar::show(app, ui);
     topbar::show(app, ui);
     if app.settings.sidebar_visible {

@@ -5,7 +5,7 @@ use egui::{Align, CornerRadius, Frame, Layout, Margin, Stroke, Vec2};
 use crate::api::models::pick_image;
 use crate::app::App;
 use crate::model::{Action, Dialog};
-use crate::settings::{PlaybackBackend, ThemeChoice};
+use crate::settings::{self, PlaybackBackend, ProxyMode, ThemeChoice};
 use crate::theme::{self, Icon, Palette};
 
 use super::widgets;
@@ -16,8 +16,16 @@ fn section(
     ui: &mut egui::Ui,
     palette: &Palette,
     title: &str,
+    keywords: &[&str],
+    query: &str,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
+    if !row_matches(
+        query,
+        std::iter::once(title).chain(keywords.iter().copied()),
+    ) {
+        return;
+    }
     ui.add_space(10.0);
     theme::text(ui, title, theme::bold(18.0), palette.text);
     ui.add_space(8.0);
@@ -37,10 +45,43 @@ fn section(
     ui.add_space(8.0);
 }
 
+fn row_matches<'a>(query: &str, texts: impl Iterator<Item = &'a str> + Clone) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    query.split_whitespace().all(|word| {
+        let word = word.to_lowercase();
+        texts
+            .clone()
+            .any(|text| text.to_lowercase().contains(&word))
+    })
+}
+
+fn search_row(
+    ui: &mut egui::Ui,
+    query: &str,
+    palette: &Palette,
+    label: &str,
+    description: &str,
+    control: impl FnOnce(&mut egui::Ui),
+) {
+    if row_matches(query, [label, description].into_iter()) {
+        widgets::setting_row(ui, palette, label, description, control);
+    }
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     ui.add_space(8.0);
     theme::text(ui, "Settings", theme::bold(28.0), palette.text);
+    ui.add_space(4.0);
+    ui.add(
+        egui::TextEdit::singleline(&mut app.settings_search)
+            .hint_text(egui::RichText::new("Search settings").color(palette.dim))
+            .font(theme::regular(14.0))
+            .desired_width(300.0),
+    );
+    let query = app.settings_search.trim().to_string();
     ui.add_space(4.0);
     let dirty_id = egui::Id::new(PLAYBACK_DIRTY_ID);
     let mut playback_dirty = ui
@@ -48,227 +89,415 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .unwrap_or(false);
     let mut changed = false;
 
-    section(ui, &palette, "Account", |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 14.0;
-            let avatar = app
-                .user
-                .as_ref()
-                .and_then(|user| pick_image(&user.images, 64).map(str::to_string));
-            widgets::cover(ui, &palette, avatar.as_deref(), 56.0, 28.0, Icon::User);
-            ui.vertical(|ui| {
-                let name = app
+    section(
+        ui,
+        &palette,
+        "Account",
+        &[
+            "account",
+            "sign out",
+            "personal app",
+            "client id",
+            "redirect",
+            "authorize",
+            "developer dashboard",
+        ],
+        &query,
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 14.0;
+                let avatar = app
                     .user
                     .as_ref()
-                    .map(|user| user.name().to_string())
-                    .unwrap_or_default();
-                theme::text(ui, name, theme::semibold(16.0), palette.text);
-                let product = app
-                    .user
-                    .as_ref()
-                    .and_then(|user| user.product.clone())
-                    .map(|product| match product.to_ascii_lowercase().as_str() {
-                        "premium" => "Spotify Premium".to_string(),
-                        "free" | "open" => {
-                            "Spotify Free · bundled alternate local audio".to_string()
+                    .and_then(|user| pick_image(&user.images, 64).map(str::to_string));
+                widgets::cover(ui, &palette, avatar.as_deref(), 56.0, 28.0, Icon::User);
+                ui.vertical(|ui| {
+                    let name = app
+                        .user
+                        .as_ref()
+                        .map(|user| user.name().to_string())
+                        .unwrap_or_default();
+                    theme::text(ui, name, theme::semibold(16.0), palette.text);
+                    let product = app
+                        .user
+                        .as_ref()
+                        .and_then(|user| user.product.clone())
+                        .map(|product| match product.to_ascii_lowercase().as_str() {
+                            "premium" => "Spotify Premium".to_string(),
+                            "free" | "open" => {
+                                "Spotify Free · bundled alternate local audio".to_string()
+                            }
+                            _ => "Spotify account · Premium not confirmed".to_string(),
+                        })
+                        .unwrap_or_else(|| {
+                            if app.user.is_some() {
+                                "Spotify account · Premium not confirmed".to_string()
+                            } else {
+                                String::new()
+                            }
+                        });
+                    theme::text(ui, product, theme::regular(13.0), palette.secondary);
+                    if let Some(username) = app.local.connected.then(|| app.local.username.clone())
+                        && !username.is_empty()
+                    {
+                        theme::text(
+                            ui,
+                            format!("Connected as {username}"),
+                            theme::regular(12.0),
+                            palette.dim,
+                        );
+                    }
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::pill_button(ui, &palette, "Sign out", false).clicked() {
+                        app.actions.push(Action::SignOut);
+                    }
+                });
+            });
+            ui.add_space(10.0);
+            let mut client_id = app.settings.web_client_id.clone().unwrap_or_default();
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Make it even faster",
+                "Add your own Spotify Development Mode app as optional acceleration. Oxidify keeps the shared app for catalog coverage and external playlists.",
+                |ui| {
+                    let response = Frame::new()
+                        .fill(palette.surface)
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::symmetric(10, 6))
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut client_id)
+                                    .hint_text(egui::RichText::new("Client ID").color(palette.dim))
+                                    .font(theme::regular(13.0))
+                                    .frame(egui::Frame::NONE)
+                                    .desired_width(200.0),
+                            )
+                        })
+                        .inner;
+                    if response.changed() {
+                        let trimmed = client_id.trim().to_string();
+                        app.settings.web_client_id = (!trimmed.is_empty()).then_some(trimmed);
+                        changed = true;
+                    }
+                },
+            );
+            let help_id = egui::Id::new("personal-web-app-help");
+            let mut show_help = ui
+                .data(|data| data.get_temp::<bool>(help_id))
+                .unwrap_or(false);
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Don't have one?",
+                "Set up a personal app in Spotify's developer dashboard. App owners need Premium.",
+                |ui| {
+                    if theme::pill_button(ui, &palette, "Show me how", false).clicked() {
+                        show_help = !show_help;
+                        ui.data_mut(|data| data.insert_temp(help_id, show_help));
+                    }
+                },
+            );
+            let redirect_uri = crate::auth::Grant::shared_web_api().redirect_uri();
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Required Redirect URI",
+                &redirect_uri,
+                |ui| {
+                    if theme::pill_button(ui, &palette, "Copy URI", false).clicked() {
+                        ui.ctx().copy_text(redirect_uri.clone());
+                    }
+                },
+            );
+            ui.add(egui::Label::new(egui::RichText::new("In your Spotify app's Settings, add this exact Redirect URI and save before authorizing. Use 127.0.0.1, not localhost; no trailing slash.").font(theme::regular(13.0)).color(palette.secondary)).wrap());
+            if show_help {
+                ui.add_space(8.0);
+                for step in [
+                    "1. Open the developer dashboard and sign in with your Spotify Premium account.",
+                    "2. Create an app (or open your existing app). Enter a name and description, select Web API, and accept Spotify's terms.",
+                    "3. In the app's Settings, add the Required Redirect URI shown above, then save.",
+                    "4. Copy the Client ID (not the Client Secret) and paste it into Oxidify's Client ID field.",
+                    "5. Click Authorize below and sign in with the same Spotify account you use in Oxidify. If another account uses your app, add it under User Management first.",
+                ] {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(step)
+                                .font(theme::regular(13.0))
+                                .color(palette.secondary),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(4.0);
+                }
+                if theme::pill_button(ui, &palette, "Open developer dashboard", false).clicked() {
+                    app.actions.push(Action::OpenUrl(
+                        "https://developer.spotify.com/dashboard".into(),
+                    ));
+                }
+            }
+            let wanted = app
+                .settings
+                .web_client_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
+            let in_use = wanted
+                .as_deref()
+                .is_some_and(|wanted| app.web_app.as_deref() == Some(wanted));
+            if in_use {
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Authorized",
+                    "Supported requests use your app. Shared catalog coverage stays available.",
+                    |ui| {
+                        if theme::pill_button(ui, &palette, "Remove", false).clicked() {
+                            app.settings.web_client_id = None;
+                            app.actions.push(Action::ConfigurePersonalWebApp);
                         }
-                        _ => "Spotify account · Premium not confirmed".to_string(),
-                    })
-                    .unwrap_or_else(|| {
-                        if app.user.is_some() {
-                            "Spotify account · Premium not confirmed".to_string()
-                        } else {
-                            String::new()
+                    },
+                );
+            } else if app.personal_web_authorizing {
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Authorizing…",
+                    "Finish in your browser, then wait while Oxidify verifies your Spotify account.",
+                    |ui| {
+                        ui.spinner();
+                    },
+                );
+            } else if wanted.is_some() {
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Authorize your personal app",
+                    "Spotify opens once to verify that both sessions belong to this account.",
+                    |ui| {
+                        if theme::pill_button(ui, &palette, "Authorize", true).clicked() {
+                            app.actions.push(Action::ConfigurePersonalWebApp);
+                        }
+                    },
+                );
+            } else if app.web_app.is_some() {
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Remove personal app",
+                    "Shared access remains signed in.",
+                    |ui| {
+                        if theme::pill_button(ui, &palette, "Remove", false).clicked() {
+                            app.actions.push(Action::ConfigurePersonalWebApp);
+                        }
+                    },
+                );
+            }
+        },
+    );
+
+    section(
+        ui,
+        &palette,
+        "Network",
+        &["network", "proxy", "socks", "vpn", "corporate", "firewall"],
+        &query,
+        |ui| {
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Proxy",
+                "Routes Oxidify's connections through a proxy. System follows the environment; Off ignores even that.",
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for mode in ProxyMode::ALL {
+                            if theme::pill_button(
+                                ui,
+                                &palette,
+                                mode.label(),
+                                app.settings.proxy_mode == mode,
+                            )
+                            .clicked()
+                            {
+                                app.settings.proxy_mode = mode;
+                                changed = true;
+                            }
                         }
                     });
-                theme::text(ui, product, theme::regular(13.0), palette.secondary);
-                if let Some(username) = app.local.connected.then(|| app.local.username.clone())
-                    && !username.is_empty()
-                {
-                    theme::text(
-                        ui,
-                        format!("Connected as {username}"),
-                        theme::regular(12.0),
-                        palette.dim,
-                    );
-                }
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if theme::pill_button(ui, &palette, "Sign out", false).clicked() {
-                    app.actions.push(Action::SignOut);
-                }
-            });
-        });
-        ui.add_space(10.0);
-        let mut client_id = app.settings.web_client_id.clone().unwrap_or_default();
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Make it even faster",
-            "Add your own Spotify Development Mode app as optional acceleration. Oxidify keeps the shared app for catalog coverage and external playlists.",
-            |ui| {
-                let response = Frame::new()
-                    .fill(palette.surface)
-                    .corner_radius(CornerRadius::same(6))
-                    .inner_margin(Margin::symmetric(10, 6))
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut client_id)
-                                .hint_text(egui::RichText::new("Client ID").color(palette.dim))
-                                .font(theme::regular(13.0))
+                },
+            );
+            if app.settings.proxy_mode.is_manual() {
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Proxy address",
+                    "Host name or IP of the proxy, without scheme or port.",
+                    |ui| {
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut app.settings.proxy_host)
+                                .hint_text(
+                                    egui::RichText::new("proxy.example.com").color(palette.dim),
+                                )
+                                .font(theme::regular(14.0))
                                 .frame(egui::Frame::NONE)
                                 .desired_width(200.0),
-                        )
-                    })
-                    .inner;
-                if response.changed() {
-                    let trimmed = client_id.trim().to_string();
-                    app.settings.web_client_id = (!trimmed.is_empty()).then_some(trimmed);
-                    changed = true;
-                }
-            },
-        );
-        let help_id = egui::Id::new("personal-web-app-help");
-        let mut show_help = ui
-            .data(|data| data.get_temp::<bool>(help_id))
-            .unwrap_or(false);
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Don't have one?",
-            "Set up a personal app in Spotify's developer dashboard. App owners need Premium.",
-            |ui| {
-                if theme::pill_button(ui, &palette, "Show me how", false).clicked() {
-                    show_help = !show_help;
-                    ui.data_mut(|data| data.insert_temp(help_id, show_help));
-                }
-            },
-        );
-        let redirect_uri = crate::auth::Grant::shared_web_api().redirect_uri();
-        widgets::setting_row(ui, &palette, "Required Redirect URI", &redirect_uri, |ui| {
-            if theme::pill_button(ui, &palette, "Copy URI", false).clicked() {
-                ui.ctx().copy_text(redirect_uri.clone());
-            }
-        });
-        ui.add(egui::Label::new(egui::RichText::new("In your Spotify app's Settings, add this exact Redirect URI and save before authorizing. Use 127.0.0.1, not localhost; no trailing slash.").font(theme::regular(13.0)).color(palette.secondary)).wrap());
-        if show_help {
-            ui.add_space(8.0);
-            for step in [
-                "1. Open the developer dashboard and sign in with your Spotify Premium account.",
-                "2. Create an app (or open your existing app). Enter a name and description, select Web API, and accept Spotify's terms.",
-                "3. In the app's Settings, add the Required Redirect URI shown above, then save.",
-                "4. Copy the Client ID (not the Client Secret) and paste it into Oxidify's Client ID field.",
-                "5. Click Authorize below and sign in with the same Spotify account you use in Oxidify. If another account uses your app, add it under User Management first.",
-            ] {
+                        );
+                        if response.changed() {
+                            changed = true;
+                        }
+                    },
+                );
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Proxy port",
+                    "The port the proxy listens on.",
+                    |ui| {
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut app.settings.proxy_port)
+                                .hint_text(egui::RichText::new("3128").color(palette.dim))
+                                .font(theme::regular(14.0))
+                                .frame(egui::Frame::NONE)
+                                .desired_width(80.0),
+                        );
+                        if response.changed() {
+                            changed = true;
+                        }
+                    },
+                );
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Proxy sign-in",
+                    "Optional user, used by the Web API. Streaming connects to the proxy without it.",
+                    |ui| {
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut app.settings.proxy_username)
+                                .hint_text(egui::RichText::new("User").color(palette.dim))
+                                .font(theme::regular(14.0))
+                                .frame(egui::Frame::NONE)
+                                .desired_width(200.0),
+                        );
+                        if response.changed() {
+                            changed = true;
+                        }
+                    },
+                );
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Proxy password",
+                    "Optional. Kept alone in the credentials directory, never in the settings file.",
+                    |ui| {
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut app.proxy_password)
+                                .password(true)
+                                .hint_text(egui::RichText::new("Password").color(palette.dim))
+                                .font(theme::regular(14.0))
+                                .frame(egui::Frame::NONE)
+                                .desired_width(200.0),
+                        );
+                        if response.changed() {
+                            app.actions.push(Action::SaveProxyPassword);
+                        }
+                    },
+                );
+                let note = match settings::manual_proxy_address(&app.settings) {
+                    Ok(address) => format!(
+                        "Connections use {address}. A new proxy is picked up the next time Oxidify starts."
+                    ),
+                    Err(error) => error,
+                };
                 ui.add(
                     egui::Label::new(
-                        egui::RichText::new(step)
+                        egui::RichText::new(note)
                             .font(theme::regular(13.0))
                             .color(palette.secondary),
                     )
                     .wrap(),
                 );
-                ui.add_space(4.0);
             }
-            if theme::pill_button(ui, &palette, "Open developer dashboard", false).clicked() {
-                app.actions.push(Action::OpenUrl(
-                    "https://developer.spotify.com/dashboard".into(),
-                ));
-            }
-        }
-        let wanted = app
-            .settings
-            .web_client_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(str::to_string);
-        let in_use = wanted
-            .as_deref()
-            .is_some_and(|wanted| app.web_app.as_deref() == Some(wanted));
-        if in_use {
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Authorized",
-                "Supported requests use your app. Shared catalog coverage stays available.",
-                |ui| {
-                    if theme::pill_button(ui, &palette, "Remove", false).clicked() {
-                        app.settings.web_client_id = None;
-                        app.actions.push(Action::ConfigurePersonalWebApp);
-                    }
-                },
-            );
-        } else if app.personal_web_authorizing {
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Authorizing…",
-                "Finish in your browser, then wait while Oxidify verifies your Spotify account.",
-                |ui| {
-                    ui.spinner();
-                },
-            );
-        } else if wanted.is_some() {
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Authorize your personal app",
-                "Spotify opens once to verify that both sessions belong to this account.",
-                |ui| {
-                    if theme::pill_button(ui, &palette, "Authorize", true).clicked() {
-                        app.actions.push(Action::ConfigurePersonalWebApp);
-                    }
-                },
-            );
-        } else if app.web_app.is_some() {
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Remove personal app",
-                "Shared access remains signed in.",
-                |ui| {
-                    if theme::pill_button(ui, &palette, "Remove", false).clicked() {
-                        app.actions.push(Action::ConfigurePersonalWebApp);
-                    }
-                },
-            );
-        }
-    });
+        },
+    );
 
-    section(ui, &palette, "Playback on this computer", |ui| {
-        let audio_source_help = if app.is_confirmed_premium() {
-            "Spotify Connect is the default and needs Premium. Alternate mode keeps Spotify metadata and plays a third-party match on this computer. It is not Spotify audio and not Spotify Connect."
-        } else if app.is_free_account() {
-            "Spotify Free cannot use Spotify Connect or Premium player controls. This computer stays on bundled alternate local audio. It is not Spotify audio and not Spotify Connect."
-        } else {
-            "Spotify Connect needs a confirmed Premium account. This computer uses bundled alternate local audio. It is not Spotify audio and not Spotify Connect."
-        };
-        widgets::setting_row(ui, &palette, "Audio source", audio_source_help, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                let connect_locked = !app.is_confirmed_premium();
-                for choice in PlaybackBackend::ALL {
-                    let locked = connect_locked && choice == PlaybackBackend::Spotify;
-                    if theme::soft_button(
-                        ui,
-                        &palette,
-                        None,
-                        choice.label(),
-                        app.settings.playback_backend == choice,
-                    )
-                    .clicked()
-                        && app.settings.playback_backend != choice
-                        && !locked
-                    {
-                        app.settings.playback_backend = choice;
-                        changed = true;
-                        playback_dirty = true;
-                    }
-                }
-            });
-        });
-        let (status, detail, action) = match (&app.local_playback, app.settings.playback_backend) {
+    section(
+        ui,
+        &palette,
+        "Playback on this computer",
+        &[
+            "playback",
+            "audio source",
+            "device name",
+            "piped",
+            "yt-dlp",
+            "match score",
+            "gapless",
+            "skip on miss",
+            "audio quality",
+            "normalize volume",
+            "autoplay",
+            "audio output",
+            "audio cache",
+            "background",
+            "reconnect",
+            "connect",
+        ],
+        &query,
+        |ui| {
+            let audio_source_help = if app.is_confirmed_premium() {
+                "Spotify Connect is the default and needs Premium. Alternate mode keeps Spotify metadata and plays a third-party match on this computer. It is not Spotify audio and not Spotify Connect."
+            } else if app.is_free_account() {
+                "Spotify Free cannot use Spotify Connect or Premium player controls. This computer stays on bundled alternate local audio. It is not Spotify audio and not Spotify Connect."
+            } else {
+                "Spotify Connect needs a confirmed Premium account. This computer uses bundled alternate local audio. It is not Spotify audio and not Spotify Connect."
+            };
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Audio source",
+                audio_source_help,
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let connect_locked = !app.is_confirmed_premium();
+                        for choice in PlaybackBackend::ALL {
+                            let locked = connect_locked && choice == PlaybackBackend::Spotify;
+                            if theme::soft_button(
+                                ui,
+                                &palette,
+                                None,
+                                choice.label(),
+                                app.settings.playback_backend == choice,
+                            )
+                            .clicked()
+                                && app.settings.playback_backend != choice
+                                && !locked
+                            {
+                                app.settings.playback_backend = choice;
+                                changed = true;
+                                playback_dirty = true;
+                            }
+                        }
+                    });
+                },
+            );
+            let (status, detail, action) = match (&app.local_playback, app.settings.playback_backend) {
             (crate::backend::LocalPlayback::AlternateReady { source }, _) => (
                 "Ready",
                 format!("This computer plays matched third-party audio locally ({source}). Not Spotify Connect."),
@@ -304,57 +533,66 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 Some("Enable playback here"),
             ),
         };
-        widgets::setting_row(ui, &palette, &format!("Status: {status}"), &detail, |ui| {
-            if let Some(label) = action {
-                if theme::pill_button(ui, &palette, label, true).clicked() {
-                    if app.settings.playback_backend == PlaybackBackend::Alternate {
-                        app.actions.push(Action::RestartEngine);
-                    } else {
-                        app.actions.push(Action::EnablePlayback);
-                    }
-                }
-            } else if app.local_ready
-                && theme::soft_button(ui, &palette, Some(Icon::Refresh), "Reconnect", false)
-                    .clicked()
-            {
-                app.actions.push(Action::RestartEngine);
-            }
-        });
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Device name",
-            if app.settings.playback_backend == PlaybackBackend::Spotify {
-                "How this computer appears in Spotify Connect."
-            } else {
-                "How this computer is labelled in the device list. Not a Spotify Connect name."
-            },
-            |ui| {
-                let response = Frame::new()
-                    .fill(palette.surface)
-                    .corner_radius(CornerRadius::same(6))
-                    .inner_margin(Margin::symmetric(10, 6))
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut app.settings.device_name)
-                                .font(theme::regular(14.0))
-                                .frame(egui::Frame::NONE)
-                                .desired_width(200.0),
-                        )
-                    })
-                    .inner;
-                if response.changed() {
-                    changed = true;
-                    playback_dirty = true;
-                }
-            },
-        );
-        if app.settings.playback_backend == PlaybackBackend::Alternate {
-            let piped_error =
-                crate::alternate::validate_piped_base(&app.settings.piped_api_base).err();
-            let ytdlp_error = crate::alternate::ytdlp_path_notice(&app.settings.ytdlp_path);
-            widgets::setting_row(
+            search_row(
                 ui,
+                &query,
+                &palette,
+                &format!("Status: {status}"),
+                &detail,
+                |ui| {
+                    if let Some(label) = action {
+                        if theme::pill_button(ui, &palette, label, true).clicked() {
+                            if app.settings.playback_backend == PlaybackBackend::Alternate {
+                                app.actions.push(Action::RestartEngine);
+                            } else {
+                                app.actions.push(Action::EnablePlayback);
+                            }
+                        }
+                    } else if app.local_ready
+                        && theme::soft_button(ui, &palette, Some(Icon::Refresh), "Reconnect", false)
+                            .clicked()
+                    {
+                        app.actions.push(Action::RestartEngine);
+                    }
+                },
+            );
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Device name",
+                if app.settings.playback_backend == PlaybackBackend::Spotify {
+                    "How this computer appears in Spotify Connect."
+                } else {
+                    "How this computer is labelled in the device list. Not a Spotify Connect name."
+                },
+                |ui| {
+                    let response = Frame::new()
+                        .fill(palette.surface)
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::symmetric(10, 6))
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut app.settings.device_name)
+                                    .font(theme::regular(14.0))
+                                    .frame(egui::Frame::NONE)
+                                    .desired_width(200.0),
+                            )
+                        })
+                        .inner;
+                    if response.changed() {
+                        changed = true;
+                        playback_dirty = true;
+                    }
+                },
+            );
+            if app.settings.playback_backend == PlaybackBackend::Alternate {
+                let piped_error =
+                    crate::alternate::validate_piped_base(&app.settings.piped_api_base).err();
+                let ytdlp_error = crate::alternate::ytdlp_path_notice(&app.settings.ytdlp_path);
+                search_row(
+                ui,
+                &query,
                 &palette,
                 "Piped API base URL",
                 piped_error.as_deref().unwrap_or(
@@ -384,8 +622,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 },
             );
-            widgets::setting_row(
+                search_row(
                 ui,
+                &query,
                 &palette,
                 "yt-dlp path",
                 ytdlp_error.as_deref().unwrap_or(
@@ -418,610 +657,732 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 },
             );
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Minimum match score",
-                "Reject weak matches. Higher is stricter. A miss never plays the low-confidence hit.",
-                |ui| {
-                    let mut score = app.settings.alternate_min_score;
-                    let response = ui.add(
-                        egui::Slider::new(&mut score, 0.30..=0.90)
-                            .show_value(false)
-                            .trailing_fill(true),
-                    );
-                    theme::text(
-                        ui,
-                        format!("{:.0}%", score * 100.0),
-                        theme::medium(13.0),
-                        palette.secondary,
-                    );
-                    if response.changed() {
-                        app.settings.alternate_min_score = score;
-                        changed = true;
-                        playback_dirty = true;
-                    }
-                },
-            );
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Gapless playback",
-                "Prepare the next track while this one plays, then switch as soon as it is ready. Spotify Connect uses a tighter native gapless path.",
-                |ui| {
-                    if widgets::switch(ui, &palette, &mut app.settings.gapless).changed() {
-                        changed = true;
-                        playback_dirty = true;
-                    }
-                },
-            );
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Skip on miss",
-                "If no match meets the score, skip to the next track. Network and decode failures stop; they do not skip.",
-                |ui| {
-                    if widgets::switch(ui, &palette, &mut app.settings.alternate_skip_on_miss)
-                        .changed()
-                    {
-                        changed = true;
-                        playback_dirty = true;
-                    }
-                },
-            );
-            ui.add_space(4.0);
-            theme::subtle(
-                ui,
-                &palette,
-                if crate::alternate::has_bundled_ytdlp() {
-                    "Native YouTube and optional Piped searches use one shared HTTP client. yt-dlp runs only after native providers fail. You are responsible for provider endpoints and terms. The bundled yt-dlp is extracted locally and never downloaded at runtime. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
-                } else {
-                    "Native YouTube and optional Piped searches use one shared HTTP client. yt-dlp runs only after native providers fail. You are responsible for provider endpoints and terms. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
-                },
-            );
-            ui.add_space(8.0);
-        }
-        if app.settings.playback_backend == PlaybackBackend::Spotify {
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Audio quality",
-                "Higher bitrates use more data and cache space.",
-                |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        for (kbps, label) in [
-                            (320u16, "Very high · 320 kbps"),
-                            (160, "High · 160 kbps"),
-                            (96, "Normal · 96 kbps"),
-                        ] {
-                            if theme::soft_button(
-                                ui,
-                                &palette,
-                                None,
-                                label,
-                                app.settings.bitrate == kbps,
-                            )
-                            .clicked()
-                                && app.settings.bitrate != kbps
-                            {
-                                app.settings.bitrate = kbps;
-                                changed = true;
-                                playback_dirty = true;
-                            }
-                        }
-                    });
-                },
-            );
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Normalize volume",
-                "Keep loud and quiet tracks at a similar level.",
-                |ui| {
-                    if widgets::switch(ui, &palette, &mut app.settings.normalisation).changed() {
-                        changed = true;
-                        playback_dirty = true;
-                    }
-                },
-            );
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Autoplay",
-                "Keep playing similar songs when your music ends.",
-                |ui| {
-                    if widgets::switch(ui, &palette, &mut app.settings.autoplay).changed() {
-                        changed = true;
-                        playback_dirty = true;
-                    }
-                },
-            );
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Gapless playback",
-                "Run tracks into each other without silence.",
-                |ui| {
-                    if widgets::switch(ui, &palette, &mut app.settings.gapless).changed() {
-                        changed = true;
-                        playback_dirty = true;
-                    }
-                },
-            );
-        }
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Keep music playing when the window closes",
-            "Oxidify hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
-            |ui| {
-                if widgets::switch(ui, &palette, &mut app.settings.keep_playing_in_background)
-                    .changed()
-                {
-                    changed = true;
-                }
-            },
-        );
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Tell me when a new version is out",
-            "Asks GitHub once a day. Nothing about you is sent.",
-            |ui| {
-                if widgets::switch(ui, &palette, &mut app.settings.check_for_updates).changed() {
-                    changed = true;
-                }
-            },
-        );
-        if app.settings.playback_backend == PlaybackBackend::Spotify && cfg!(target_os = "linux") {
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Audio output",
-                "PulseAudio also covers PipeWire. Rodio talks to ALSA directly.",
-                |ui| {
-                    let current = app
-                        .settings
-                        .platform_backend()
-                        .unwrap_or_else(|| "rodio".into());
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        for backend in ["rodio", "pulseaudio"] {
-                            let label = if backend == "pulseaudio" {
-                                "PulseAudio / PipeWire"
-                            } else {
-                                "ALSA (rodio)"
-                            };
-                            if theme::soft_button(ui, &palette, None, label, current == backend)
-                                .clicked()
-                                && current != backend
-                            {
-                                app.settings.audio_backend = Some(backend.to_string());
-                                changed = true;
-                                playback_dirty = true;
-                            }
-                        }
-                    });
-                },
-            );
-        }
-        if app.settings.playback_backend == PlaybackBackend::Spotify {
-            widgets::setting_row(
-                ui,
-                &palette,
-                "Audio cache",
-                "Keep downloaded audio so replays don't stream again.",
-                |ui| {
-                    // The control area lays out right-to-left: add the rightmost item first.
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        if widgets::switch(ui, &palette, &mut app.settings.audio_cache).changed() {
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Minimum match score",
+                    "Reject weak matches. Higher is stricter. A miss never plays the low-confidence hit.",
+                    |ui| {
+                        let mut score = app.settings.alternate_min_score;
+                        let response = ui.add(
+                            egui::Slider::new(&mut score, 0.30..=0.90)
+                                .show_value(false)
+                                .trailing_fill(true),
+                        );
+                        theme::text(
+                            ui,
+                            format!("{:.0}%", score * 100.0),
+                            theme::medium(13.0),
+                            palette.secondary,
+                        );
+                        if response.changed() {
+                            app.settings.alternate_min_score = score;
                             changed = true;
                             playback_dirty = true;
                         }
-                        if app.settings.audio_cache {
-                            ui.add_space(6.0);
-                            for (mb, label) in [(4096u64, "4 GB"), (1024, "1 GB"), (512, "512 MB")]
-                            {
+                    },
+                );
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Gapless playback",
+                    "Prepare the next track while this one plays, then switch as soon as it is ready. Spotify Connect uses a tighter native gapless path.",
+                    |ui| {
+                        if widgets::switch(ui, &palette, &mut app.settings.gapless).changed() {
+                            changed = true;
+                            playback_dirty = true;
+                        }
+                    },
+                );
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Skip on miss",
+                    "If no match meets the score, skip to the next track. Network and decode failures stop; they do not skip.",
+                    |ui| {
+                        if widgets::switch(ui, &palette, &mut app.settings.alternate_skip_on_miss)
+                            .changed()
+                        {
+                            changed = true;
+                            playback_dirty = true;
+                        }
+                    },
+                );
+                ui.add_space(4.0);
+                theme::subtle(
+                    ui,
+                    &palette,
+                    if crate::alternate::has_bundled_ytdlp() {
+                        "Native YouTube and optional Piped searches use one shared HTTP client. yt-dlp runs only after native providers fail. You are responsible for provider endpoints and terms. The bundled yt-dlp is extracted locally and never downloaded at runtime. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
+                    } else {
+                        "Native YouTube and optional Piped searches use one shared HTTP client. yt-dlp runs only after native providers fail. You are responsible for provider endpoints and terms. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
+                    },
+                );
+                ui.add_space(8.0);
+            }
+            if app.settings.playback_backend == PlaybackBackend::Spotify {
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Audio quality",
+                    "Higher bitrates use more data and cache space.",
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            for (kbps, label) in [
+                                (320u16, "Very high · 320 kbps"),
+                                (160, "High · 160 kbps"),
+                                (96, "Normal · 96 kbps"),
+                            ] {
                                 if theme::soft_button(
                                     ui,
                                     &palette,
                                     None,
                                     label,
-                                    app.settings.audio_cache_mb == mb,
+                                    app.settings.bitrate == kbps,
                                 )
                                 .clicked()
-                                    && app.settings.audio_cache_mb != mb
+                                    && app.settings.bitrate != kbps
                                 {
-                                    app.settings.audio_cache_mb = mb;
+                                    app.settings.bitrate = kbps;
                                     changed = true;
                                     playback_dirty = true;
                                 }
                             }
-                        }
-                    });
-                },
-            );
-        }
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            if playback_dirty {
-                if theme::pill_button(ui, &palette, "Apply and restart playback", true).clicked() {
-                    app.actions.push(Action::RestartEngine);
-                    playback_dirty = false;
-                }
-                theme::subtle(
-                    ui,
-                    &palette,
-                    "Playback settings take effect after a restart of the local player.",
+                        });
+                    },
                 );
-            } else {
-                theme::subtle(ui, &palette, "Playback settings are applied.");
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Normalize volume",
+                    "Keep loud and quiet tracks at a similar level.",
+                    |ui| {
+                        if widgets::switch(ui, &palette, &mut app.settings.normalisation).changed()
+                        {
+                            changed = true;
+                            playback_dirty = true;
+                        }
+                    },
+                );
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Autoplay",
+                    "Keep playing similar songs when your music ends.",
+                    |ui| {
+                        if widgets::switch(ui, &palette, &mut app.settings.autoplay).changed() {
+                            changed = true;
+                            playback_dirty = true;
+                        }
+                    },
+                );
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Gapless playback",
+                    "Run tracks into each other without silence.",
+                    |ui| {
+                        if widgets::switch(ui, &palette, &mut app.settings.gapless).changed() {
+                            changed = true;
+                            playback_dirty = true;
+                        }
+                    },
+                );
             }
-        });
-    });
-
-    section(ui, &palette, "Appearance", |ui| {
-        widgets::setting_row(ui, &palette, "Theme", "", |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                for choice in ThemeChoice::ALL {
-                    if theme::soft_button(
-                        ui,
-                        &palette,
-                        None,
-                        choice.label(),
-                        app.settings.theme == choice,
-                    )
-                    .clicked()
-                        && app.settings.theme != choice
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Keep music playing when the window closes",
+                "Oxidify hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
+                |ui| {
+                    if widgets::switch(ui, &palette, &mut app.settings.keep_playing_in_background)
+                        .changed()
                     {
-                        app.settings.theme = choice;
                         changed = true;
                     }
+                },
+            );
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Tell me when a new version is out",
+                "Asks GitHub once a day. Nothing about you is sent.",
+                |ui| {
+                    if widgets::switch(ui, &palette, &mut app.settings.check_for_updates).changed()
+                    {
+                        changed = true;
+                    }
+                },
+            );
+            if app.settings.playback_backend == PlaybackBackend::Spotify
+                && cfg!(target_os = "linux")
+            {
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Audio output",
+                    "PulseAudio also covers PipeWire. Rodio talks to ALSA directly.",
+                    |ui| {
+                        let current = app
+                            .settings
+                            .platform_backend()
+                            .unwrap_or_else(|| "rodio".into());
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            for backend in ["rodio", "pulseaudio"] {
+                                let label = if backend == "pulseaudio" {
+                                    "PulseAudio / PipeWire"
+                                } else {
+                                    "ALSA (rodio)"
+                                };
+                                if theme::soft_button(ui, &palette, None, label, current == backend)
+                                    .clicked()
+                                    && current != backend
+                                {
+                                    app.settings.audio_backend = Some(backend.to_string());
+                                    changed = true;
+                                    playback_dirty = true;
+                                }
+                            }
+                        });
+                    },
+                );
+            }
+            if app.settings.playback_backend == PlaybackBackend::Spotify {
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Audio cache",
+                    "Keep downloaded audio so replays don't stream again.",
+                    |ui| {
+                        // The control area lays out right-to-left: add the rightmost item first.
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if widgets::switch(ui, &palette, &mut app.settings.audio_cache)
+                                .changed()
+                            {
+                                changed = true;
+                                playback_dirty = true;
+                            }
+                            if app.settings.audio_cache {
+                                ui.add_space(6.0);
+                                for (mb, label) in
+                                    [(4096u64, "4 GB"), (1024, "1 GB"), (512, "512 MB")]
+                                {
+                                    if theme::soft_button(
+                                        ui,
+                                        &palette,
+                                        None,
+                                        label,
+                                        app.settings.audio_cache_mb == mb,
+                                    )
+                                    .clicked()
+                                        && app.settings.audio_cache_mb != mb
+                                    {
+                                        app.settings.audio_cache_mb = mb;
+                                        changed = true;
+                                        playback_dirty = true;
+                                    }
+                                }
+                            }
+                        });
+                    },
+                );
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if playback_dirty {
+                    if theme::pill_button(ui, &palette, "Apply and restart playback", true)
+                        .clicked()
+                    {
+                        app.actions.push(Action::RestartEngine);
+                        playback_dirty = false;
+                    }
+                    theme::subtle(
+                        ui,
+                        &palette,
+                        "Playback settings take effect after a restart of the local player.",
+                    );
+                } else {
+                    theme::subtle(ui, &palette, "Playback settings are applied.");
                 }
             });
-        });
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Accent",
-            "Oxidify's blue, or a green.",
-            |ui| {
+        },
+    );
+
+    section(
+        ui,
+        &palette,
+        "Appearance",
+        &[
+            "appearance",
+            "theme",
+            "accent",
+            "album art",
+            "compact",
+            "zoom",
+        ],
+        &query,
+        |ui| {
+            search_row(ui, &query, &palette, "Theme", "", |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    for choice in crate::settings::Accent::ALL {
+                    for choice in ThemeChoice::ALL {
                         if theme::soft_button(
                             ui,
                             &palette,
                             None,
                             choice.label(),
-                            app.settings.accent == choice,
+                            app.settings.theme == choice,
                         )
                         .clicked()
-                            && app.settings.accent != choice
+                            && app.settings.theme != choice
                         {
-                            app.settings.accent = choice;
+                            app.settings.theme = choice;
                             changed = true;
                         }
                     }
                 });
-            },
-        );
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Colour from album art",
-            "Tint pages and the player with the playing cover.",
-            |ui| {
-                if widgets::switch(ui, &palette, &mut app.settings.accent_from_art).changed() {
-                    changed = true;
-                }
-            },
-        );
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Compact library",
-            "Names only in the sidebar, without covers.",
-            |ui| {
-                if widgets::switch(ui, &palette, &mut app.settings.compact_library).changed() {
-                    changed = true;
-                }
-            },
-        );
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Compact tracks",
-            "One-line rows without covers in track tables.",
-            |ui| {
-                if widgets::switch(ui, &palette, &mut app.settings.compact_tracks).changed() {
-                    changed = true;
-                }
-            },
-        );
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Interface zoom",
-            "Ctrl+Plus and Ctrl+Minus work anywhere; Ctrl+0 resets.",
-            |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    let mut zoom = app.settings.zoom;
-                    if theme::soft_button(ui, &palette, None, "-", false).clicked() {
-                        zoom = (zoom - 0.1).max(0.5);
+            });
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Accent",
+                "Oxidify's blue, or a green.",
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for choice in crate::settings::Accent::ALL {
+                            if theme::soft_button(
+                                ui,
+                                &palette,
+                                None,
+                                choice.label(),
+                                app.settings.accent == choice,
+                            )
+                            .clicked()
+                                && app.settings.accent != choice
+                            {
+                                app.settings.accent = choice;
+                                changed = true;
+                            }
+                        }
+                    });
+                },
+            );
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Colour from album art",
+                "Tint pages and the player with the playing cover.",
+                |ui| {
+                    if widgets::switch(ui, &palette, &mut app.settings.accent_from_art).changed() {
+                        changed = true;
                     }
-                    theme::text(
-                        ui,
-                        format!("{:.0}%", zoom * 100.0),
-                        theme::medium(13.5),
-                        palette.text,
-                    );
-                    if theme::soft_button(ui, &palette, None, "+", false).clicked() {
-                        zoom = (zoom + 0.1).min(2.5);
+                },
+            );
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Compact library",
+                "Names only in the sidebar, without covers.",
+                |ui| {
+                    if widgets::switch(ui, &palette, &mut app.settings.compact_library).changed() {
+                        changed = true;
                     }
-                    if (zoom - app.settings.zoom).abs() > 0.001 {
-                        app.settings.zoom = zoom;
-                        ui.ctx().set_zoom_factor(zoom);
-                        app.mark_settings_dirty();
+                },
+            );
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Compact tracks",
+                "One-line rows without covers in track tables.",
+                |ui| {
+                    if widgets::switch(ui, &palette, &mut app.settings.compact_tracks).changed() {
+                        changed = true;
                     }
-                });
-            },
-        );
-    });
+                },
+            );
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Interface zoom",
+                "Ctrl+Plus and Ctrl+Minus work anywhere; Ctrl+0 resets.",
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let mut zoom = app.settings.zoom;
+                        if theme::soft_button(ui, &palette, None, "-", false).clicked() {
+                            zoom = (zoom - 0.1).max(0.5);
+                        }
+                        theme::text(
+                            ui,
+                            format!("{:.0}%", zoom * 100.0),
+                            theme::medium(13.5),
+                            palette.text,
+                        );
+                        if theme::soft_button(ui, &palette, None, "+", false).clicked() {
+                            zoom = (zoom + 0.1).min(2.5);
+                        }
+                        if (zoom - app.settings.zoom).abs() > 0.001 {
+                            app.settings.zoom = zoom;
+                            ui.ctx().set_zoom_factor(zoom);
+                            app.mark_settings_dirty();
+                        }
+                    });
+                },
+            );
+        },
+    );
 
-    section(ui, &palette, "Winamp skins", |ui| {
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Mini player",
-            "Oxidify becomes a small player that wears classic Winamp skins (.wsz files); the logo in the skin, or Ctrl+M, brings this window back. Drop a skin on either window to add it.",
-            |ui| {
-                if theme::pill_button(ui, &palette, "Switch to it", true).clicked() {
-                    app.actions.push(Action::ToggleWinampWindow);
-                }
-            },
-        );
-        let folder = app.dirs.skins_dir();
-        app.winamp.refresh_choices(&folder);
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Skin",
-            &format!(
-                "Skins in {} are listed here. Thousands more are at the Winamp Skin Museum.",
-                folder.display()
-            ),
-            |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    if theme::soft_button(ui, &palette, Some(Icon::Globe), "Skin Museum", false)
-                        .clicked()
-                    {
-                        app.actions
-                            .push(Action::OpenUrl("https://skins.webamp.org/".into()));
+    section(
+        ui,
+        &palette,
+        "Winamp skins",
+        &["winamp", "skin", "mini player", "always on top", "size"],
+        &query,
+        |ui| {
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Mini player",
+                "Oxidify becomes a small player that wears classic Winamp skins (.wsz files); the logo in the skin, or Ctrl+M, brings this window back. Drop a skin on either window to add it.",
+                |ui| {
+                    if theme::pill_button(ui, &palette, "Switch to it", true).clicked() {
+                        app.actions.push(Action::ToggleWinampWindow);
                     }
+                },
+            );
+            let folder = app.dirs.skins_dir();
+            app.winamp.refresh_choices(&folder);
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Skin",
+                &format!(
+                    "Skins in {} are listed here. Thousands more are at the Winamp Skin Museum.",
+                    folder.display()
+                ),
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        if theme::soft_button(ui, &palette, Some(Icon::Globe), "Skin Museum", false)
+                            .clicked()
+                        {
+                            app.actions
+                                .push(Action::OpenUrl("https://skins.webamp.org/".into()));
+                        }
+                        if theme::soft_button(
+                            ui,
+                            &palette,
+                            Some(Icon::ExternalLink),
+                            "Open folder",
+                            false,
+                        )
+                        .clicked()
+                        {
+                            app.actions.push(Action::OpenSkinsFolder);
+                        }
+                    });
+                },
+            );
+            let choices = app.winamp.choices.clone();
+            let mut options: Vec<(usize, &str)> = vec![(0, "Oxidify")];
+            options.extend(
+                choices
+                    .iter()
+                    .enumerate()
+                    .map(|(index, choice)| (index + 1, choice.label())),
+            );
+            let current = app
+                .settings
+                .skin
+                .as_deref()
+                .and_then(|name| choices.iter().position(|choice| choice.name == name))
+                .map_or(0, |index| index + 1);
+            if let Some(picked) = widgets::chips(ui, &palette, &options, current)
+                && picked != current
+            {
+                let name = picked
+                    .checked_sub(1)
+                    .map(|index| choices[index].name.clone());
+                app.actions.push(Action::SetSkin(name));
+            }
+            ui.add_space(4.0);
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Size",
+                "Screen pixels per skin pixel, always a whole number so the pixels stay crisp.",
+                |ui| {
+                    let scale = crate::winamp::WinampState::scale(
+                        &app.settings,
+                        ui.ctx().pixels_per_point(),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for candidate in 1..=crate::winamp::MAX_SCALE {
+                            let label = format!("{candidate}x");
+                            if theme::soft_button(ui, &palette, None, &label, candidate == scale)
+                                .clicked()
+                                && candidate != scale
+                            {
+                                app.actions.push(Action::SetSkinScale(candidate as u8));
+                            }
+                        }
+                    });
+                },
+            );
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Always on top",
+                "Keep the Winamp window above everything else.",
+                |ui| {
+                    let mut on_top = app.settings.winamp_on_top;
+                    if widgets::switch(ui, &palette, &mut on_top).changed() {
+                        app.actions.push(Action::ToggleWinampOnTop);
+                    }
+                },
+            );
+        },
+    );
+
+    section(
+        ui,
+        &palette,
+        "Equalizer",
+        &[
+            "equalizer",
+            "eq",
+            "preamp",
+            "preset",
+            "band",
+            "balance",
+            "mono",
+        ],
+        &query,
+        |ui| {
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Equalizer",
+                "Ten bands over the music played on this computer. Speakers and phones across the room play what Spotify sends them.",
+                |ui| {
+                    let mut on = app.settings.eq_on;
+                    if widgets::switch(ui, &palette, &mut on).changed() {
+                        app.actions.push(Action::ToggleEq);
+                    }
+                },
+            );
+            let names: Vec<(usize, &str)> = crate::eq::PRESETS
+                .iter()
+                .enumerate()
+                .map(|(index, preset)| (index, preset.name))
+                .collect();
+            let current = crate::eq::PRESETS
+                .iter()
+                .position(|preset| preset.bands_db == app.settings.eq_bands_db)
+                .unwrap_or(usize::MAX);
+            if let Some(picked) = widgets::chips(ui, &palette, &names, current) {
+                app.actions.push(Action::ApplyEqPreset(picked));
+            }
+            ui.add_space(10.0);
+            eq_curve(ui, &palette, &crate::app::eq_settings(&app.settings));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 14.0;
+                let on = app.settings.eq_on;
+                let mut preamp = app.settings.eq_preamp_db;
+                if eq_slider(ui, &palette, "Pre", &mut preamp, 0.0, on) {
+                    app.actions.push(Action::SetEqPreamp(preamp));
+                }
+                for (band, hz) in crate::eq::BANDS.iter().enumerate() {
+                    let mut gain = app.settings.eq_bands_db[band];
+                    if eq_slider(
+                        ui,
+                        &palette,
+                        &hertz(*hz),
+                        &mut gain,
+                        crate::eq::RANGE_DB,
+                        on,
+                    ) {
+                        app.actions.push(Action::SetEqBand(band, gain));
+                    }
+                }
+            });
+        },
+    );
+
+    section(
+        ui,
+        &palette,
+        "Storage",
+        &[
+            "storage",
+            "cache",
+            "artwork",
+            "sign-in",
+            "credentials",
+            "library",
+        ],
+        &query,
+        |ui| {
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Library cache",
+                &format!(
+                    "Playlists are kept in {}",
+                    app.dirs.playlist_cache_dir().display()
+                ),
+                |ui| {
                     if theme::soft_button(
                         ui,
                         &palette,
-                        Some(Icon::ExternalLink),
-                        "Open folder",
+                        Some(Icon::Trash),
+                        "Clear library cache",
                         false,
                     )
                     .clicked()
                     {
-                        app.actions.push(Action::OpenSkinsFolder);
+                        app.actions.push(Action::ClearLibraryCache);
                     }
-                });
-            },
-        );
-        let choices = app.winamp.choices.clone();
-        let mut options: Vec<(usize, &str)> = vec![(0, "Oxidify")];
-        options.extend(
-            choices
-                .iter()
-                .enumerate()
-                .map(|(index, choice)| (index + 1, choice.label())),
-        );
-        let current = app
-            .settings
-            .skin
-            .as_deref()
-            .and_then(|name| choices.iter().position(|choice| choice.name == name))
-            .map_or(0, |index| index + 1);
-        if let Some(picked) = widgets::chips(ui, &palette, &options, current)
-            && picked != current
-        {
-            let name = picked
-                .checked_sub(1)
-                .map(|index| choices[index].name.clone());
-            app.actions.push(Action::SetSkin(name));
-        }
-        ui.add_space(4.0);
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Size",
-            "Screen pixels per skin pixel, always a whole number so the pixels stay crisp.",
-            |ui| {
-                let scale =
-                    crate::winamp::WinampState::scale(&app.settings, ui.ctx().pixels_per_point());
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    for candidate in 1..=crate::winamp::MAX_SCALE {
-                        let label = format!("{candidate}x");
-                        if theme::soft_button(ui, &palette, None, &label, candidate == scale)
-                            .clicked()
-                            && candidate != scale
-                        {
-                            app.actions.push(Action::SetSkinScale(candidate as u8));
-                        }
+                },
+            );
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Artwork cache",
+                &format!("Covers are kept in {}", app.dirs.art_cache_dir().display()),
+                |ui| {
+                    if theme::soft_button(ui, &palette, Some(Icon::Trash), "Clear artwork", false)
+                        .clicked()
+                    {
+                        app.actions.push(Action::ClearArtCache);
                     }
+                },
+            );
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Audio cache",
+                &format!("Audio is kept in {}", app.dirs.audio_cache_dir().display()),
+                |_| {},
+            );
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Sign-in",
+                &format!(
+                    "Credentials are kept in {}",
+                    app.dirs.credentials_dir().display()
+                ),
+                |_| {},
+            );
+        },
+    );
+
+    section(
+        ui,
+        &palette,
+        "About",
+        &[
+            "about",
+            "version",
+            "update",
+            "keyboard shortcuts",
+            "source code",
+        ],
+        &query,
+        |ui| {
+            ui.horizontal(|ui| {
+                let (logo, _) = ui.allocate_exact_size(Vec2::splat(40.0), egui::Sense::hover());
+                theme::brand_logo(ui, logo.center(), 40.0);
+                ui.vertical(|ui| {
+                    theme::text(
+                        ui,
+                        format!("Oxidify {}", env!("CARGO_PKG_VERSION")),
+                        theme::semibold(15.0),
+                        palette.text,
+                    );
+                    theme::text(
+                        ui,
+                        "Built with Rust, egui, and librespot. Not affiliated with Spotify.",
+                        theme::regular(13.0),
+                        palette.secondary,
+                    );
                 });
-            },
-        );
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Always on top",
-            "Keep the Winamp window above everything else.",
-            |ui| {
-                let mut on_top = app.settings.winamp_on_top;
-                if widgets::switch(ui, &palette, &mut on_top).changed() {
-                    app.actions.push(Action::ToggleWinampOnTop);
-                }
-            },
-        );
-    });
-
-    section(ui, &palette, "Equalizer", |ui| {
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Equalizer",
-            "Ten bands over the music played on this computer. Speakers and phones across the room play what Spotify sends them.",
-            |ui| {
-                let mut on = app.settings.eq_on;
-                if widgets::switch(ui, &palette, &mut on).changed() {
-                    app.actions.push(Action::ToggleEq);
-                }
-            },
-        );
-        let names: Vec<(usize, &str)> = crate::eq::PRESETS
-            .iter()
-            .enumerate()
-            .map(|(index, preset)| (index, preset.name))
-            .collect();
-        let current = crate::eq::PRESETS
-            .iter()
-            .position(|preset| preset.bands_db == app.settings.eq_bands_db)
-            .unwrap_or(usize::MAX);
-        if let Some(picked) = widgets::chips(ui, &palette, &names, current) {
-            app.actions.push(Action::ApplyEqPreset(picked));
-        }
-        ui.add_space(10.0);
-        eq_curve(ui, &palette, &crate::app::eq_settings(&app.settings));
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 14.0;
-            let on = app.settings.eq_on;
-            let mut preamp = app.settings.eq_preamp_db;
-            if eq_slider(ui, &palette, "Pre", &mut preamp, 0.0, on) {
-                app.actions.push(Action::SetEqPreamp(preamp));
-            }
-            for (band, hz) in crate::eq::BANDS.iter().enumerate() {
-                let mut gain = app.settings.eq_bands_db[band];
-                if eq_slider(
-                    ui,
-                    &palette,
-                    &hertz(*hz),
-                    &mut gain,
-                    crate::eq::RANGE_DB,
-                    on,
-                ) {
-                    app.actions.push(Action::SetEqBand(band, gain));
-                }
-            }
-        });
-    });
-
-    section(ui, &palette, "Storage", |ui| {
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Artwork cache",
-            &format!("Covers are kept in {}", app.dirs.art_cache_dir().display()),
-            |ui| {
-                if theme::soft_button(ui, &palette, Some(Icon::Trash), "Clear artwork", false)
+            });
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let check_label = if app.update_checking {
+                    "Checking…"
+                } else {
+                    "Check for updates"
+                };
+                if ui
+                    .add_enabled_ui(!app.update_checking && !app.offline, |ui| {
+                        theme::soft_button(ui, &palette, Some(Icon::Refresh), check_label, false)
+                    })
+                    .inner
                     .clicked()
                 {
-                    app.actions.push(Action::ClearArtCache);
+                    app.actions.push(Action::CheckForUpdates);
                 }
-            },
-        );
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Audio cache",
-            &format!("Audio is kept in {}", app.dirs.audio_cache_dir().display()),
-            |_| {},
-        );
-        widgets::setting_row(
-            ui,
-            &palette,
-            "Sign-in",
-            &format!(
-                "Credentials are kept in {}",
-                app.dirs.credentials_dir().display()
-            ),
-            |_| {},
-        );
-    });
-
-    section(ui, &palette, "About", |ui| {
-        ui.horizontal(|ui| {
-            let (logo, _) = ui.allocate_exact_size(Vec2::splat(40.0), egui::Sense::hover());
-            theme::brand_logo(ui, logo.center(), 40.0);
-            ui.vertical(|ui| {
-                theme::text(
-                    ui,
-                    format!("Oxidify {}", env!("CARGO_PKG_VERSION")),
-                    theme::semibold(15.0),
-                    palette.text,
-                );
-                theme::text(
-                    ui,
-                    "Built with Rust, egui, and librespot. Not affiliated with Spotify.",
-                    theme::regular(13.0),
-                    palette.secondary,
-                );
+                if let Some(update) = &app.update
+                    && theme::soft_button(
+                        ui,
+                        &palette,
+                        Some(Icon::ExternalLink),
+                        "Download update",
+                        false,
+                    )
+                    .clicked()
+                {
+                    app.actions.push(Action::OpenUrl(update.url.clone()));
+                }
+                if theme::soft_button(ui, &palette, Some(Icon::Info), "Keyboard shortcuts", false)
+                    .clicked()
+                {
+                    app.actions.push(Action::ShowDialog(Dialog::Shortcuts));
+                }
+                if theme::soft_button(ui, &palette, Some(Icon::ExternalLink), "Source code", false)
+                    .clicked()
+                {
+                    ui.ctx()
+                        .open_url(egui::OpenUrl::new_tab(env!("CARGO_PKG_REPOSITORY")));
+                }
             });
-        });
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            let check_label = if app.update_checking {
-                "Checking…"
-            } else {
-                "Check for updates"
-            };
-            if ui
-                .add_enabled_ui(!app.update_checking && !app.offline, |ui| {
-                    theme::soft_button(ui, &palette, Some(Icon::Refresh), check_label, false)
-                })
-                .inner
-                .clicked()
-            {
-                app.actions.push(Action::CheckForUpdates);
-            }
-            if let Some(update) = &app.update
-                && theme::soft_button(
-                    ui,
-                    &palette,
-                    Some(Icon::ExternalLink),
-                    "Download update",
-                    false,
-                )
-                .clicked()
-            {
-                app.actions.push(Action::OpenUrl(update.url.clone()));
-            }
-            if theme::soft_button(ui, &palette, Some(Icon::Info), "Keyboard shortcuts", false)
-                .clicked()
-            {
-                app.actions.push(Action::ShowDialog(Dialog::Shortcuts));
-            }
-            if theme::soft_button(ui, &palette, Some(Icon::ExternalLink), "Source code", false)
-                .clicked()
-            {
-                ui.ctx()
-                    .open_url(egui::OpenUrl::new_tab(env!("CARGO_PKG_REPOSITORY")));
-            }
-        });
-    });
+        },
+    );
 
     ui.data_mut(|data| data.insert_temp(dirty_id, playback_dirty));
     if changed {

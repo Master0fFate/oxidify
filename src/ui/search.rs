@@ -1,6 +1,6 @@
 //! The Search page.
 
-use egui::{Align, CornerRadius, Layout, Rect, Sense, Vec2, pos2, vec2};
+use egui::{CornerRadius, Layout, Rect, Sense, Vec2, pos2, vec2};
 
 use crate::api::models::{Artist, PlayableItem, SearchResults, pick_image};
 use crate::app::App;
@@ -578,9 +578,4 @@ fn episodes(app: &mut App, ui: &mut egui::Ui, results: &SearchResults, limit: us
     for episode in page.items.iter().take(limit) {
         super::show::episode_row(app, ui, episode, None);
     }
-}
-
-#[allow(dead_code)]
-fn align_right(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    ui.with_layout(Layout::right_to_left(Align::Center), add);
 }

@@ -47,6 +47,10 @@ shows how to add one.
   appears before the normal Spotify refresh; no requests are skipped and
   no tokens are stored in this cache. Home previews and later pages are not
   cached.
+- Account-scoped playlist pages, in `playlists/<account-id>/`, at most 2 MiB
+  each. A hit is shown immediately, then Spotify confirms or replaces it.
+  Tokens are not stored. Settings can delete this library cache, together
+  with the library snapshot.
 - Oxidify has no telemetry, analytics, or hosted service. Besides Spotify
   and its album art CDN, the app contacts
   [lrclib.net](https://lrclib.net) while the lyrics panel is open and
@@ -76,7 +80,8 @@ only the current page. Top songs skips its disk-cache read and starts a new
 live request even if an older load is still running; older responses cannot
 replace the refreshed view or overwrite a newer cache write. Playlist refresh requests both current metadata
 and items instead of restoring snapshot-cached items, and ignores cache reads
-from before the refresh. Successful loads can update those metadata caches.
+from before the refresh. Opening a playlist still shows a matching disk copy
+first, then updates it if Spotify's snapshot changed. Successful loads can update those metadata caches.
 Audio, artwork, lyrics, and credentials are untouched. Other pages reuse their
 existing reload behaviour. Search repeats the current query; refresh is disabled
 in Settings, which has no page data to reload.
@@ -113,6 +118,20 @@ credential.
 
 The receiver then signs in and appears in Spotify's device list. Oxidify
 uses the Web API for subsequent control requests.
+
+## Proxies
+
+Outbound traffic follows one proxy setting. `system` (the default) leaves
+routing to environment variables and the platform; `off` connects directly
+no matter what the environment says; `http` and `socks5` route everything
+through one configured proxy. The Web API client signs in to that proxy
+when a user and password are given; the password is read once at startup
+from its own file in the credentials directory and never logged. librespot
+receives the same proxy address but never credentials: its own clients
+cannot carry a proxy sign-in, so streaming needs a proxy that accepts
+anonymous CONNECT. Access-point discovery through `apresolve.spotify.com`
+also goes through the proxy. A changed proxy takes effect on the next
+start; the engine keeps its current routing until then.
 
 ## The engine
 

@@ -7,7 +7,7 @@
 
 use egui::{Align, CornerRadius, Frame, Layout, Margin, Rect, Sense, Vec2, pos2, vec2};
 
-use crate::api::models::pick_image;
+use crate::api::models::{Image, Playlist, pick_image};
 use crate::app::App;
 use crate::model::{Action, Dialog, DragEntry, DragTrack, Loadable, Page};
 use crate::theme::{self, Icon, Palette};
@@ -35,6 +35,127 @@ struct Entry {
     liked: bool,
     owned: bool,
     playlist_index: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+enum Source {
+    Liked,
+    Playlist(usize),
+    Album(usize),
+    Artist(usize),
+    Show(usize),
+}
+
+#[derive(Clone, Copy)]
+struct Slot {
+    source: Source,
+    owned: bool,
+    pin: Option<usize>,
+    saved: Option<usize>,
+}
+
+impl Slot {
+    fn liked(&self) -> bool {
+        matches!(self.source, Source::Liked)
+    }
+
+    fn playlist_index(&self) -> Option<usize> {
+        match self.source {
+            Source::Playlist(index) => Some(index),
+            _ => None,
+        }
+    }
+}
+
+fn library_playlist(app: &App, index: usize) -> &Playlist {
+    &app.library
+        .playlists
+        .get()
+        .expect("playlist slots come from the loaded list")[index]
+}
+
+fn source_uri(app: &App, source: Source) -> &str {
+    match source {
+        Source::Liked => "",
+        Source::Playlist(index) => &library_playlist(app, index).uri,
+        Source::Album(index) => &app.library.albums.items[index].album.uri,
+        Source::Artist(index) => &app.library.artists.items[index].uri,
+        Source::Show(index) => &app.library.shows.items[index].show.uri,
+    }
+}
+
+fn slot_entry(app: &App, slot: Slot) -> Entry {
+    let entry = |images: &[Image], name: &str, subtitle: String, page: Page, uri: &str| Entry {
+        image: pick_image(images, 64).map(str::to_string),
+        name: name.to_string(),
+        subtitle,
+        page,
+        uri: uri.to_string(),
+        round: matches!(slot.source, Source::Artist(_)),
+        liked: false,
+        owned: slot.owned,
+        playlist_index: slot.playlist_index(),
+    };
+    match slot.source {
+        Source::Liked => Entry {
+            image: None,
+            name: "Liked Songs".into(),
+            subtitle: match app.library.liked.total {
+                Some(total) => format!("Playlist • {total} songs"),
+                None => "Playlist".into(),
+            },
+            page: Page::LikedSongs,
+            uri: String::new(),
+            round: false,
+            liked: true,
+            owned: false,
+            playlist_index: None,
+        },
+        Source::Playlist(index) => {
+            let playlist = library_playlist(app, index);
+            entry(
+                &playlist.images,
+                &playlist.name,
+                format!("Playlist • {}", playlist.owner_name()),
+                Page::Playlist(playlist.id.clone()),
+                &playlist.uri,
+            )
+        }
+        Source::Album(index) => {
+            let album = &app.library.albums.items[index].album;
+            entry(
+                &album.images,
+                &album.name,
+                format!(
+                    "{} • {}",
+                    album.kind_label(),
+                    crate::api::models::join_names(album.artists.iter().map(|a| a.name.as_str()))
+                ),
+                Page::Album(album.id.clone()),
+                &album.uri,
+            )
+        }
+        Source::Artist(index) => {
+            let artist = &app.library.artists.items[index];
+            entry(
+                &artist.images,
+                &artist.name,
+                "Artist".into(),
+                Page::Artist(artist.id.clone()),
+                &artist.uri,
+            )
+        }
+        Source::Show(index) => {
+            let show = &app.library.shows.items[index].show;
+            entry(
+                &show.images,
+                &show.name,
+                format!("Podcast • {}", show.publisher),
+                Page::Show(show.id.clone()),
+                &show.uri,
+            )
+        }
+    }
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -386,27 +507,27 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
     } else {
         app.library.filter.trim().to_lowercase()
     };
-    let user_id = app.user_id().unwrap_or("").to_string();
-    let mut entries: Vec<Entry> = Vec::new();
+    let user_id = app.user_id().unwrap_or("");
+    let pinned = rank_of(&app.settings.pinned_contexts);
+    let saved = rank_of(&app.settings.sidebar_order);
+    let slot = |source: Source, uri: &str, owned: bool| Slot {
+        source,
+        owned,
+        pin: pinned.get(uri).copied(),
+        saved: saved.get(uri).copied(),
+    };
+    let mut slots: Vec<Slot> = Vec::new();
     let mut loading = false;
     let mut error: Option<String> = None;
     let mut more_page: Option<Page> = None;
     match filter {
         Filter::Playlists => {
             if needle.is_empty() || "liked songs".contains(&needle) {
-                entries.push(Entry {
-                    image: None,
-                    name: "Liked Songs".into(),
-                    subtitle: match app.library.liked.total {
-                        Some(total) => format!("Playlist • {total} songs"),
-                        None => "Playlist".into(),
-                    },
-                    page: Page::LikedSongs,
-                    uri: String::new(),
-                    round: false,
-                    liked: true,
+                slots.push(Slot {
+                    source: Source::Liked,
                     owned: false,
-                    playlist_index: None,
+                    pin: None,
+                    saved: None,
                 });
             }
             match &app.library.playlists {
@@ -423,18 +544,11 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                         if !needle.is_empty() && !playlist.name.to_lowercase().contains(&needle) {
                             continue;
                         }
-                        let owned = playlist.owned_by(&user_id);
-                        entries.push(Entry {
-                            image: pick_image(&playlist.images, 64).map(str::to_string),
-                            name: playlist.name.clone(),
-                            subtitle: format!("Playlist • {}", playlist.owner_name()),
-                            page: Page::Playlist(playlist.id.clone()),
-                            uri: playlist.uri.clone(),
-                            round: false,
-                            liked: false,
-                            owned,
-                            playlist_index: Some(index),
-                        });
+                        slots.push(slot(
+                            Source::Playlist(index),
+                            &playlist.uri,
+                            playlist.owned_by(user_id),
+                        ));
                     }
                 }
                 Loadable::Loading | Loadable::NotLoaded => loading = true,
@@ -442,7 +556,7 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
             }
         }
         Filter::Albums => {
-            for saved in &app.library.albums.items {
+            for (index, saved) in app.library.albums.items.iter().enumerate() {
                 let album = &saved.album;
                 if !needle.is_empty()
                     && !album.name.to_lowercase().contains(&needle)
@@ -453,23 +567,7 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                 {
                     continue;
                 }
-                entries.push(Entry {
-                    image: pick_image(&album.images, 64).map(str::to_string),
-                    name: album.name.clone(),
-                    subtitle: format!(
-                        "{} • {}",
-                        album.kind_label(),
-                        crate::api::models::join_names(
-                            album.artists.iter().map(|a| a.name.as_str())
-                        )
-                    ),
-                    page: Page::Album(album.id.clone()),
-                    uri: album.uri.clone(),
-                    round: false,
-                    liked: false,
-                    owned: false,
-                    playlist_index: None,
-                });
+                slots.push(slot(Source::Album(index), &album.uri, false));
             }
             loading = app.library.albums.loading && app.library.albums.items.is_empty();
             error = app.library.albums.error.clone();
@@ -478,21 +576,11 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
             }
         }
         Filter::Artists => {
-            for artist in &app.library.artists.items {
+            for (index, artist) in app.library.artists.items.iter().enumerate() {
                 if !needle.is_empty() && !artist.name.to_lowercase().contains(&needle) {
                     continue;
                 }
-                entries.push(Entry {
-                    image: pick_image(&artist.images, 64).map(str::to_string),
-                    name: artist.name.clone(),
-                    subtitle: "Artist".into(),
-                    page: Page::Artist(artist.id.clone()),
-                    uri: artist.uri.clone(),
-                    round: true,
-                    liked: false,
-                    owned: false,
-                    playlist_index: None,
-                });
+                slots.push(slot(Source::Artist(index), &artist.uri, false));
             }
             loading = app.library.artists.loading && app.library.artists.items.is_empty();
             error = app.library.artists.error.clone();
@@ -501,22 +589,12 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
             }
         }
         Filter::Podcasts => {
-            for saved in &app.library.shows.items {
+            for (index, saved) in app.library.shows.items.iter().enumerate() {
                 let show = &saved.show;
                 if !needle.is_empty() && !show.name.to_lowercase().contains(&needle) {
                     continue;
                 }
-                entries.push(Entry {
-                    image: pick_image(&show.images, 64).map(str::to_string),
-                    name: show.name.clone(),
-                    subtitle: format!("Podcast • {}", show.publisher),
-                    page: Page::Show(show.id.clone()),
-                    uri: show.uri.clone(),
-                    round: false,
-                    liked: false,
-                    owned: false,
-                    playlist_index: None,
-                });
+                slots.push(slot(Source::Show(index), &show.uri, false));
             }
             loading = app.library.shows.loading && app.library.shows.items.is_empty();
             error = app.library.shows.error.clone();
@@ -531,34 +609,30 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
     // the playlists shelf has an order of its own, that order wins there:
     // rows sit where they were dropped, and playlists the saved order has
     // not met yet, the newly created and followed, wait at the top.
-    let pinned = rank_of(&app.settings.pinned_contexts);
-    let pin_rank = |uri: &str| pinned.get(uri).copied().unwrap_or(usize::MAX);
     let custom_order = filter == Filter::Playlists && !app.settings.sidebar_order.is_empty();
-    let saved = rank_of(&app.settings.sidebar_order);
-    let saved_rank = |uri: &str| saved.get(uri).copied();
     // Pins are pins, whatever orders the rest: Liked Songs, then the
     // pinned block, then everyone else by the listener's own order or,
     // failing one, by recency.
-    entries.sort_by_cached_key(|entry| {
-        if entry.liked {
+    slots.sort_by_key(|slot| {
+        if slot.liked() {
             (0, 0)
         } else {
-            match pin_rank(&entry.uri) {
-                usize::MAX if custom_order => match saved_rank(&entry.uri) {
+            match slot.pin {
+                None if custom_order => match slot.saved {
                     Some(rank) => (3, rank),
-                    None => (2, entry.playlist_index.unwrap_or(0)),
+                    None => (2, slot.playlist_index().unwrap_or(0)),
                 },
-                usize::MAX => (2, 0),
-                rank => (1, rank),
+                None => (2, 0),
+                Some(rank) => (1, rank),
             }
         }
     });
     // The zones a dragged row can land in: everything sits below Liked
     // Songs, and the pinned entries form one block right after it.
-    let liked_rows = entries.iter().take_while(|entry| entry.liked).count();
-    let pinned_rows = entries
+    let liked_rows = slots.iter().take_while(|slot| slot.liked()).count();
+    let pinned_rows = slots
         .iter()
-        .filter(|entry| !entry.liked && pin_rank(&entry.uri) != usize::MAX)
+        .filter(|slot| !slot.liked() && slot.pin.is_some())
         .count();
     let playing_context = app.playing_context_uri();
     let context_playing = app.believed_playing();
@@ -585,7 +659,7 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                     super::widgets::error_row(ui, app, error, None);
                 }
             }
-            if entries.is_empty() && !loading && error.is_none() && !collapsed {
+            if slots.is_empty() && !loading && error.is_none() && !collapsed {
                 ui.add_space(12.0);
                 theme::subtle(
                     ui,
@@ -605,7 +679,7 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                 grid_tiles(
                     app,
                     ui,
-                    &entries,
+                    &slots,
                     playing_context.as_deref(),
                     context_playing,
                     &current_page,
@@ -633,18 +707,18 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                 .then_some(pointer)
                 .flatten()
                 .map(|pos| ((pos.y - list_top) / row_height).floor())
-                .filter(|row| *row >= 0.0 && *row < entries.len() as f32)
+                .filter(|row| *row >= 0.0 && *row < slots.len() as f32)
                 .map(|row| row as usize)
-                .filter(|row| entries[*row].liked || entries[*row].owned);
+                .filter(|row| slots[*row].liked() || slots[*row].owned);
             // A sidebar row in hand lands between rows: the slot nearest
             // the pointer, never above Liked Songs.
             let reordering = egui::DragAndDrop::has_payload_of_type::<DragEntry>(ui.ctx());
             let reorder_slot = reordering.then_some(pointer).flatten().map(|pos| {
                 (((pos.y - list_top) / row_height).round().max(0.0) as usize)
-                    .clamp(liked_rows, entries.len())
+                    .clamp(liked_rows, slots.len())
             });
-            super::widgets::virtual_rows(ui, entries.len(), row_height, |ui, index| {
-                let entry = &entries[index];
+            super::widgets::virtual_rows(ui, slots.len(), row_height, |ui, index| {
+                let entry = &slot_entry(app, slots[index]);
                 let droppable = entry.liked || entry.owned;
                 let drop_hover = drop_target == Some(index);
                 let active = entry.page == current_page;
@@ -915,9 +989,9 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                     && let Some(drag) = egui::DragAndDrop::take_payload::<DragEntry>(ui.ctx())
                 {
                     if filter == Filter::Playlists {
-                        drop_playlist_row(app, &entries, liked_rows, pinned_rows, slot, &drag.uri);
+                        drop_playlist_row(app, &slots, liked_rows, pinned_rows, slot, &drag.uri);
                     } else {
-                        drop_row(app, &entries, liked_rows, pinned_rows, slot, &drag.uri);
+                        drop_row(app, &slots, liked_rows, pinned_rows, slot, &drag.uri);
                     }
                 }
             }
@@ -1010,7 +1084,7 @@ fn entry_menu(app: &mut App, response: &egui::Response, entry: &Entry, custom_or
 fn grid_tiles(
     app: &mut App,
     ui: &mut egui::Ui,
-    entries: &[Entry],
+    slots: &[Slot],
     playing_context: Option<&str>,
     context_playing: bool,
     current_page: &Page,
@@ -1023,15 +1097,16 @@ fn grid_tiles(
     let columns = (((available + gap) / (96.0 + gap)).floor() as usize).max(2);
     let tile = ((available - gap * (columns as f32 - 1.0)) / columns as f32).max(40.0);
     let row_height = tile + 30.0;
-    let rows = entries.len().div_ceil(columns);
+    let rows = slots.len().div_ceil(columns);
     let dragging_song = egui::DragAndDrop::has_payload_of_type::<DragTrack>(ui.ctx());
     super::widgets::virtual_rows(ui, rows, row_height, |ui, row| {
         let (band, _) = ui.allocate_exact_size(vec2(available, row_height), Sense::hover());
         for column in 0..columns {
             let index = row * columns + column;
-            let Some(entry) = entries.get(index) else {
+            let Some(&slot) = slots.get(index) else {
                 break;
             };
+            let entry = &slot_entry(app, slot);
             let left = band.left() + column as f32 * (tile + gap);
             let tile_rect =
                 Rect::from_min_size(pos2(left, band.top()), vec2(tile, row_height - 6.0));
@@ -1158,7 +1233,7 @@ fn grid_tiles(
 /// pinned row dropped below the block is unpinned.
 fn drop_playlist_row(
     app: &mut App,
-    entries: &[Entry],
+    slots: &[Slot],
     liked_rows: usize,
     pinned_rows: usize,
     slot: usize,
@@ -1169,10 +1244,10 @@ fn drop_playlist_row(
     if pinned_rows > 0 && slot < section_end {
         // Into the pinned block: the pinned entry the drop lands in front
         // of anchors the new pin position.
-        let anchor = entries[liked_rows..section_end]
+        let anchor = slots[liked_rows..section_end]
             .iter()
             .skip(slot.saturating_sub(liked_rows))
-            .map(|entry| entry.uri.as_str())
+            .map(|held| source_uri(app, held.source))
             .find(|held| *held != uri)
             .map(str::to_string);
         let mut pinned = app.settings.pinned_contexts.clone();
@@ -1200,11 +1275,11 @@ fn drop_playlist_row(
         }
     }
     let mut order = full_playlist_order(app);
-    let anchor = entries
+    let anchor = slots
         .iter()
         .skip(slot)
-        .filter(|entry| !entry.liked)
-        .map(|entry| entry.uri.as_str())
+        .filter(|held| !held.liked())
+        .map(|held| source_uri(app, held.source))
         .find(|held| *held != uri)
         .map(str::to_string);
     order.retain(|held| held != uri);
@@ -1269,7 +1344,7 @@ fn rank_of(order: &[String]) -> std::collections::HashMap<&str, usize> {
 /// pinned. Liked Songs is not part of the pinned list and never moves.
 fn drop_row(
     app: &mut App,
-    entries: &[Entry],
+    slots: &[Slot],
     liked_rows: usize,
     pinned_rows: usize,
     slot: usize,
@@ -1280,10 +1355,10 @@ fn drop_row(
     if slot <= section_end {
         // The pinned entry the drop lands in front of anchors the new
         // position, so entries pinned from another shelf keep theirs.
-        let anchor = entries[liked_rows..section_end]
+        let anchor = slots[liked_rows..section_end]
             .iter()
             .skip(slot - liked_rows)
-            .map(|entry| entry.uri.as_str())
+            .map(|held| source_uri(app, held.source))
             .find(|held| *held != uri)
             .map(str::to_string);
         pinned.retain(|held| held != uri);

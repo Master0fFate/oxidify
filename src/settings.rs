@@ -87,6 +87,94 @@ impl PlaybackBackend {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyMode {
+    Off,
+    #[default]
+    System,
+    Http,
+    Socks5,
+}
+
+impl ProxyMode {
+    pub const ALL: [ProxyMode; 4] = [Self::Off, Self::System, Self::Http, Self::Socks5];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::System => "System",
+            Self::Http => "HTTP",
+            Self::Socks5 => "SOCKS5",
+        }
+    }
+
+    pub fn is_manual(self) -> bool {
+        matches!(self, Self::Http | Self::Socks5)
+    }
+}
+
+pub fn manual_proxy_address(settings: &Settings) -> Result<String, String> {
+    let host = settings.proxy_host.trim().trim_end_matches('.');
+    let port = settings.proxy_port.trim();
+    if host.is_empty() || port.is_empty() {
+        return Err("Set both an address and a port.".into());
+    }
+    if host.contains(['@', ':', '/']) {
+        return Err("The address is a host name or IP, without @ : or /.".into());
+    }
+    let port: u16 = port
+        .parse()
+        .map_err(|_| "The port is a number from 1 to 65535.".to_string())?;
+    if port == 0 {
+        return Err("The port is a number from 1 to 65535.".into());
+    }
+    let scheme = match settings.proxy_mode {
+        ProxyMode::Socks5 => "socks5",
+        _ => "http",
+    };
+    Ok(format!("{scheme}://{host}:{port}"))
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProxySetting {
+    Off,
+    System,
+    Manual {
+        address: String,
+        username: String,
+        password: String,
+    },
+}
+
+pub fn resolve_proxy(settings: &Settings, password: &str) -> Result<ProxySetting, String> {
+    match settings.proxy_mode {
+        ProxyMode::Off => Ok(ProxySetting::Off),
+        ProxyMode::System => Ok(ProxySetting::System),
+        ProxyMode::Http | ProxyMode::Socks5 => {
+            let address = manual_proxy_address(settings)?;
+            let username = settings.proxy_username.trim().to_string();
+            if username.is_empty() {
+                Ok(ProxySetting::Manual {
+                    address,
+                    username: String::new(),
+                    password: String::new(),
+                })
+            } else {
+                Ok(ProxySetting::Manual {
+                    address,
+                    username,
+                    password: password.to_string(),
+                })
+            }
+        }
+    }
+}
+
+fn proxy_mode_is_system(mode: &ProxyMode) -> bool {
+    *mode == ProxyMode::System
+}
+
 fn default_alternate_min_score() -> f32 {
     0.55
 }
@@ -133,6 +221,14 @@ pub struct Settings {
     /// An optional personal Spotify Web API application id. The shared
     /// application remains active for coverage when this is present.
     pub web_client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "proxy_mode_is_system")]
+    pub proxy_mode: ProxyMode,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub proxy_host: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub proxy_port: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub proxy_username: String,
     /// Local playback has been authorized at least once on this machine, so
     /// the app can resume it silently instead of prompting.
     pub playback_authorized: bool,
@@ -225,6 +321,10 @@ impl Default for Settings {
             search_history: Vec::new(),
             show_shortcut_hints: true,
             web_client_id: None,
+            proxy_mode: ProxyMode::System,
+            proxy_host: String::new(),
+            proxy_port: String::new(),
+            proxy_username: String::new(),
             playback_authorized: false,
             keep_playing_in_background: true,
             check_for_updates: true,
@@ -545,5 +645,92 @@ mod alternate_settings_tests {
         settings.save(&path);
         assert_eq!(Settings::load(&path).volume, 12345);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    fn manual(mode: ProxyMode, host: &str, port: &str, user: &str) -> Settings {
+        Settings {
+            proxy_mode: mode,
+            proxy_host: host.into(),
+            proxy_port: port.into(),
+            proxy_username: user.into(),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn a_manual_proxy_becomes_a_typed_address() {
+        let settings = manual(ProxyMode::Http, "proxy.example.com", "3128", "");
+        assert_eq!(
+            manual_proxy_address(&settings).as_deref(),
+            Ok("http://proxy.example.com:3128")
+        );
+        let socks = manual(ProxyMode::Socks5, "10.0.0.2", "1080", "");
+        assert_eq!(
+            manual_proxy_address(&socks).as_deref(),
+            Ok("socks5://10.0.0.2:1080")
+        );
+    }
+
+    #[test]
+    fn a_manual_proxy_rejects_half_an_address() {
+        for (host, port) in [("", "3128"), ("host", ""), ("host", "0"), ("host", "nope")] {
+            let settings = manual(ProxyMode::Http, host, port, "");
+            assert!(manual_proxy_address(&settings).is_err(), "{host}:{port}");
+        }
+        let sneaky = manual(ProxyMode::Http, "user@host", "3128", "");
+        assert!(manual_proxy_address(&sneaky).is_err());
+    }
+
+    #[test]
+    fn a_proxy_sign_in_rides_only_with_the_web_api_client() {
+        let settings = manual(ProxyMode::Http, "proxy.example.com", "3128", "jane");
+        match resolve_proxy(&settings, "s3cret").expect("resolved") {
+            ProxySetting::Manual {
+                address,
+                username,
+                password,
+            } => {
+                assert_eq!(address, "http://proxy.example.com:3128");
+                assert_eq!(username, "jane");
+                assert_eq!(password, "s3cret");
+            }
+            other => panic!("{other:?}"),
+        }
+        let anonymous = manual(ProxyMode::Http, "proxy.example.com", "3128", "");
+        match resolve_proxy(&anonymous, "s3cret").expect("resolved") {
+            ProxySetting::Manual { password, .. } => assert!(password.is_empty()),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn off_and_system_need_no_proxy_detail() {
+        assert_eq!(
+            resolve_proxy(&manual(ProxyMode::Off, "h", "1", ""), "x").expect("ok"),
+            ProxySetting::Off
+        );
+        assert_eq!(
+            resolve_proxy(&manual(ProxyMode::System, "h", "1", ""), "x").expect("ok"),
+            ProxySetting::System
+        );
+    }
+
+    #[test]
+    fn older_settings_files_without_a_proxy_stay_on_system() {
+        let settings: Settings = serde_json::from_str("{}").expect("parsed");
+        assert_eq!(settings.proxy_mode, ProxyMode::System);
+    }
+
+    #[test]
+    fn the_settings_file_never_carries_a_proxy_password() {
+        let settings = manual(ProxyMode::Http, "proxy.example.com", "3128", "jane");
+        let json = serde_json::to_string(&settings).expect("serialized");
+        assert!(json.contains("jane"));
+        assert!(!json.contains("s3cret"));
     }
 }

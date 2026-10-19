@@ -6,6 +6,7 @@
 //! the interface with `request_repaint`, so the app stays event-driven and
 //! idle when nothing is happening.
 
+mod playlist_cache;
 mod top_tracks_cache;
 
 use std::sync::Arc;
@@ -22,8 +23,10 @@ use crate::api::{
 };
 use crate::images::{ArtLoader, accent_color};
 use crate::paths::AppDirs;
-use crate::player::{Engine, EngineConfig, EngineEvent, Heard, LocalState, PlayerCommand};
-use crate::settings::PlaybackBackend;
+use crate::player::{
+    Engine, EngineConfig, EngineEvent, Heard, LoadSpec, LocalState, Playback, PlayerCommand,
+};
+use crate::settings::{PlaybackBackend, ProxySetting};
 
 pub type ApiResult<T> = Result<T, ApiError>;
 
@@ -192,6 +195,10 @@ pub enum ApiRequest {
         id: String,
         offset: u32,
     },
+    QueueAlbumTracks {
+        id: String,
+        offset: u32,
+    },
     Show {
         id: String,
     },
@@ -223,6 +230,11 @@ pub enum ApiRequest {
     },
     AddToQueue {
         uri: String,
+        device_id: Option<String>,
+        label: String,
+    },
+    AddManyToQueue {
+        uris: Vec<String>,
         device_id: Option<String>,
         label: String,
     },
@@ -380,6 +392,11 @@ pub enum ApiResponse {
         offset: u32,
         result: ApiResult<Page<Track>>,
     },
+    QueueAlbumTracks {
+        id: String,
+        offset: u32,
+        result: ApiResult<Page<Track>>,
+    },
     Show {
         id: String,
         result: ApiResult<Show>,
@@ -459,6 +476,9 @@ pub enum Command {
         error: Option<String>,
     },
     /// Internal: librespot's session ended on its own.
+    SessionDropped {
+        resume: Option<LoadSpec>,
+    },
     Reconnect,
     /// Look for Spotify Connect receivers on the local network.
     DiscoverReceivers,
@@ -483,6 +503,7 @@ pub enum Command {
         snapshot: String,
         items: Vec<PlaylistItem>,
     },
+    ClearLibraryCache,
     /// Read the playlist list as last seen from disk.
     LoadLibraryCache,
     /// Remember the playlist list on disk.
@@ -546,6 +567,7 @@ pub enum Event {
         snapshot: String,
         items: Vec<PlaylistItem>,
     },
+    LibraryCacheCleared(Result<u64, String>),
     /// The playlist list as last cached.
     LibraryCache {
         account_id: String,
@@ -657,6 +679,28 @@ pub struct Backend {
 }
 
 impl Backend {
+    fn http_client(proxy: &ProxySetting) -> reqwest::Result<reqwest::Client> {
+        let mut builder = reqwest::Client::builder()
+            .user_agent(concat!("oxidify/", env!("CARGO_PKG_VERSION")))
+            .timeout(Duration::from_secs(30));
+        match proxy {
+            ProxySetting::Off => builder = builder.no_proxy(),
+            ProxySetting::System => {}
+            ProxySetting::Manual {
+                address,
+                username,
+                password,
+            } => {
+                let mut proxy = reqwest::Proxy::all(address)?;
+                if !username.is_empty() {
+                    proxy = proxy.basic_auth(username, password);
+                }
+                builder = builder.proxy(proxy);
+            }
+        }
+        builder.build()
+    }
+
     pub fn spawn(
         dirs: AppDirs,
         engine_config: EngineConfig,
@@ -664,6 +708,7 @@ impl Backend {
         waker: Waker,
         playback_mode: PlaybackBackend,
         alternate: AlternateConfig,
+        proxy: ProxySetting,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = std::sync::mpsc::channel();
@@ -673,11 +718,19 @@ impl Backend {
             .enable_all()
             .build()
             .expect("unable to start the async runtime");
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("oxidify/", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(30))
-            .build()
-            .expect("unable to build the HTTP client");
+        let http = match Self::http_client(&proxy) {
+            Ok(http) => http,
+            Err(error) => {
+                log::error!(
+                    "the proxy settings are unusable ({error}); connecting without a proxy"
+                );
+                reqwest::Client::builder()
+                    .user_agent(concat!("oxidify/", env!("CARGO_PKG_VERSION")))
+                    .timeout(Duration::from_secs(30))
+                    .build()
+                    .expect("unable to build the HTTP client")
+            }
+        };
         let art = ArtLoader::new(http.clone(), runtime.handle().clone(), dirs.art_cache_dir());
         let activity = Arc::new(NetActivity::default());
 
@@ -804,6 +857,7 @@ struct Worker {
     authorizing_source: Option<ApiSource>,
     pending_authorization: Option<ApiSource>,
     reconnects: Vec<Instant>,
+    resume: Option<LoadSpec>,
 }
 
 impl Worker {
@@ -848,6 +902,7 @@ impl Worker {
             authorizing_source: None,
             pending_authorization: None,
             reconnects: Vec::new(),
+            resume: None,
         }
     }
 
@@ -935,6 +990,10 @@ impl Worker {
                     }
                 }
                 Command::AccountChecked { premium } => self.on_account_checked(premium),
+                Command::SessionDropped { resume } => {
+                    self.resume = resume;
+                    self.reconnect_engine();
+                }
                 Command::Reconnect => self.reconnect_engine(),
                 Command::DiscoverReceivers => self.discover_receivers(),
                 Command::ActivateReceiver(receiver) => self.activate_receiver(*receiver),
@@ -948,6 +1007,7 @@ impl Worker {
                     snapshot,
                     items,
                 } => self.store_playlist_cache(id, snapshot, items),
+                Command::ClearLibraryCache => self.clear_library_cache(),
                 Command::LoadLibraryCache => self.load_library_cache(),
                 Command::StoreLibraryCache(playlists) => {
                     self.store_library_cache("playlists.json", &playlists)
@@ -988,6 +1048,7 @@ impl Worker {
     async fn stop_all_engines(&mut self) {
         self.event_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.resume = None;
         self.stop_spotify_only();
         if let Some(alternate) = self.alternate.take() {
             alternate.shutdown().await;
@@ -1274,17 +1335,27 @@ impl Worker {
         let waker = self.waker.clone();
         let current = Arc::clone(&self.event_generation);
         let mine = current.load(std::sync::atomic::Ordering::SeqCst);
+        let last = Arc::new(std::sync::Mutex::new(None));
         Arc::new(move |event| {
             if current.load(std::sync::atomic::Ordering::SeqCst) != mine {
                 return;
             }
             match event {
                 EngineEvent::State(state) => {
+                    if state.track.is_some() {
+                        *last.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                            Some(state.clone());
+                    }
                     let _ = events.send(Event::Local(Box::new(state)));
                     waker.wake();
                 }
                 EngineEvent::SessionEnded => {
-                    let _ = commands.send(Command::Reconnect);
+                    let resume = last
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .take()
+                        .and_then(|state| resume_spec(&state));
+                    let _ = commands.send(Command::SessionDropped { resume });
                 }
             }
         })
@@ -1539,7 +1610,11 @@ impl Worker {
             Some(engine) => {
                 let device_id = engine.device_id().to_string();
                 self.heard = Some(engine.heard());
-                self.engine = Some(Arc::new(engine));
+                let engine = Arc::new(engine);
+                if let Some(resume) = self.resume.take() {
+                    self.apply_resume(&engine, resume);
+                }
+                self.engine = Some(engine);
                 self.reconnects.clear();
                 self.emit(Event::Playback(LocalPlayback::Ready { device_id }));
             }
@@ -1550,6 +1625,21 @@ impl Worker {
                 }
                 self.emit(Event::Playback(LocalPlayback::Failed(message)));
             }
+        }
+    }
+
+    fn apply_resume(&self, engine: &Engine, resume: LoadSpec) {
+        log::info!(
+            "picking {} up again at {} ms on the new session",
+            resume.uris.first().map(String::as_str).unwrap_or(""),
+            resume.position_ms
+        );
+        if let Err(error) = engine.command(PlayerCommand::Load(resume.clone())) {
+            log::warn!("unable to pick playback up again: {error}");
+            return;
+        }
+        if let Some(shuffle) = resume.shuffle {
+            let _ = engine.command(PlayerCommand::Shuffle(shuffle));
         }
     }
 
@@ -1656,16 +1746,10 @@ impl Worker {
         };
         let events = self.events.clone();
         let waker = self.waker.clone();
-        let path = self
-            .dirs
-            .account_playlist_cache_dir(account.as_str())
-            .join(format!("{id}.json"));
+        let dir = self.dirs.account_playlist_cache_dir(account.as_str());
         let account_id = account.as_str().to_string();
         tokio::spawn(async move {
-            let Ok(text) = tokio::fs::read_to_string(&path).await else {
-                return;
-            };
-            let Ok(cached) = serde_json::from_str::<CachedPlaylist>(&text) else {
+            let Some(cached) = playlist_cache::load(&dir, &account_id, &id).await else {
                 return;
             };
             let _ = events.send(Event::PlaylistCache {
@@ -1683,20 +1767,32 @@ impl Worker {
         let Some(account) = self.api.account() else {
             return;
         };
-        let path = self
-            .dirs
-            .account_playlist_cache_dir(account.as_str())
-            .join(format!("{id}.json"));
+        let dir = self.dirs.account_playlist_cache_dir(account.as_str());
+        let account_id = account.as_str().to_string();
         tokio::spawn(async move {
-            if let Some(parent) = path.parent() {
-                let _ = tokio::fs::create_dir_all(parent).await;
+            playlist_cache::store(&dir, &account_id, &id, snapshot, items).await;
+        });
+    }
+
+    fn clear_library_cache(&self) {
+        let events = self.events.clone();
+        let waker = self.waker.clone();
+        let roots = [
+            self.dirs.playlist_cache_dir(),
+            self.dirs.library_cache_dir(),
+        ];
+        tokio::spawn(async move {
+            let mut result = Ok(0u64);
+            for root in &roots {
+                result = match (result, playlist_cache::clear_dir(root).await) {
+                    (Ok(total), Ok(bytes)) => Ok(total.saturating_add(bytes)),
+                    (Err(error), _) | (_, Err(error)) => Err(error),
+                };
             }
-            if let Ok(text) = serde_json::to_string(&CachedPlaylist { snapshot, items }) {
-                let temporary = path.with_extension("json.tmp");
-                if tokio::fs::write(&temporary, text).await.is_ok() {
-                    let _ = tokio::fs::rename(temporary, path).await;
-                }
-            }
+            let _ = events.send(Event::LibraryCacheCleared(
+                result.map_err(|error| error.to_string()),
+            ));
+            waker.wake();
         });
     }
 
@@ -1984,7 +2080,8 @@ fn operation_for(api: &ApiGateway, request: &ApiRequest) -> Operation {
         | ApiRequest::Remote { .. }
         | ApiRequest::Transfer { .. }
         | ApiRequest::ShufflePlay { .. }
-        | ApiRequest::AddToQueue { .. } => Operation::Playback,
+        | ApiRequest::AddToQueue { .. }
+        | ApiRequest::AddManyToQueue { .. } => Operation::Playback,
         ApiRequest::RecentlyPlayed { .. }
         | ApiRequest::TopTracks { .. }
         | ApiRequest::TopArtists { .. }
@@ -2027,6 +2124,7 @@ fn operation_for(api: &ApiGateway, request: &ApiRequest) -> Operation {
         | ApiRequest::ArtistAlbums { .. }
         | ApiRequest::Album { .. }
         | ApiRequest::AlbumTracks { .. }
+        | ApiRequest::QueueAlbumTracks { .. }
         | ApiRequest::Show { .. }
         | ApiRequest::ShowEpisodes { .. }
         | ApiRequest::Track { .. } => Operation::Catalog,
@@ -2316,6 +2414,11 @@ async fn handle(api: &ApiGateway, request: ApiRequest) -> (ApiResponse, Option<A
             id,
             offset,
         },
+        ApiRequest::QueueAlbumTracks { id, offset } => ApiResponse::QueueAlbumTracks {
+            result: routed!(album_tracks(&id, offset, 50)),
+            id,
+            offset,
+        },
         ApiRequest::Show { id } => ApiResponse::Show {
             result: routed!(show(&id)),
             id,
@@ -2374,6 +2477,14 @@ async fn handle(api: &ApiGateway, request: ApiRequest) -> (ApiResponse, Option<A
             result: routed!(add_to_queue(&uri, device_id.as_deref())),
             label,
         },
+        ApiRequest::AddManyToQueue {
+            uris,
+            device_id,
+            label,
+        } => ApiResponse::QueueAdded {
+            result: routed!(add_many_to_queue(&uris, device_id.as_deref())),
+            label,
+        },
     };
     observe_playlists(api, &response);
     (response, expired.get())
@@ -2405,13 +2516,6 @@ async fn spotify_lyrics(
     }
 }
 
-/// A playlist's items on disk, valid for exactly one snapshot.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct CachedPlaylist {
-    snapshot: String,
-    items: Vec<PlaylistItem>,
-}
-
 async fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
     let text = tokio::fs::read_to_string(path).await.ok()?;
     serde_json::from_str(&text).ok()
@@ -2429,9 +2533,25 @@ async fn write_atomically(path: std::path::PathBuf, text: String) {
     }
 }
 
+fn resume_spec(state: &LocalState) -> Option<LoadSpec> {
+    let track = state.track.as_ref()?;
+    if track.uri.is_empty() {
+        return None;
+    }
+    Some(LoadSpec {
+        uris: vec![track.uri.clone()],
+        position_ms: state.position_now(),
+        play: state.playback == Playback::Playing,
+        shuffle: Some(state.shuffle),
+        known_tracks: vec![track.clone()],
+        ..LoadSpec::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::player::LocalTrack;
 
     /// A fresh, empty state directory and no credentials: these tests never
     /// connect to Spotify, start audio, or use the listener's stored state.
@@ -2460,6 +2580,7 @@ mod tests {
             audio_cache_limit: None,
             tap: crate::vis::AudioTap::new(),
             eq: crate::eq::shared(),
+            proxy: None,
         };
         let http = reqwest::Client::new();
         let art = ArtLoader::new(
@@ -2608,6 +2729,56 @@ mod tests {
             );
         }
         assert!(ApiRequest::MyPlaylists { offset: 0 }.background());
+    }
+
+    #[test]
+    fn resume_picks_up_a_playing_track_where_it_reached() {
+        let state = LocalState {
+            playback: Playback::Playing,
+            track: Some(LocalTrack {
+                uri: "spotify:track:abc".into(),
+                title: "Song".into(),
+                duration_ms: 200_000,
+                ..LocalTrack::default()
+            }),
+            position_ms: 30_000,
+            position_at: Some(Instant::now() - Duration::from_secs(10)),
+            shuffle: true,
+            ..LocalState::default()
+        };
+        let spec = resume_spec(&state).expect("a playing track resumes");
+        assert_eq!(spec.uris, vec!["spotify:track:abc".to_string()]);
+        assert!(spec.play);
+        assert!(spec.position_ms >= 40_000);
+        assert_eq!(spec.shuffle, Some(true));
+        assert_eq!(spec.known_tracks.len(), 1);
+    }
+
+    #[test]
+    fn resume_of_a_paused_track_stays_paused_at_its_position() {
+        let state = LocalState {
+            playback: Playback::Paused,
+            track: Some(LocalTrack {
+                uri: "spotify:track:abc".into(),
+                ..LocalTrack::default()
+            }),
+            position_ms: 12_000,
+            position_at: None,
+            ..LocalState::default()
+        };
+        let spec = resume_spec(&state).expect("a paused track resumes");
+        assert!(!spec.play);
+        assert_eq!(spec.position_ms, 12_000);
+    }
+
+    #[test]
+    fn an_engine_with_nothing_playing_has_no_resume() {
+        assert!(resume_spec(&LocalState::default()).is_none());
+        let idle = LocalState {
+            track: Some(LocalTrack::default()),
+            ..LocalState::default()
+        };
+        assert!(resume_spec(&idle).is_none());
     }
 
     #[test]

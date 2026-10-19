@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -15,7 +16,7 @@ use super::audio::{AudioOutput, OutputStatus, RodioOutput, volume_f32};
 use super::buffer::SharedAudio;
 use super::decode::{DecodeHandle, DurationProbe, FormatHint, PcmSource, spawn_decoder};
 use super::fetch::{self, FetchPolicy};
-use super::hydrate::{expand_load, offset_index, seed_queue};
+use super::hydrate::{autoplay_tracks, expand_load, known_queue, offset_index, seed_queue};
 use super::matching::{TrackQuery, rank_candidates};
 use super::provider::{MediaLookup, Resolver};
 use super::session::{Advance, Session};
@@ -29,6 +30,7 @@ const MAX_MISS_SKIPS: u32 = 16;
 const SEEK_MATERIAL_MS: u32 = 50;
 const DEVICE_BACKOFF_INITIAL: Duration = Duration::from_millis(200);
 const DEVICE_BACKOFF_CAP: Duration = Duration::from_secs(8);
+const PODCASTS_UNSUPPORTED: &str = "Podcasts are not supported in alternate playback.";
 
 enum Internal {
     Command(PlayerCommand),
@@ -78,6 +80,10 @@ enum Job {
         token: u64,
         uri: String,
         error: String,
+    },
+    Autoplay {
+        seed: String,
+        result: Result<Vec<LocalTrack>, String>,
     },
 }
 
@@ -223,12 +229,16 @@ struct Engine {
     /// Where the playing audio's own length can be read, once decoded.
     active_duration: Option<DurationProbe>,
     overlap_uri: Option<String>,
+    overlap_forward: bool,
     prefetch: Option<Prefetched>,
     /// The next track's resolve while it runs, before its `Ready` lands.
     prefetch_inflight: Option<String>,
+    unplayable: HashMap<String, String>,
     outgoing: Option<SharedAudio>,
     miss_skips: u32,
     seeded_play: bool,
+    hydrating: bool,
+    autoplay_for: Option<String>,
     device_retry_at: Option<Instant>,
     device_backoff: Duration,
 }
@@ -265,11 +275,15 @@ async fn run(
         pending: None,
         active_duration: None,
         overlap_uri: None,
+        overlap_forward: false,
         prefetch: None,
         prefetch_inflight: None,
+        unplayable: HashMap::new(),
         outgoing: None,
         miss_skips: 0,
         seeded_play: false,
+        hydrating: false,
+        autoplay_for: None,
         device_retry_at: None,
         device_backoff: DEVICE_BACKOFF_INITIAL,
     };
@@ -337,6 +351,8 @@ impl Engine {
         }
         self.adopted = None;
         self.prefetch_inflight = None;
+        self.hydrating = false;
+        self.autoplay_for = None;
     }
 
     /// Aborts every job but the one resolving `keep`, whose token stays
@@ -352,6 +368,8 @@ impl Engine {
         }
         self.jobs = kept;
         self.adopted = Some((self.play_generation, keep.to_string()));
+        self.hydrating = false;
+        self.autoplay_for = None;
     }
 
     fn abort_job(&mut self, uri: &str) {
@@ -472,8 +490,7 @@ impl Engine {
             }
             PlayerCommand::AddToQueue(track) => {
                 if track.is_episode || uri_kind(&track.uri) == Some("episode") {
-                    self.session
-                        .set_error("Podcasts are not supported in alternate playback.".into());
+                    self.session.set_error(PODCASTS_UNSUPPORTED.into());
                     self.emit();
                     return;
                 }
@@ -498,7 +515,9 @@ impl Engine {
             }
             Advance::PlayCurrent => {
                 let current = self.session.current().map(|track| track.uri.clone());
-                if let Some(prefetch) = self.prefetch.take() {
+                if !self.current_is_unplayable()
+                    && let Some(prefetch) = self.prefetch.take()
+                {
                     if current.as_deref() == Some(prefetch.uri.as_str()) {
                         self.play_ready(prefetch);
                         return;
@@ -526,6 +545,7 @@ impl Engine {
 
     fn start_hydrate(&mut self, spec: LoadSpec) {
         let token = self.bump();
+        self.unplayable.clear();
         let seed = seed_queue(&spec);
         if seed.is_empty() {
             self.session.set_loading();
@@ -542,6 +562,7 @@ impl Engine {
                 self.emit();
             }
         }
+        self.hydrating = true;
         let api = Arc::clone(&self.api);
         let tx = self.tx.clone();
         let mut cancel_rx = self.cancel_rx.clone();
@@ -575,33 +596,44 @@ impl Engine {
             self.follow(advance);
             return;
         };
-        if let Some(prefetch) = self.prefetch.take()
-            && prefetch.uri == track.uri
-        {
-            self.bump_jobs();
-            if forward {
-                self.session.skip_forward();
-            } else {
-                self.session.previous();
-            }
-            self.play_ready(prefetch);
-            return;
-        }
         if let Some(prefetch) = self.prefetch.take() {
+            let reached = prefetch.uri == track.uri
+                || (forward
+                    && self
+                        .playable_ahead()
+                        .is_some_and(|ahead| ahead.uri == prefetch.uri));
+            if reached {
+                self.bump_jobs();
+                let _ = self.session.select_uri(&prefetch.uri, forward);
+                self.play_ready(prefetch);
+                return;
+            }
             prefetch.buffer.cancel();
         }
-        if self.prefetch_inflight.as_deref() == Some(track.uri.as_str()) {
+        if let Some(inflight) = self.prefetch_inflight.clone()
+            && (inflight == track.uri
+                || (forward
+                    && self
+                        .playable_ahead()
+                        .is_some_and(|ahead| ahead.uri == inflight)))
+        {
             // Its resolve is already running: keep it as the transition
             // instead of aborting it and starting from the search again.
             self.prefetch_inflight = None;
-            self.abort_jobs_except(&track.uri);
+            self.abort_jobs_except(&inflight);
             self.play_generation = self.play_generation.wrapping_add(1);
-            self.overlap_uri = Some(track.uri);
+            self.overlap_forward = forward;
+            self.overlap_uri = Some(inflight);
             return;
         }
         self.bump_jobs();
-        self.overlap_uri = Some(track.uri.clone());
-        self.start_resolve_track(track, false);
+        self.overlap_forward = forward;
+        if let Some(message) = self.unplayable_reason(&track).map(str::to_owned) {
+            self.overlap_missed(message);
+        } else {
+            self.overlap_uri = Some(track.uri.clone());
+            self.start_resolve_track(track, false);
+        }
     }
 
     fn start_resolve(&mut self) {
@@ -611,14 +643,14 @@ impl Engine {
             self.emit();
             return;
         };
+        if let Some(message) = self.unplayable_reason(&track).map(str::to_owned) {
+            self.skip_unplayable(message);
+            return;
+        }
         self.start_resolve_track(track, true);
     }
 
     fn start_resolve_track(&mut self, track: LocalTrack, loading: bool) {
-        if track.is_episode {
-            self.fail_or_skip("Podcasts are not supported in alternate playback.".into());
-            return;
-        }
         let token = self.play_generation;
         if loading {
             self.session.set_loading();
@@ -695,16 +727,15 @@ impl Engine {
                     return;
                 }
                 self.note_job_done(&uri);
+                self.unplayable.insert(uri.clone(), error.clone());
                 if self.drop_failed_prefetch(&uri, &error) {
                     return;
                 }
                 if self.overlap_uri.as_deref() == Some(uri.as_str()) {
-                    self.overlap_uri = None;
-                    self.session.set_error(error);
-                    self.emit();
-                    return;
+                    self.overlap_missed(error);
+                } else if self.is_current(&uri) {
+                    self.fail_or_skip(error);
                 }
-                self.fail_or_skip(error);
             }
             Job::Ready {
                 token,
@@ -726,8 +757,7 @@ impl Engine {
                 let prefetching = !overlapping
                     && self.session.current().map(|track| track.uri.as_str()) != Some(uri.as_str())
                     && self.config.gapless
-                    && self.session.peek_next().map(|track| track.uri.as_str())
-                        == Some(uri.as_str());
+                    && self.next_playable().is_some_and(|track| track.uri == uri);
                 if prefetching {
                     self.cache_match(uri.clone(), video_id.clone());
                     self.prefetch = Some(Prefetched {
@@ -740,7 +770,7 @@ impl Engine {
                     return;
                 }
                 if overlapping {
-                    let _ = self.session.select_uri(&uri);
+                    let _ = self.session.select_uri(&uri, self.overlap_forward);
                     self.overlap_uri = None;
                 }
                 self.play_ready(Prefetched {
@@ -759,52 +789,72 @@ impl Engine {
                 if self.drop_failed_prefetch(&uri, &error) {
                     return;
                 }
-                if self.overlap_uri.as_deref() == Some(uri.as_str()) {
-                    self.overlap_uri = None;
-                    self.session.set_error(error);
-                    self.emit();
+                if self.is_current(&uri) || self.overlap_uri.as_deref() == Some(uri.as_str()) {
+                    self.fail_transport(error);
+                }
+            }
+            Job::Autoplay { seed, result } => {
+                if self.autoplay_for.as_deref() != Some(seed.as_str()) {
                     return;
                 }
-                self.fail_transport(error);
+                let tracks = match result {
+                    Ok(tracks) => tracks,
+                    Err(error) => {
+                        log::warn!("alternate autoplay found nothing to add: {error}");
+                        return;
+                    }
+                };
+                if self.session.append(tracks) == 0 {
+                    return;
+                }
+                if self.session.playback() == Playback::Stopped && self.is_current(&seed) {
+                    let advance = self.session.skip_forward();
+                    self.follow(advance);
+                } else {
+                    self.emit();
+                    self.extend_queue();
+                }
             }
         }
     }
 
     fn on_hydrated(&mut self, spec: LoadSpec, result: Result<Vec<LocalTrack>, String>) {
-        match result {
-            Ok(tracks) => {
-                self.miss_skips = 0;
-                let offset = offset_index(&spec, &tracks);
-                if self.seeded_play {
-                    let prev = self.session.current().map(|track| track.uri.clone());
-                    self.session.adopt_tracks(tracks, offset);
-                    let now = self.session.current().map(|track| track.uri.clone());
-                    if spec.play && now != prev {
-                        let _ = self.bump();
-                        self.start_resolve();
-                    } else {
-                        self.emit();
-                        // The clicked track may already be playing with
-                        // nothing after it; now that the rest of the
-                        // context is known, its successor can be fetched.
-                        self.sync_prefetch();
-                    }
-                } else {
-                    self.session
-                        .load(tracks, offset, spec.play, spec.shuffle, spec.position_ms);
-                    if spec.play {
-                        self.start_resolve();
-                    } else {
-                        self.output.stop();
-                        self.emit();
-                    }
-                }
+        self.hydrating = false;
+        let tracks = match result {
+            Ok(tracks) => tracks,
+            Err(error) if self.seeded_play => {
+                log::warn!("alternate playback kept the known queue: {error}");
+                known_queue(&spec)
             }
             Err(error) => {
-                if self.seeded_play {
-                    return;
-                }
                 self.session.set_error(error);
+                self.emit();
+                return;
+            }
+        };
+        self.miss_skips = 0;
+        let offset = offset_index(&spec, &tracks);
+        if self.seeded_play {
+            let prev = self.session.current().map(|track| track.uri.clone());
+            self.session.adopt_tracks(tracks, offset);
+            let now = self.session.current().map(|track| track.uri.clone());
+            if spec.play && now != prev {
+                let _ = self.bump();
+                self.start_resolve();
+            } else {
+                self.emit();
+                // The clicked track may already be playing with
+                // nothing after it; now that the rest of the
+                // context is known, its successor can be fetched.
+                self.extend_queue();
+            }
+        } else {
+            self.session
+                .load(tracks, offset, spec.play, spec.shuffle, spec.position_ms);
+            if spec.play {
+                self.start_resolve();
+            } else {
+                self.output.stop();
                 self.emit();
             }
         }
@@ -847,7 +897,7 @@ impl Engine {
         if self.overlap_uri.as_deref() == Some(uri) {
             return true;
         }
-        self.config.gapless && self.session.peek_next().map(|track| track.uri.as_str()) == Some(uri)
+        self.config.gapless && self.next_playable().is_some_and(|track| track.uri == uri)
     }
 
     fn play_ready(&mut self, ready: Prefetched) {
@@ -874,6 +924,40 @@ impl Engine {
         }
     }
 
+    fn extend_queue(&mut self) {
+        if self.session.playback() == Playback::Playing {
+            self.maybe_autoplay();
+        }
+        self.sync_prefetch();
+    }
+
+    fn maybe_autoplay(&mut self) {
+        if !self.config.autoplay || self.hydrating || self.session.peek_next().is_some() {
+            return;
+        }
+        let Some(seed) = self.session.current().cloned() else {
+            return;
+        };
+        if self.autoplay_for.as_deref() == Some(seed.uri.as_str()) {
+            return;
+        }
+        self.autoplay_for = Some(seed.uri.clone());
+        let api = Arc::clone(&self.api);
+        let tx = self.tx.clone();
+        let mut cancel_rx = self.cancel_rx.clone();
+        let job = tokio::spawn(async move {
+            let result = tokio::select! {
+                _ = wait_cancel(&mut cancel_rx) => return,
+                result = autoplay_tracks(&api, &seed) => result,
+            };
+            let _ = tx.send(Internal::Job(Job::Autoplay {
+                seed: seed.uri,
+                result: result.map_err(|error| error.to_string()),
+            }));
+        });
+        self.spawn_job(None, job);
+    }
+
     fn maybe_prefetch_next(&mut self) {
         if !self.config.gapless
             || self.overlap_uri.is_some()
@@ -882,12 +966,10 @@ impl Engine {
         {
             return;
         }
-        let Some(next) = self.session.peek_next().cloned() else {
+        let Some(next) = self.next_playable().cloned() else {
             return;
         };
-        if next.is_episode
-            || self.session.current().map(|track| track.uri.as_str()) == Some(next.uri.as_str())
-        {
+        if self.is_current(&next.uri) {
             return;
         }
         self.prefetch_inflight = Some(next.uri.clone());
@@ -902,7 +984,7 @@ impl Engine {
         if !self.config.gapless {
             return;
         }
-        let next = self.session.peek_next().map(|track| track.uri.clone());
+        let next = self.next_playable().map(|track| track.uri.clone());
         if self
             .prefetch
             .as_ref()
@@ -977,7 +1059,7 @@ impl Engine {
                 }
                 self.adopt_media_duration();
                 self.emit();
-                self.maybe_prefetch_next();
+                self.extend_queue();
             }
             Err(error) => self.fail_transport(format!("Couldn't start audio: {error}")),
         }
@@ -989,10 +1071,70 @@ impl Engine {
         self.emit();
         if self.config.skip_on_miss && self.miss_skips < MAX_MISS_SKIPS {
             self.miss_skips = self.miss_skips.saturating_add(1);
-            match self.session.fail_next() {
-                Advance::PlayCurrent => self.start_resolve(),
-                other => self.follow(other),
+            let advance = self.session.fail_next();
+            self.follow(advance);
+        }
+    }
+
+    fn is_current(&self, uri: &str) -> bool {
+        self.session.current().is_some_and(|track| track.uri == uri)
+    }
+
+    fn unplayable_reason(&self, track: &LocalTrack) -> Option<&str> {
+        if track.is_episode {
+            Some(PODCASTS_UNSUPPORTED)
+        } else {
+            self.unplayable.get(&track.uri).map(String::as_str)
+        }
+    }
+
+    fn current_is_unplayable(&self) -> bool {
+        self.session
+            .current()
+            .is_some_and(|track| self.unplayable_reason(track).is_some())
+    }
+
+    fn playable_ahead(&self) -> Option<&LocalTrack> {
+        (1..)
+            .map_while(|steps| self.session.peek_ahead(steps))
+            .find(|track| self.unplayable_reason(track).is_none())
+    }
+
+    fn next_playable(&self) -> Option<&LocalTrack> {
+        self.session
+            .peek_next()
+            .filter(|track| self.unplayable_reason(track).is_none())
+            .or_else(|| self.playable_ahead())
+    }
+
+    fn skip_unplayable(&mut self, message: String) {
+        if !self.config.skip_on_miss {
+            self.fail_or_skip(message);
+            return;
+        }
+        self.output.stop();
+        match self.session.fail_next() {
+            Advance::PlayCurrent => self.follow(Advance::PlayCurrent),
+            _ => {
+                self.session.set_error(message);
+                self.emit();
             }
+        }
+    }
+
+    fn overlap_missed(&mut self, message: String) {
+        self.overlap_uri = None;
+        if self.overlap_forward
+            && self.config.skip_on_miss
+            && self.miss_skips < MAX_MISS_SKIPS
+            && let Some(track) = self.playable_ahead().cloned()
+        {
+            self.miss_skips = self.miss_skips.saturating_add(1);
+            self.overlap_uri = Some(track.uri.clone());
+            self.start_resolve_track(track, false);
+        } else if self.session.playback() != Playback::Playing {
+            self.session.set_error(message);
+            self.emit();
         }
     }
 
@@ -1118,6 +1260,7 @@ impl Engine {
     #[cfg(test)]
     fn test_load(&mut self, tracks: Vec<LocalTrack>, play: bool, seeded: bool) {
         self.bump();
+        self.unplayable.clear();
         self.miss_skips = 0;
         self.session.load(tracks, 0, play, Some(false), 0);
         self.seeded_play = seeded;
@@ -1500,6 +1643,7 @@ mod tests {
             min_score: 0.1,
             skip_on_miss: false,
             gapless: false,
+            autoplay: false,
             volume: 1000,
         }
     }
@@ -2266,6 +2410,93 @@ mod tests {
         handle.shutdown().await;
     }
 
+    struct PickLookup {
+        matching: &'static [&'static str],
+        searches: Arc<Mutex<Vec<String>>>,
+        script: ScriptLookup,
+    }
+
+    impl MediaLookup for PickLookup {
+        fn search(
+            &self,
+            query: &TrackQuery,
+            _min_score: f32,
+        ) -> super::super::provider::LookupFuture<
+            Result<Vec<super::super::matching::Candidate>, String>,
+        > {
+            self.searches
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(query.title.clone());
+            let candidate = if self.matching.contains(&query.title.as_str()) {
+                super::super::matching::Candidate {
+                    id: "dQw4w9WgXcQ".into(),
+                    title: query.title.clone(),
+                    uploader: "Artist - Topic".into(),
+                    duration_ms: Some(1_000),
+                }
+            } else {
+                super::super::matching::Candidate {
+                    id: "abcdefghijk".into(),
+                    title: "totally unrelated karaoke nightcore mix".into(),
+                    uploader: "RandomChannel".into(),
+                    duration_ms: Some(9_000),
+                }
+            };
+            Box::pin(async move { Ok(vec![candidate]) })
+        }
+
+        fn streams(
+            &self,
+            id: &str,
+        ) -> super::super::provider::LookupFuture<
+            Result<super::super::provider::StreamLookup, String>,
+        > {
+            self.script.streams(id)
+        }
+
+        fn scripted_body(&self) -> Option<ScriptedBody> {
+            self.script.scripted_body()
+        }
+    }
+
+    #[tokio::test]
+    async fn unmatched_next_skips_to_the_track_after_it() {
+        let plays = Arc::new(AtomicUsize::new(0));
+        let searches = Arc::new(Mutex::new(Vec::new()));
+        let states = Arc::new(Mutex::new(Vec::new()));
+        let mut config = test_config();
+        config.skip_on_miss = true;
+        let handle = spawn_test(
+            config,
+            RecordingOutput {
+                plays: Arc::clone(&plays),
+                resumes: Arc::new(AtomicUsize::new(0)),
+                pauses: Arc::new(AtomicUsize::new(0)),
+            },
+            Arc::new(PickLookup {
+                matching: &["a", "c"],
+                searches: Arc::clone(&searches),
+                script: wav_script(),
+            }),
+            collect_states(Arc::clone(&states)),
+        );
+        handle.test_load(vec![track("a"), track("b"), track("c")], true);
+        wait_plays(&plays, 1).await;
+        handle.command(PlayerCommand::Next).unwrap();
+        wait_plays(&plays, 2).await;
+        let searched = searches.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(searched, ["a", "b", "c"]);
+        let logged = states.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(
+            logged
+                .iter()
+                .all(|(playback, error)| *playback != Playback::Paused && error.is_none()),
+            "playback stalled during skip: {logged:?}"
+        );
+        handle.shutdown().await;
+    }
+
     #[tokio::test]
     async fn invalid_complete_body_fails_instead_of_loading_forever() {
         let searches = Arc::new(AtomicUsize::new(0));
@@ -2953,13 +3184,13 @@ mod tests {
 }
 
 // Keep a generation counter type in this module so stale-event tests stay honest.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) struct EventGuard {
     current: Arc<AtomicU64>,
     mine: u64,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 impl EventGuard {
     pub(crate) fn new(current: Arc<AtomicU64>) -> Self {
         let mine = current.load(Ordering::SeqCst);

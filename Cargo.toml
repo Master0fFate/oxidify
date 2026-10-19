@@ -17,6 +17,13 @@ path = "src/lib.rs"
 name = "oxidify"
 path = "src/main.rs"
 
+# Headless UI frame benchmark (cargo bench --bench frame): times the whole
+# main-window draw over a large synthetic library, so per-frame UI-thread
+# regressions show up before they reach a listener. Built only by cargo bench.
+[[bench]]
+name = "frame"
+harness = false
+
 [dependencies]
 anyhow = "1"
 thiserror = "2"
@@ -53,12 +60,14 @@ tiny-skia = "0.11"
 # librespot-core depends on hyper-proxy2 for HTTP proxy support, whose only
 # published release (0.1.0) pins rustls 0.22 and so drags in rustls-webpki
 # 0.102, which carries advisories against its CRL and name-constraint
-# handling. Oxidify never configures a proxy (SessionConfig.proxy stays
-# None), so that TLS client is compiled in but never used to verify anything.
-# Every connection this app actually makes (the Web API through reqwest, and
-# librespot's own sessions) goes through rustls 0.23 with a patched
-# rustls-webpki. Removing the old copy needs a release of hyper-proxy2, or a
-# librespot that stops depending on it.
+# handling. Oxidify leaves SessionConfig.proxy unset by default, so that
+# TLS client sits unused: every connection this app actually makes (the Web
+# API through reqwest, and librespot's own sessions) goes through rustls
+# 0.23 with a patched rustls-webpki. Choosing a manual proxy in Settings
+# opts in: librespot then verifies through the old webpki inside the proxy
+# tunnel, an accepted trade for reaching Spotify from a restricted network.
+# Removing the old copy needs a release of hyper-proxy2, or a librespot
+# that stops depending on it.
 librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
 librespot-playback = { version = "0.8", default-features = false, features = ["rodio-backend", "rustls-tls-native-roots"] }
 librespot-connect = { version = "0.8", default-features = false }
@@ -69,7 +78,8 @@ librespot-protocol = { version = "0.8", default-features = false }
 # Opus/WebM/Ogg are not selected by alternate playback.
 rodio = { version = "0.21", default-features = false, features = ["playback", "wav", "symphonia-isomp4", "symphonia-aac", "symphonia-mp3"] }
 cpal = "0.16"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "http2", "blocking"] }
+# "socks" is for the SOCKS5 choice in the proxy settings.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "http2", "blocking", "socks"] }
 # Native YouTube search and stream extraction removes a Python process from
 # the normal alternate-playback path. Piped and bundled yt-dlp remain fallbacks.
 rusty_ytdl = { version = "0.7.4", default-features = false, features = ["search", "rustls-tls"] }
@@ -77,7 +87,7 @@ rusty_ytdl = { version = "0.7.4", default-features = false, features = ["search"
 # yt-dlp flow in `src/alternate`. `process`/`io-util` drive yt-dlp. On Linux
 # the mpris-server dependency happens to turn `fs` on, which is why leaving
 # it out built there and nowhere else.
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "fs", "process", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "fs", "process", "io-util", "net"] }
 sha1 = "0.10"
 sha2 = "0.10"
 base64 = "0.22"
@@ -85,6 +95,9 @@ rand = "0.9"
 open = "5"
 percent-encoding = "2"
 urlencoding = "2"
+# Shaping librespot's SessionConfig.proxy from the proxy settings; already
+# compiled for reqwest and librespot, so this adds no code to the build.
+url = "2"
 jiff = "0.2"
 mdns-sd = "0.21"
 unicode-bidi = "0.3"

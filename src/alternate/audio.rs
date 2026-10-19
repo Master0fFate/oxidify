@@ -39,15 +39,15 @@ pub trait AudioOutput {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub struct NullOutput {
     playing: bool,
     finished: bool,
     volume: f32,
 }
 
+#[cfg(test)]
 impl NullOutput {
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             playing: false,
@@ -57,12 +57,14 @@ impl NullOutput {
     }
 }
 
+#[cfg(test)]
 impl Default for NullOutput {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl AudioOutput for NullOutput {
     fn play_bytes(&mut self, _bytes: Vec<u8>, _start_ms: u32) -> Result<PlayInfo> {
         self.playing = true;

@@ -281,6 +281,7 @@ pub struct Analyser {
     /// Each peak, in 256ths of a row, and how fast it is dropping.
     peaks: [i32; BARS],
     peak_speed: [f32; BARS],
+    wave: Vec<f32>,
 }
 
 impl Default for Analyser {
@@ -291,6 +292,7 @@ impl Default for Analyser {
             falloff: [0.0; BARS],
             peaks: [0; BARS],
             peak_speed: [0.0; BARS],
+            wave: Vec::new(),
         }
     }
 }
@@ -299,8 +301,10 @@ impl Analyser {
     /// One frame: the spectrum of `samples` (1024 of them, mono, -1 to 1)
     /// moves the bars, and the bars are returned.
     pub fn step(&mut self, samples: &[f32]) -> [Bar; BARS] {
-        let wave: Vec<f32> = samples.iter().map(|sample| sample * INPUT_GAIN).collect();
-        self.fft.spectrum(&wave, &mut self.spectrum);
+        self.wave.clear();
+        self.wave
+            .extend(samples.iter().map(|sample| sample * INPUT_GAIN));
+        self.fft.spectrum(&self.wave, &mut self.spectrum);
         let columns = self.columns();
         let mut bars = [Bar::default(); BARS];
         for (bar, slot) in bars.iter_mut().enumerate() {

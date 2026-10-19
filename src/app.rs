@@ -5,11 +5,11 @@ use std::time::{Duration, Instant};
 
 use egui::Color32;
 
-use crate::alternate::{AlternateConfig, local_from_track};
+use crate::alternate::{AlternateConfig, MAX_QUEUE_TRACKS, local_from_track};
 use crate::api::PlayRequest;
 use crate::api::models::{
-    ArtistRef, Device, PlayableItem, PlaybackState, Playlist, Queue, SavedTrack, Track, User,
-    pick_image,
+    Album, ArtistRef, Device, PlayableItem, PlaybackState, Playlist, Queue, SavedTrack, Track,
+    User, pick_image,
 };
 use crate::backend::{
     ApiRequest, ApiResponse, AuthStatus, Backend, Command, Event, LocalPlayback, LyricsRequest,
@@ -22,7 +22,7 @@ use crate::paths::AppDirs;
 use crate::player::{
     EngineConfig, LoadSpec, LocalState, LocalTrack, Playback, PlayerCommand, RepeatMode,
 };
-use crate::settings::{PlaybackBackend, SessionState, Settings, ThemeChoice};
+use crate::settings::{self, PlaybackBackend, SessionState, Settings, ThemeChoice};
 use crate::single_instance::ControlCommand;
 use crate::theme::{self, Palette};
 use crate::tray::{TrayCommand, TrayService};
@@ -128,6 +128,14 @@ impl Default for AppOptions {
             tray: true,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+struct PendingAlbumQueue {
+    id: String,
+    label: String,
+    tracks: Vec<Track>,
+    device_id: Option<String>,
 }
 
 pub struct App {
@@ -237,6 +245,7 @@ pub struct App {
     pub show_lyrics_panel: bool,
     /// The Now Playing view is open beside the page.
     pub show_now_playing_panel: bool,
+    pub fullscreen_lyrics: bool,
     /// The track the lyrics below are for.
     pub lyrics_uri: Option<String>,
     /// `Loaded(None)` when nobody has transcribed the track.
@@ -260,6 +269,9 @@ pub struct App {
     /// A play request made while the local engine was still connecting; it
     /// starts the moment the engine reports ready.
     queued_play: Option<PlayRequest>,
+    pending_album: Option<PendingAlbumQueue>,
+    pub settings_search: String,
+    pub proxy_password: String,
     /// A receiver just activated, waiting for Spotify to list it so playback
     /// can move there.
     pending_transfer_to: Option<(String, Instant)>,
@@ -369,6 +381,7 @@ impl App {
         if let Ok(mut shared) = eq.lock() {
             *shared = eq_settings(&settings);
         }
+        let proxy_password = read_proxy_password(&dirs);
         let engine_config = engine_config(
             &dirs,
             &settings,
@@ -382,6 +395,15 @@ impl App {
             waker.clone(),
             settings.playback_backend,
             AlternateConfig::from_settings(&settings),
+            match settings::resolve_proxy(&settings, &proxy_password) {
+                Ok(proxy) => proxy,
+                Err(error) => {
+                    log::error!(
+                        "the proxy settings are unusable ({error}); connecting without a proxy"
+                    );
+                    settings::ProxySetting::System
+                }
+            },
         );
         let wake = waker.clone();
         let media_controls = options
@@ -470,6 +492,7 @@ impl App {
             show_queue_panel: session.queue_open.unwrap_or(false),
             show_lyrics_panel: false,
             show_now_playing_panel: session.now_playing_open.unwrap_or(false),
+            fullscreen_lyrics: false,
             lyrics_uri: None,
             lyrics: Loadable::NotLoaded,
             lyrics_following: true,
@@ -481,6 +504,9 @@ impl App {
             pending_play_keys: Vec::new(),
             pending_play_at: None,
             queued_play: None,
+            pending_album: None,
+            settings_search: String::new(),
+            proxy_password: proxy_password.clone(),
             pending_transfer_to: None,
             remote_recheck_at: None,
             seek_preview: None,
@@ -636,6 +662,40 @@ impl App {
             .filter(|remote| remote.received_at.elapsed() < REMOTE_FRESH)
     }
 
+    fn remote_reports_this_device(&self, remote: &RemoteSnapshot) -> bool {
+        self.local_device_id.is_some()
+            && remote
+                .state
+                .device
+                .as_ref()
+                .and_then(|device| device.id.as_deref())
+                == self.local_device_id.as_deref()
+    }
+
+    fn playback_item_uri(&self) -> Option<&str> {
+        if self.local.is_active() {
+            return self.local.track.as_ref().map(|track| track.uri.as_str());
+        }
+        let remote = self.remote_fresh()?;
+        if self.remote_reports_this_device(remote) {
+            return None;
+        }
+        remote.state.item.as_ref().map(|item| item.uri())
+    }
+
+    fn playback_is_playing(&self) -> bool {
+        if self.local.is_active() {
+            return self.local.playback == Playback::Playing;
+        }
+        let Some(remote) = self.remote_fresh() else {
+            return false;
+        };
+        if self.remote_reports_this_device(remote) {
+            return false;
+        }
+        remote.state.item.is_some() && remote.state.is_playing
+    }
+
     pub fn is_free_account(&self) -> bool {
         is_free_spotify_product(self.user.as_ref().and_then(|user| user.product.as_deref()))
     }
@@ -693,36 +753,42 @@ impl App {
 
     /// The context playing as the interface should show it: the one just
     /// asked for until Spotify's state confirms it, then Spotify's own.
-    pub fn playing_context_uri(&self) -> Option<String> {
+    pub fn playing_context_uri_str(&self) -> Option<&str> {
         let remote = self
             .remote
             .as_ref()
             .and_then(|remote| remote.state.context.as_ref())
-            .map(|context| context.uri.clone());
+            .map(|context| context.uri.as_str());
         if let Some(assumed) = &self.assumed_context {
             let held = assumed.at.elapsed() < ASSUMED_CONTEXT_HOLD;
             // A view of a context plays as plain tracks, so no state will
             // ever name the context: the assumption stands while nothing
             // names another one and something is believed to be playing.
-            let contradicted = remote.as_deref().is_some_and(|uri| uri != assumed.uri);
+            let contradicted = remote.is_some_and(|uri| uri != assumed.uri);
             if held || (!contradicted && self.believed_playing()) {
-                return Some(assumed.uri.clone());
+                return Some(assumed.uri.as_str());
             }
         }
         remote
     }
 
-    /// Whether the playing context shuffles, honouring a shuffle the
-    /// interface just asked for ahead of Spotify's state.
+    pub fn playing_context_uri(&self) -> Option<String> {
+        self.playing_context_uri_str().map(str::to_string)
+    }
+
     /// The track the interface should mark as current: the one a click
     /// just asked for, until a report names it or the moment passes.
-    pub fn current_track_uri(&self) -> Option<String> {
+    pub fn current_track_uri_str(&self) -> Option<&str> {
         if let Some((uri, at)) = &self.intent_track
             && at.elapsed() < PLAYBACK_HOLD
         {
-            return Some(uri.clone());
+            return Some(uri.as_str());
         }
-        self.now_playing().map(|now| now.uri)
+        self.playback_item_uri()
+    }
+
+    pub fn current_track_uri(&self) -> Option<String> {
+        self.current_track_uri_str().map(str::to_string)
     }
 
     /// Whether `uri` is the context being played, or paused in, now.
@@ -739,7 +805,7 @@ impl App {
         {
             return playing;
         }
-        self.now_playing().is_some_and(|now| now.playing)
+        self.playback_is_playing()
     }
 
     pub fn playing_context_shuffle(&self) -> bool {
@@ -826,14 +892,7 @@ impl App {
         // When the snapshot names this very computer as its device, the
         // local engine is the truth, and it just said it has nothing: a
         // poll from before a stop must not say otherwise.
-        if self.local_device_id.is_some()
-            && remote
-                .state
-                .device
-                .as_ref()
-                .and_then(|device| device.id.as_deref())
-                == self.local_device_id.as_deref()
-        {
+        if self.remote_reports_this_device(remote) {
             return None;
         }
         let item = remote.state.item.as_ref()?;
@@ -1077,6 +1136,15 @@ impl App {
                 } => {
                     self.adopt_playlist_cache(&account_id, &id, generation, snapshot, items);
                 }
+                Event::LibraryCacheCleared(result) => match result {
+                    Ok(bytes) => self.toast(format!(
+                        "Cleared {:.1} MB of library cache",
+                        bytes as f64 / 1_048_576.0
+                    )),
+                    Err(error) => {
+                        self.toast_error(format!("Couldn't clear library cache: {error}"))
+                    }
+                },
                 Event::LibraryCache {
                     account_id,
                     playlists,
@@ -1215,6 +1283,7 @@ impl App {
         self.devices_fetched_at = None;
         self.search.results = Loadable::NotLoaded;
         self.search.committed.clear();
+        self.pending_album = None;
     }
 
     fn handle_local(&mut self, state: LocalState) {
@@ -1278,12 +1347,20 @@ impl App {
                 }
             }
         }
+        let rebuild_alternate_queue =
+            matches!(self.local_playback, LocalPlayback::AlternateReady { .. })
+                && (!matches!(self.queue, Loadable::Loaded(_))
+                    || track_changed
+                    || state.queue != self.local.queue
+                    || state.source_label != self.local.source_label);
         self.local = state;
         if let Some(volume) = held_volume {
             self.local.volume = volume;
         }
         if matches!(self.local_playback, LocalPlayback::AlternateReady { .. }) {
-            self.queue = Loadable::Loaded(queue_from_local(&self.local, &self.track_cache));
+            if rebuild_alternate_queue {
+                self.queue = Loadable::Loaded(queue_from_local(&self.local, &self.track_cache));
+            }
             self.queue_fetched_at = Some(Instant::now());
         }
         if track_changed {
@@ -1706,7 +1783,9 @@ impl App {
     }
 
     fn sync_media_controls(&mut self) {
-        let state = match self.now_playing() {
+        let now = self.now_playing();
+        let playing = now.as_ref().is_some_and(|now| now.playing);
+        let state = match &now {
             Some(now) => MediaState {
                 playback: if now.playing {
                     Playback::Playing
@@ -1738,13 +1817,15 @@ impl App {
         if let Some(controls) = &mut self.media_controls {
             controls.update(state);
         }
-        let playing = self.now_playing().is_some_and(|now| now.playing);
         if let Some(tray) = &mut self.tray {
             tray.set_playing(playing);
         }
         if let Some(slot) = &self.control_now_playing {
-            let snapshot = self.control_snapshot();
-            *slot.lock().unwrap_or_else(|p| p.into_inner()) = snapshot;
+            let snapshot = self.control_snapshot(now.as_ref());
+            let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
+            if *slot != snapshot {
+                *slot = snapshot;
+            }
         }
         if self.control_devices_stale
             && let Some(slot) = self.control_devices.clone()
@@ -1764,8 +1845,8 @@ impl App {
     /// not: something to draw, whether the heart is filled, and where the
     /// sound is coming out. They are appended rather than woven in, so a
     /// script written against the older nine fields still reads correctly.
-    fn control_snapshot(&self) -> String {
-        let Some(now) = self.now_playing() else {
+    fn control_snapshot(&self, now: Option<&NowPlaying>) -> String {
+        let Some(now) = now else {
             return crate::single_instance::NOTHING_PLAYING.to_owned();
         };
         let state = if now.playing { "playing" } else { "paused" };
@@ -2412,10 +2493,7 @@ impl App {
     /// Asks Spotify whether these items are in the library, in batches.
     /// Resolve adder ids that have no known name yet.
     pub fn request_user_names(&mut self, ids: Vec<String>) {
-        let unknown: Vec<String> = ids
-            .into_iter()
-            .filter(|id| !self.user_names.contains_key(id))
-            .collect();
+        let unknown = unique_unknown_user_ids(&self.user_names, ids);
         if unknown.is_empty() {
             return;
         }
@@ -3293,6 +3371,34 @@ impl App {
                 }
                 self.request_contains(uris);
             }
+            ApiResponse::QueueAlbumTracks { id, offset, result } => {
+                let Some(pending) = self.pending_album.take() else {
+                    return;
+                };
+                if pending.id != id || offset != pending.tracks.len() as u32 {
+                    self.pending_album = Some(pending);
+                    return;
+                }
+                match result {
+                    Ok(page) => {
+                        let mut pending = pending;
+                        pending.tracks.extend(page.items);
+                        let fetched = pending.tracks.len() as u32;
+                        if fetched < page.total && page.next.is_some() {
+                            self.pending_album = Some(pending);
+                            self.backend.api(ApiRequest::QueueAlbumTracks {
+                                id,
+                                offset: fetched,
+                            });
+                        } else {
+                            self.deliver_album_queue(pending);
+                        }
+                    }
+                    Err(error) => {
+                        self.toast_error(format!("Couldn't queue {}: {error}", pending.label));
+                    }
+                }
+            }
             ApiResponse::AlbumTracks { id, offset, result } => {
                 let mut uris = Vec::new();
                 if let Some(page) = self.album_pages.get_mut(&id) {
@@ -3574,12 +3680,7 @@ impl App {
     }
 
     fn load_spec(&self, request: PlayRequest, play: bool, shuffle: Option<bool>) -> LoadSpec {
-        let known_tracks = if self.alternate_local() {
-            self.known_local_tracks(&request)
-        } else {
-            Vec::new()
-        };
-        LoadSpec {
+        let mut spec = LoadSpec {
             context_uri: request.context_uri,
             uris: request.uris,
             offset_uri: request.offset_uri,
@@ -3587,16 +3688,103 @@ impl App {
             position_ms: request.position_ms,
             play,
             shuffle,
-            known_tracks,
+            known_tracks: Vec::new(),
+        };
+        if self.alternate_local() {
+            self.fill_known_tracks(&mut spec);
         }
+        spec
     }
 
-    fn known_local_tracks(&self, request: &PlayRequest) -> Vec<LocalTrack> {
+    fn fill_known_tracks(&self, spec: &mut LoadSpec) {
+        let Some((rows, complete, album)) = (if spec.uris.is_empty() {
+            spec.context_uri
+                .as_deref()
+                .and_then(|uri| self.context_rows(uri))
+        } else {
+            None
+        }) else {
+            spec.known_tracks = self.known_local_tracks(spec);
+            return;
+        };
+        let offset = match &spec.offset_uri {
+            Some(uri) => rows.iter().position(|track| &track.uri == uri),
+            None => Some((spec.offset_index.unwrap_or(0) as usize).min(rows.len() - 1)),
+        };
+        let Some(offset) = offset else {
+            spec.known_tracks = self.known_local_tracks(spec);
+            return;
+        };
+        let start = if offset < MAX_QUEUE_TRACKS { 0 } else { offset };
+        let window: Vec<LocalTrack> = rows
+            .into_iter()
+            .skip(start)
+            .take(MAX_QUEUE_TRACKS)
+            .map(|track| {
+                let mut local = local_from_track(track);
+                if let Some(album) = album {
+                    if local.album.is_empty() {
+                        local.album = album.name.clone();
+                    }
+                    if local.art_url.is_none() {
+                        local.art_url = pick_image(&album.images, 640).map(str::to_string);
+                    }
+                    if local.art_small_url.is_none() {
+                        local.art_small_url = pick_image(&album.images, 64).map(str::to_string);
+                    }
+                }
+                local
+            })
+            .collect();
+        if complete || window.len() == MAX_QUEUE_TRACKS {
+            spec.uris = window.iter().map(|track| track.uri.clone()).collect();
+            spec.offset_index = Some((offset - start) as u32);
+        }
+        spec.known_tracks = window;
+    }
+
+    fn context_rows(&self, context_uri: &str) -> Option<(Vec<&Track>, bool, Option<&Album>)> {
+        let (rows, complete, album): (Vec<&Track>, bool, Option<&Album>) =
+            if let Some(id) = context_uri.strip_prefix("spotify:playlist:") {
+                let page = self.playlist_pages.get(id)?;
+                let rows = page
+                    .items
+                    .items
+                    .iter()
+                    .filter_map(|item| match item.playable()? {
+                        PlayableItem::Track(track) => Some(track),
+                        _ => None,
+                    })
+                    .collect();
+                (rows, page.items.is_complete(), None)
+            } else if let Some(id) = context_uri.strip_prefix("spotify:album:") {
+                let page = self.album_pages.get(id)?;
+                let rows = page.tracks.items.iter().collect();
+                (rows, page.tracks.is_complete(), page.album.get())
+            } else if context_uri.ends_with(":collection") {
+                let liked = &self.library.liked;
+                let rows = liked.items.iter().map(|item| &item.track).collect();
+                (rows, liked.is_complete(), None)
+            } else {
+                return None;
+            };
+        let rows: Vec<&Track> = rows
+            .into_iter()
+            .filter(|track| {
+                util::uri_kind(&track.uri) == Some("track")
+                    && !track.name.is_empty()
+                    && track.artists.iter().any(|artist| !artist.name.is_empty())
+            })
+            .collect();
+        (!rows.is_empty()).then_some((rows, complete, album))
+    }
+
+    fn known_local_tracks(&self, spec: &LoadSpec) -> Vec<LocalTrack> {
         let mut uris = Vec::new();
-        if let Some(uri) = &request.offset_uri {
+        if let Some(uri) = &spec.offset_uri {
             uris.push(uri.clone());
         }
-        uris.extend(request.uris.iter().cloned());
+        uris.extend(spec.uris.iter().cloned());
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         for uri in uris {
@@ -4218,6 +4406,13 @@ impl App {
             self.notify_loading_account();
             return;
         }
+        if util::uri_kind(&uri) == Some("album") {
+            let id = util::uri_id(&uri).unwrap_or_default().to_string();
+            if !id.is_empty() {
+                self.queue_album(id, label);
+                return;
+            }
+        }
         if self.alternate_local() {
             if uri.contains(":episode:") || uri.contains(":show:") {
                 self.toast_error("Podcasts are not supported in alternate playback");
@@ -4244,6 +4439,92 @@ impl App {
             uri,
             device_id,
             label,
+        });
+    }
+
+    fn queue_album(&mut self, id: String, label: String) {
+        let alternate = self.alternate_local();
+        let device_id = if alternate {
+            None
+        } else {
+            match self.target() {
+                Target::Local => self.local_device_id.clone(),
+                Target::Remote(device_id) => device_id,
+            }
+        };
+        if let Some(page) = self.album_pages.get(&id)
+            && page.tracks.is_complete()
+        {
+            self.deliver_album_queue(PendingAlbumQueue {
+                id,
+                label,
+                tracks: page.tracks.items.clone(),
+                device_id,
+            });
+            return;
+        }
+        if self.pending_album.is_some() {
+            self.toast("Still adding the previous album to the queue");
+            return;
+        }
+        self.pending_album = Some(PendingAlbumQueue {
+            id: id.clone(),
+            label: label.clone(),
+            tracks: Vec::new(),
+            device_id,
+        });
+        self.backend
+            .api(ApiRequest::QueueAlbumTracks { id, offset: 0 });
+        self.toast(format!("Adding {label} to the queue…"));
+    }
+
+    fn deliver_album_queue(&mut self, pending: PendingAlbumQueue) {
+        let tracks: Vec<Track> = pending
+            .tracks
+            .iter()
+            .filter(|track| {
+                !track.is_local && track.is_playable != Some(false) && !track.uri.is_empty()
+            })
+            .cloned()
+            .collect();
+        if tracks.is_empty() {
+            self.toast_error(format!("No songs of {} can be queued", pending.label));
+            return;
+        }
+        if pending.device_id.is_none() {
+            for track in &tracks {
+                self.backend
+                    .player(PlayerCommand::AddToQueue(local_from_track(track)));
+            }
+            let count = tracks.len();
+            self.toast(format!(
+                "Added {} from {} to queue",
+                if count == 1 {
+                    "1 song".to_string()
+                } else {
+                    format!("{count} songs")
+                },
+                pending.label
+            ));
+            self.refresh_queue(true);
+            return;
+        }
+        let current = match self.target() {
+            Target::Local => self.local_device_id.clone(),
+            Target::Remote(device_id) => device_id,
+        };
+        if current != pending.device_id {
+            self.toast_error(format!(
+                "Playback moved; add {} again on the new device",
+                pending.label
+            ));
+            return;
+        }
+        let uris = tracks.iter().map(|track| track.uri.clone()).collect();
+        self.backend.api(ApiRequest::AddManyToQueue {
+            uris,
+            device_id: pending.device_id,
+            label: pending.label,
         });
     }
 
@@ -4701,6 +4982,17 @@ impl App {
                 self.note_session_change();
             }
             Action::SetHomeFilter(filter) => self.home.filter = filter,
+            Action::ToggleFullscreenLyrics => {
+                self.fullscreen_lyrics = !self.fullscreen_lyrics;
+                if self.fullscreen_lyrics {
+                    self.show_lyrics_panel = true;
+                    self.show_queue_panel = false;
+                    self.show_now_playing_panel = false;
+                    self.lyrics_following = true;
+                    self.request_lyrics();
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen_lyrics));
+            }
             Action::ToggleDevicesPopup => {
                 self.show_devices = !self.show_devices;
                 if self.show_devices && self.allows_spotify_player_api() {
@@ -4800,6 +5092,13 @@ impl App {
                 }
                 Err(error) => self.toast_error(format!("Couldn't clear artwork: {error}")),
             },
+            Action::SaveProxyPassword => write_proxy_password(&self.dirs, &self.proxy_password),
+            Action::ClearLibraryCache => {
+                for page in self.playlist_pages.values_mut() {
+                    page.pending_cache = None;
+                }
+                self.backend.send(Command::ClearLibraryCache);
+            }
             Action::ToggleWinampWindow => {
                 // One window at a time: this one closes and the loop in
                 // `main` opens the other kind where each was last.
@@ -5075,17 +5374,21 @@ impl App {
 }
 
 impl App {
-    /// Everything that must keep happening whether or not a window exists:
-    /// backend events, MPRIS, the tray, polling, and pending actions. The
-    /// headless loop in `main` drives this with a windowless context while
-    /// the app lives in the tray.
-    pub fn background_frame(&mut self, ctx: &egui::Context) {
+    pub fn pump(&mut self, ctx: &egui::Context) {
         self.handle_control_commands();
         self.handle_events();
         self.handle_media_commands();
         self.handle_tray();
         self.tick(ctx);
         self.apply_actions(ctx);
+    }
+
+    /// Everything that must keep happening whether or not a window exists:
+    /// backend events, MPRIS, the tray, polling, and pending actions. The
+    /// headless loop in `main` drives this with a windowless context while
+    /// the app lives in the tray.
+    pub fn background_frame(&mut self, ctx: &egui::Context) {
+        self.pump(ctx);
         self.sync_media_controls();
     }
 
@@ -5119,8 +5422,7 @@ impl App {
             }
         }
 
-        let playing = self.now_playing().is_some_and(|now| now.playing);
-        if playing {
+        if self.believed_playing() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
         if !self.toasts.is_empty() {
@@ -5290,6 +5592,32 @@ impl App {
     }
 }
 
+fn read_proxy_password(dirs: &AppDirs) -> String {
+    std::fs::read_to_string(dirs.proxy_password_file())
+        .map(|text| text.trim_end_matches(['\r', '\n']).to_string())
+        .unwrap_or_default()
+}
+
+fn write_proxy_password(dirs: &AppDirs, password: &str) {
+    let path = dirs.proxy_password_file();
+    if password.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let temporary = path.with_extension("tmp");
+    match crate::auth::write_private(&temporary, password.as_bytes()) {
+        Ok(()) => {
+            if let Err(error) = std::fs::rename(&temporary, &path) {
+                log::error!("unable to keep the proxy password: {error}");
+            }
+        }
+        Err(error) => log::error!("unable to keep the proxy password: {error}"),
+    }
+}
+
 pub fn engine_config(
     dirs: &AppDirs,
     settings: &Settings,
@@ -5314,6 +5642,19 @@ pub fn engine_config(
         volume_dir: dirs.volume_dir(),
         audio_cache_dir: settings.audio_cache.then(|| dirs.audio_cache_dir()),
         audio_cache_limit: Some(settings.audio_cache_mb.max(64) * 1024 * 1024),
+        proxy: if settings.proxy_mode.is_manual() {
+            match settings::manual_proxy_address(settings) {
+                Ok(address) => Some(address),
+                Err(error) => {
+                    log::error!(
+                        "the proxy settings are unusable ({error}); streaming connects without a proxy"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        },
     }
 }
 
@@ -5507,6 +5848,24 @@ fn friendly_page_error(error: &crate::api::ApiError) -> String {
 
 /// Spotify balks at gigantic track lists, so a play that starts deep in
 /// one keeps the five hundred songs from its start onward.
+fn unique_unknown_user_ids(
+    known: &HashMap<String, Option<String>>,
+    ids: Vec<String>,
+) -> Vec<String> {
+    let mut seen = HashSet::with_capacity(ids.len());
+    let mut unknown = Vec::new();
+    for id in ids {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if known.contains_key(&id) {
+            continue;
+        }
+        unknown.push(id);
+    }
+    unknown
+}
+
 fn cap_uris(uris: Vec<String>, index: u32) -> (Vec<String>, u32) {
     const MAX: usize = 500;
     if uris.len() <= MAX {
@@ -5691,6 +6050,56 @@ mod tests {
         assert!(app.search.results.get().is_some_and(|r| r.is_empty()));
         assert!(!app.search.pending());
         app.backend.shutdown();
+    }
+
+    #[test]
+    fn the_proxy_password_lives_alone_and_atomically() {
+        let root = std::env::temp_dir().join(format!(
+            "oxidify-proxy-password-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        assert_eq!(read_proxy_password(&dirs), "");
+        write_proxy_password(&dirs, "s3cret");
+        assert_eq!(read_proxy_password(&dirs), "s3cret");
+        write_proxy_password(&dirs, "");
+        assert_eq!(read_proxy_password(&dirs), "");
+        assert!(!dirs.proxy_password_file().exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_saved_proxy_password_survives_trailing_line_endings() {
+        let root = std::env::temp_dir().join(format!(
+            "oxidify-proxy-password-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        write_proxy_password(&dirs, "s3cret");
+        std::fs::write(
+            dirs.proxy_password_file(),
+            b"s3cret
+",
+        )
+        .expect("wrote");
+        assert_eq!(read_proxy_password(&dirs), "s3cret");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn test_app() -> App {
@@ -6092,6 +6501,139 @@ mod tests {
         assert!(app.web_app.is_none());
         assert!(!app.personal_web_authorizing);
         app.backend.shutdown();
+    }
+
+    fn album_track(uri: &str, playable: Option<bool>) -> Track {
+        Track {
+            uri: uri.into(),
+            is_playable: playable,
+            ..Track::default()
+        }
+    }
+
+    #[test]
+    fn album_queue_resolves_pages_then_delivers_the_whole_album() {
+        let mut app = test_app();
+        app.user = Some(user_with_product("free"));
+        assert!(app.alternate_local());
+        app.queue_album("album1".into(), "Album".into());
+        assert!(app.pending_album.is_some());
+        app.handle_api(ApiResponse::QueueAlbumTracks {
+            id: "album1".into(),
+            offset: 0,
+            result: Ok(crate::api::models::Page {
+                items: vec![
+                    album_track("spotify:track:1", None),
+                    album_track("spotify:track:2", None),
+                ],
+                total: 3,
+                next: Some("next".into()),
+                ..crate::api::models::Page::default()
+            }),
+        });
+        let pending = app.pending_album.as_ref().expect("still fetching page two");
+        assert_eq!(pending.tracks.len(), 2);
+        app.handle_api(ApiResponse::QueueAlbumTracks {
+            id: "album1".into(),
+            offset: 2,
+            result: Ok(crate::api::models::Page {
+                items: vec![album_track("spotify:track:3", None)],
+                total: 3,
+                next: None,
+                ..crate::api::models::Page::default()
+            }),
+        });
+        assert!(app.pending_album.is_none());
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.contains("Album"))
+        );
+    }
+
+    #[test]
+    fn album_queue_drops_unavailable_and_local_rows() {
+        let mut app = test_app();
+        app.user = Some(user_with_product("free"));
+        app.deliver_album_queue(PendingAlbumQueue {
+            id: "album1".into(),
+            label: "Album".into(),
+            tracks: vec![
+                album_track("spotify:track:1", None),
+                album_track("spotify:track:2", Some(false)),
+                album_track("", None),
+                album_track("spotify:track:3", Some(true)),
+            ],
+            device_id: None,
+        });
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.starts_with("Added 2 songs"))
+        );
+    }
+
+    #[test]
+    fn album_queue_ignores_answers_that_do_not_match_the_request() {
+        let mut app = test_app();
+        app.user = Some(user_with_product("free"));
+        app.queue_album("album1".into(), "Album".into());
+        app.handle_api(ApiResponse::QueueAlbumTracks {
+            id: "other".into(),
+            offset: 0,
+            result: Ok(crate::api::models::Page {
+                items: vec![album_track("spotify:track:x", None)],
+                total: 1,
+                next: None,
+                ..crate::api::models::Page::default()
+            }),
+        });
+        let pending = app
+            .pending_album
+            .as_ref()
+            .expect("the request keeps waiting");
+        assert!(pending.tracks.is_empty());
+    }
+
+    #[test]
+    fn album_queue_reports_a_failed_fetch_without_partial_rows() {
+        let mut app = test_app();
+        app.user = Some(user_with_product("free"));
+        app.queue_album("album1".into(), "Album".into());
+        app.handle_api(ApiResponse::QueueAlbumTracks {
+            id: "album1".into(),
+            offset: 0,
+            result: Err(ApiError::RateLimited),
+        });
+        assert!(app.pending_album.is_none());
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.contains("Couldn't queue Album"))
+        );
+    }
+
+    #[test]
+    fn a_fully_loaded_album_queues_without_fetching() {
+        let mut app = test_app();
+        app.user = Some(user_with_product("free"));
+        let page = app.album_pages.entry("album1".into()).or_default();
+        page.tracks.absorb(
+            0,
+            crate::api::models::Page {
+                items: vec![album_track("spotify:track:1", None)],
+                total: 1,
+                ..crate::api::models::Page::default()
+            },
+        );
+        assert!(page.tracks.is_complete());
+        app.queue_album("album1".into(), "Album".into());
+        assert!(app.pending_album.is_none());
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.starts_with("Added 1 song"))
+        );
     }
 
     fn user_with_product(product: &str) -> User {
@@ -6843,7 +7385,8 @@ mod tests {
         });
 
         // #when
-        let snapshot = app.control_snapshot();
+        let now = app.now_playing();
+        let snapshot = app.control_snapshot(now.as_ref());
         let fields: Vec<&str> = snapshot.split('\t').collect();
 
         // #then
@@ -7169,5 +7712,143 @@ mod tests {
         assert_eq!(request.offset_position, Some(1));
         assert_eq!(request.position_ms, 42_000);
         app.backend.shutdown();
+    }
+
+    fn local_track(uri: &str) -> crate::player::LocalTrack {
+        crate::player::LocalTrack {
+            uri: uri.to_owned(),
+            title: "Song".to_owned(),
+            artists: vec!["Artist".to_owned()],
+            album: "Album".to_owned(),
+            duration_ms: 180_000,
+            ..Default::default()
+        }
+    }
+
+    fn remote_track(uri: &str) -> PlayableItem {
+        PlayableItem::Track(Track {
+            uri: uri.to_owned(),
+            name: "Remote".to_owned(),
+            duration_ms: 120_000,
+            ..Track::default()
+        })
+    }
+
+    #[test]
+    fn playback_accessors_match_now_playing_without_building_it() {
+        let mut app = test_app();
+        app.local.track = Some(local_track("spotify:track:local"));
+        app.local.playback = Playback::Playing;
+        let now = app.now_playing().expect("local now playing");
+        assert_eq!(app.current_track_uri_str(), Some(now.uri.as_str()));
+        assert_eq!(app.believed_playing(), now.playing);
+        assert!(app.believed_playing());
+
+        app.local.playback = Playback::Paused;
+        let now = app.now_playing().expect("paused still current");
+        assert_eq!(app.current_track_uri_str(), Some(now.uri.as_str()));
+        assert!(!app.believed_playing());
+        assert_eq!(app.believed_playing(), now.playing);
+
+        app.optimistic_playing = Some((true, Instant::now()));
+        assert!(app.believed_playing());
+        assert_eq!(app.believed_playing(), app.now_playing().unwrap().playing);
+
+        app.optimistic_playing = None;
+        app.intent_track = Some(("spotify:track:intent".into(), Instant::now()));
+        assert_eq!(app.current_track_uri_str(), Some("spotify:track:intent"));
+    }
+
+    #[test]
+    fn remote_on_this_device_is_not_current_when_local_is_idle() {
+        let mut app = test_app();
+        app.local_device_id = Some("dev1".into());
+        app.remote = Some(RemoteSnapshot {
+            state: PlaybackState {
+                is_playing: true,
+                item: Some(remote_track("spotify:track:remote")),
+                device: Some(Device {
+                    id: Some("dev1".into()),
+                    name: "This PC".into(),
+                    ..Device::default()
+                }),
+                ..PlaybackState::default()
+            },
+            received_at: Instant::now(),
+        });
+        assert!(app.now_playing().is_none());
+        assert!(app.current_track_uri_str().is_none());
+        assert!(!app.believed_playing());
+
+        app.remote
+            .as_mut()
+            .unwrap()
+            .state
+            .device
+            .as_mut()
+            .unwrap()
+            .id = Some("phone".into());
+        assert_eq!(app.current_track_uri_str(), Some("spotify:track:remote"));
+        assert!(app.believed_playing());
+        let now = app.now_playing().unwrap();
+        assert_eq!(app.current_track_uri_str(), Some(now.uri.as_str()));
+        assert_eq!(app.believed_playing(), now.playing);
+    }
+
+    #[test]
+    fn unique_unknown_user_ids_dedupes_and_skips_known() {
+        let mut known = HashMap::new();
+        known.insert("have".into(), Some("Name".into()));
+        let ids = unique_unknown_user_ids(
+            &known,
+            vec![
+                "a".into(),
+                "have".into(),
+                "a".into(),
+                "b".into(),
+                "b".into(),
+            ],
+        );
+        assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn alternate_queue_rebuilds_on_track_change_not_position() {
+        let mut app = test_app();
+        app.local_playback = LocalPlayback::AlternateReady {
+            source: "yt".into(),
+        };
+        let first = local_track("spotify:track:one");
+        let queued = local_track("spotify:track:two");
+        app.handle_local(LocalState {
+            playback: Playback::Playing,
+            track: Some(first.clone()),
+            queue: vec![queued.clone()],
+            source_label: Some("YouTube".into()),
+            ..LocalState::default()
+        });
+        let Loadable::Loaded(original) = &app.queue else {
+            panic!("queue should load");
+        };
+        let original_len = original.queue.len();
+
+        let mut moved = app.local.clone();
+        moved.position_ms = 12_000;
+        app.handle_local(moved);
+        let Loadable::Loaded(after) = &app.queue else {
+            panic!("queue should stay loaded");
+        };
+        assert_eq!(after.queue.len(), original_len);
+
+        let mut next = app.local.clone();
+        next.track = Some(queued);
+        app.handle_local(next);
+        let Loadable::Loaded(changed) = &app.queue else {
+            panic!("queue should stay loaded");
+        };
+        assert_eq!(
+            changed.currently_playing.as_ref().map(|item| item.uri()),
+            Some("spotify:track:two")
+        );
     }
 }

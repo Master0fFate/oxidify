@@ -19,21 +19,48 @@
 use egui::{Align, Color32, FontId};
 use unicode_bidi::BidiInfo;
 
+fn paragraph_is_rtl(info: &BidiInfo<'_>) -> bool {
+    info.paragraphs
+        .first()
+        .is_some_and(|paragraph| paragraph.level.is_rtl())
+}
+
+fn first_strong_rtl(text: &str) -> bool {
+    use unicode_bidi::{BidiClass, bidi_class};
+    for ch in text.chars() {
+        match bidi_class(ch) {
+            BidiClass::L | BidiClass::LRE | BidiClass::LRO | BidiClass::LRI => return false,
+            BidiClass::R | BidiClass::AL | BidiClass::RLE | BidiClass::RLO | BidiClass::RLI => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Is the paragraph's base direction RTL?
 ///
 /// Uses the first strong directional character, as suggested in #37 and as
 /// `unicode-bidi` does for `BidiInfo::new(text, None)`.  This is more
 /// accurate than a simple code-point range check and stays cheap.
 pub fn is_rtl(text: &str) -> bool {
-    // Fast path for empty or whitespace-only.
     if text.trim().is_empty() {
         return false;
     }
     let info = BidiInfo::new(text, None);
-    if info.paragraphs.is_empty() {
-        return false;
+    paragraph_is_rtl(&info)
+}
+
+pub fn align_and_display(text: &str) -> (Align, std::borrow::Cow<'_, str>) {
+    if text.trim().is_empty() {
+        return (Align::LEFT, std::borrow::Cow::Borrowed(text));
     }
-    info.paragraphs[0].level.is_rtl()
+    let info = BidiInfo::new(text, None);
+    if !paragraph_is_rtl(&info) {
+        return (Align::LEFT, std::borrow::Cow::Borrowed(text));
+    }
+    (Align::RIGHT, display_rtl(text, &info))
 }
 
 /// For display in a LTR engine, return the text that should be fed to
@@ -49,15 +76,15 @@ pub fn is_rtl(text: &str) -> bool {
 /// then mirrors them again, so the final glyphs left-to-right are the full
 /// reversal that RTL needs.  LTR paragraphs are returned unchanged.
 pub fn display_text(text: &str) -> std::borrow::Cow<'_, str> {
-    if !is_rtl(text) {
-        return std::borrow::Cow::Borrowed(text);
-    }
+    align_and_display(text).1
+}
+
+fn display_rtl<'a>(text: &'a str, info: &BidiInfo<'_>) -> std::borrow::Cow<'a, str> {
     // Fast path for single word: no reordering needed beyond HarfBuzz's
     // intra-word mirroring.
     if !text.contains(' ') && !text.contains('\t') {
         return std::borrow::Cow::Borrowed(text);
     }
-    let info = BidiInfo::new(text, None);
     if info.paragraphs.is_empty() {
         return std::borrow::Cow::Borrowed(text);
     }
@@ -80,7 +107,7 @@ pub fn display_text(text: &str) -> std::borrow::Cow<'_, str> {
         if idx > 0 {
             out.push(' ');
         }
-        if is_rtl(word) {
+        if first_strong_rtl(word) {
             // Reverse characters to go from visual (reversed) back to logical,
             // so HarfBuzz will reverse again to visual.
             for c in word.chars().rev() {
@@ -165,5 +192,8 @@ mod tests {
     fn halign() {
         assert_eq!(halign_for("غيوم"), Align::RIGHT);
         assert_eq!(halign_for("Hello"), Align::LEFT);
+        let (align, display) = align_and_display("غيوم في السماء");
+        assert_eq!(align, Align::RIGHT);
+        assert_eq!(display, display_text("غيوم في السماء"));
     }
 }

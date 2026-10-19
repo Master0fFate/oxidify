@@ -10,8 +10,8 @@
 //! and tells the interface why, so the app stays up as a Connect remote and
 //! plays as soon as an output exists.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -49,10 +49,56 @@ const QUEUE_WAIT: Duration = Duration::from_millis(50);
 /// How long `stop` lets the queue play out before pausing regardless.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[derive(Clone, Default)]
+pub struct OutputControl {
+    slot: Arc<Mutex<Option<rodio::Sink>>>,
+    reset: Arc<AtomicBool>,
+}
+
+impl OutputControl {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn attach(&self, sink: rodio::Sink) {
+        *self.lock() = Some(sink);
+    }
+
+    fn detach(&self) {
+        *self.lock() = None;
+    }
+
+    pub fn discard_queued(&self) {
+        if let Some(sink) = self.lock().as_ref() {
+            sink.stop();
+            self.reset.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn take_reset(&self) -> bool {
+        self.reset.swap(false, Ordering::SeqCst)
+    }
+
+    fn replace(&self, mixer: &rodio::mixer::Mixer) {
+        self.attach(rodio::Sink::connect_new(mixer));
+    }
+
+    fn with_sink<T>(&self, run: impl FnOnce(&rodio::Sink) -> T) -> Option<T> {
+        self.lock().as_ref().map(run)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<rodio::Sink>> {
+        self.slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 pub struct RodioSink {
     /// The output device name from Settings; `None` means the default.
     device: Option<String>,
     output: Option<Output>,
+    control: OutputControl,
     on_error: ErrorHook,
     /// The player's volume, applied here at the output so a change is heard
     /// at once instead of after the queue drains.
@@ -61,8 +107,7 @@ pub struct RodioSink {
 }
 
 struct Output {
-    sink: rodio::Sink,
-    _stream: rodio::OutputStream,
+    stream: rodio::OutputStream,
     /// Set from the audio thread when the stream dies (device unplugged).
     failed: Arc<AtomicBool>,
     sample_rate: u32,
@@ -203,10 +248,12 @@ impl RodioSink {
         device: Option<String>,
         on_error: ErrorHook,
         volume: Box<dyn VolumeGetter + Send>,
+        control: OutputControl,
     ) -> Self {
         Self {
             device,
             output: None,
+            control,
             on_error,
             volume,
             applied_volume: -1.0,
@@ -215,10 +262,10 @@ impl RodioSink {
 
     fn apply_volume(&mut self) {
         let factor = self.volume.attenuation_factor() as f32;
-        if let Some(output) = &self.output
-            && factor != self.applied_volume
+        if factor != self.applied_volume
+            && let Some(sink) = self.control.lock().as_ref()
         {
-            output.sink.set_volume(factor);
+            sink.set_volume(factor);
             self.applied_volume = factor;
         }
     }
@@ -228,11 +275,12 @@ impl RodioSink {
         if self.output.as_ref().is_some_and(Output::failed) {
             log::warn!("the audio output stopped working; reopening it");
             self.output = None;
+            self.control.detach();
         }
         if self.output.is_some() {
             return Ok(());
         }
-        match open_output(self.device.as_deref()) {
+        match open_output(self.device.as_deref(), &self.control) {
             Ok(output) => {
                 self.output = Some(output);
                 self.applied_volume = -1.0;
@@ -252,9 +300,7 @@ impl Sink for RodioSink {
     fn start(&mut self) -> SinkResult<()> {
         self.ensure_open()?;
         self.apply_volume();
-        if let Some(output) = &self.output {
-            output.sink.play();
-        }
+        self.control.with_sink(|sink| sink.play());
         Ok(())
     }
 
@@ -262,10 +308,13 @@ impl Sink for RodioSink {
     fn stop(&mut self) -> SinkResult<()> {
         if let Some(output) = &self.output {
             let deadline = Instant::now() + DRAIN_TIMEOUT;
-            while !output.sink.empty() && !output.failed() && Instant::now() < deadline {
+            while !self.control.with_sink(|sink| sink.empty()).unwrap_or(true)
+                && !output.failed()
+                && Instant::now() < deadline
+            {
                 output.queued.wait_for_room(u64::MAX);
             }
-            output.sink.pause();
+            self.control.with_sink(|sink| sink.pause());
         }
         Ok(())
     }
@@ -276,6 +325,14 @@ impl Sink for RodioSink {
             .map_err(|error| SinkError::OnWrite(error.to_string()))?;
         let samples = converter.f64_to_f32(samples);
         self.ensure_open()?;
+        if self.control.take_reset()
+            && let Some(output) = &mut self.output
+        {
+            self.control.replace(output.stream.mixer());
+            output.resampler =
+                Resampler::new(SAMPLE_RATE, output.sample_rate, NUM_CHANNELS as usize);
+            self.applied_volume = -1.0;
+        }
         self.apply_volume();
         let Some(output) = &mut self.output else {
             return Err(SinkError::NotConnected(
@@ -293,9 +350,8 @@ impl Sink for RodioSink {
                 output.sample_rate as rodio::SampleRate,
                 samples,
             );
-            output
-                .sink
-                .append(Chunk::new(buffer, count, &output.queued));
+            let chunk = Chunk::new(buffer, count, &output.queued);
+            self.control.with_sink(|sink| sink.append(chunk));
         }
         // Let rodio drain a little; without this the whole track would be
         // decoded into memory at once. A full queue sleeps until rodio has
@@ -305,7 +361,7 @@ impl Sink for RodioSink {
             * REFILL.as_millis() as u64
             / 1_000;
         let mut failed = false;
-        while output.sink.len() > QUEUE_LIMIT {
+        while self.control.with_sink(|sink| sink.len()).unwrap_or(0) > QUEUE_LIMIT {
             if output.failed() {
                 failed = true;
                 break;
@@ -318,12 +374,11 @@ impl Sink for RodioSink {
             // Only an output that will not open stops the music.
             log::warn!("the audio output stopped working; reopening it");
             self.output = None;
+            self.control.detach();
             self.applied_volume = -1.0;
             self.ensure_open()?;
             self.apply_volume();
-            if let Some(output) = &self.output {
-                output.sink.play();
-            }
+            self.control.with_sink(|sink| sink.play());
         }
         Ok(())
     }
@@ -339,7 +394,7 @@ enum OpenError {
     Stream(#[from] rodio::StreamError),
 }
 
-fn open_output(preferred: Option<&str>) -> Result<Output, OpenError> {
+fn open_output(preferred: Option<&str>, control: &OutputControl) -> Result<Output, OpenError> {
     let host = cpal::default_host();
     let device = match preferred.map(str::trim).filter(|name| !name.is_empty()) {
         Some(name) => {
@@ -376,10 +431,9 @@ fn open_output(preferred: Option<&str>) -> Result<Output, OpenError> {
     stream.log_on_drop(false);
     let sample_rate = stream.config().sample_rate();
     let resampler = Resampler::new(SAMPLE_RATE, sample_rate, NUM_CHANNELS as usize);
-    let sink = rodio::Sink::connect_new(stream.mixer());
+    control.attach(rodio::Sink::connect_new(stream.mixer()));
     Ok(Output {
-        sink,
-        _stream: stream,
+        stream,
         failed,
         sample_rate,
         resampler,
@@ -392,6 +446,47 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    #[test]
+    fn discard_flags_the_queue_without_blocking() {
+        let control = OutputControl::new();
+        let (sink, _guard) = rodio::Sink::new();
+        control.attach(sink);
+        let samples = vec![0.0f32; 4_410];
+        for _ in 0..3 {
+            control.with_sink(|sink| {
+                sink.append(rodio::buffer::SamplesBuffer::new(
+                    1,
+                    44_100,
+                    samples.clone(),
+                ));
+            });
+        }
+        control.discard_queued();
+        assert!(control.take_reset());
+        assert!(!control.take_reset());
+        control.detach();
+        let (fresh, _fresh_guard) = rodio::Sink::new();
+        control.attach(fresh);
+        control.with_sink(|sink| {
+            sink.append(rodio::buffer::SamplesBuffer::new(1, 44_100, samples));
+        });
+        assert_eq!(control.with_sink(|sink| sink.len()), Some(1));
+    }
+
+    #[test]
+    fn a_detached_control_is_a_no_op() {
+        let control = OutputControl::new();
+        control.discard_queued();
+        assert!(!control.take_reset());
+        assert_eq!(control.with_sink(|sink| sink.len()), None);
+        let (sink, _guard) = rodio::Sink::new();
+        control.attach(sink);
+        control.detach();
+        control.discard_queued();
+        assert!(!control.take_reset());
+        assert_eq!(control.with_sink(|sink| sink.len()), None);
+    }
+
     /// A machine without audio (CI, a PC with nothing plugged in) must get
     /// an error and a message for the interface, never a panic. A machine
     /// with audio opens its default device.
@@ -403,6 +498,7 @@ mod tests {
             Some("no such device".into()),
             Arc::new(move |message| *store.lock().unwrap() = Some(message)),
             Box::new(librespot_playback::mixer::NoOpVolume),
+            OutputControl::new(),
         );
         match sink.start() {
             Ok(()) => assert!(reported.lock().unwrap().is_none()),

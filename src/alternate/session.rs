@@ -118,6 +118,18 @@ impl Session {
         self.rebuild_order(current);
     }
 
+    pub fn append(&mut self, tracks: Vec<LocalTrack>) -> usize {
+        let before = self.tracks.len();
+        for track in tracks {
+            if self.tracks.iter().any(|known| known.uri == track.uri) {
+                continue;
+            }
+            self.order.push(self.tracks.len());
+            self.tracks.push(track);
+        }
+        self.tracks.len() - before
+    }
+
     pub fn add_to_queue(&mut self, track: LocalTrack) {
         let index = self.tracks.len();
         self.tracks.push(track);
@@ -344,12 +356,29 @@ impl Session {
         }
     }
 
-    pub fn select_uri(&mut self, uri: &str) -> bool {
-        let Some(index) = self.order.iter().position(|&track_index| {
-            self.tracks
-                .get(track_index)
+    pub fn peek_ahead(&self, steps: usize) -> Option<&LocalTrack> {
+        let index = self.index_in_order + steps;
+        self.tracks.get(*self.order.get(index)?)
+    }
+
+    pub fn select_uri(&mut self, uri: &str, forward: bool) -> bool {
+        let current = self.index_in_order;
+        let len = self.order.len();
+        let is_uri = |position: &usize| {
+            self.order
+                .get(*position)
+                .and_then(|&track_index| self.tracks.get(track_index))
                 .is_some_and(|track| track.uri == uri)
-        }) else {
+        };
+        let found = if forward {
+            (current + 1..len).chain(0..current).find(is_uri)
+        } else {
+            (0..current)
+                .rev()
+                .chain((current + 1..len).rev())
+                .find(is_uri)
+        };
+        let Some(index) = found else {
             return false;
         };
         self.index_in_order = index;

@@ -618,6 +618,13 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
             "grid" => app.settings.sidebar_grid = true,
             "green" => app.settings.accent = crate::settings::Accent::Green,
             "podcasts" => app.home.filter = HomeFilter::Podcasts,
+            "fulllyrics" => {
+                app.lyrics_uri = app.now_playing().map(|now| now.uri);
+                app.lyrics = Loadable::Loaded(Some(sample_lyrics()));
+                app.lyrics_following = true;
+                app.show_lyrics_panel = true;
+                app.fullscreen_lyrics = true;
+            }
             "devices" => app.show_devices = true,
             "shortcuts" => app.dialog = Some(Dialog::Shortcuts),
             "jump" => {

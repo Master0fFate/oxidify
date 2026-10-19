@@ -157,16 +157,30 @@ pub fn regular(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Proportional)
 }
 
+fn named_family(name: &'static str) -> egui::FontFamily {
+    use std::sync::OnceLock;
+    static MEDIUM: OnceLock<egui::FontFamily> = OnceLock::new();
+    static SEMIBOLD: OnceLock<egui::FontFamily> = OnceLock::new();
+    static BOLD: OnceLock<egui::FontFamily> = OnceLock::new();
+    let slot = match name {
+        INTER_MEDIUM => &MEDIUM,
+        INTER_SEMIBOLD => &SEMIBOLD,
+        _ => &BOLD,
+    };
+    slot.get_or_init(|| egui::FontFamily::Name(name.into()))
+        .clone()
+}
+
 pub fn medium(size: f32) -> egui::FontId {
-    egui::FontId::new(size, egui::FontFamily::Name(INTER_MEDIUM.into()))
+    egui::FontId::new(size, named_family(INTER_MEDIUM))
 }
 
 pub fn semibold(size: f32) -> egui::FontId {
-    egui::FontId::new(size, egui::FontFamily::Name(INTER_SEMIBOLD.into()))
+    egui::FontId::new(size, named_family(INTER_SEMIBOLD))
 }
 
 pub fn bold(size: f32) -> egui::FontId {
-    egui::FontId::new(size, egui::FontFamily::Name(INTER_BOLD.into()))
+    egui::FontId::new(size, named_family(INTER_BOLD))
 }
 
 /// Install fonts, icons, and the base style once.
@@ -342,11 +356,17 @@ fn install_fonts(ctx: &egui::Context) {
 
 macro_rules! icons {
     ($($variant:ident => $file:literal),* $(,)?) => {
-        &[$((
+        const ICONS: &[(Icon, &str, &[u8])] = &[$((
             Icon::$variant,
             concat!("bytes://oxidify-icon-", $file, ".svg"),
             include_bytes!(concat!("../assets/icons/", $file, ".svg")).as_slice(),
-        )),*]
+        )),*];
+
+        const fn icon_uri_of(icon: Icon) -> &'static str {
+            match icon {
+                $(Icon::$variant => concat!("bytes://oxidify-icon-", $file, ".svg"),)*
+            }
+        }
     };
 }
 
@@ -442,7 +462,7 @@ pub enum Icon {
     Zap,
 }
 
-const ICONS: &[(Icon, &str, &[u8])] = icons! {
+icons! {
     ArrowLeft => "arrow-left",
     ArrowRight => "arrow-right",
     AudioLines => "audio-lines",
@@ -531,14 +551,11 @@ const ICONS: &[(Icon, &str, &[u8])] = icons! {
     Watch => "watch",
     X => "x",
     Zap => "zap",
-};
+}
 
 impl Icon {
     pub fn uri(self) -> &'static str {
-        ICONS
-            .iter()
-            .find(|(icon, _, _)| *icon == self)
-            .map_or("", |(_, uri, _)| *uri)
+        icon_uri_of(self)
     }
 
     pub fn image(self, color: Color32, size: f32) -> egui::Image<'static> {
@@ -868,8 +885,7 @@ pub fn text(
     color: Color32,
 ) -> Response {
     let text = text.into();
-    let halign = crate::bidi::halign_for(&text);
-    let display = crate::bidi::display_text(&text);
+    let (halign, display) = crate::bidi::align_and_display(&text);
     ui.add(
         egui::Label::new(
             egui::RichText::new(display.into_owned())
@@ -890,8 +906,7 @@ pub fn link(
     color: Color32,
 ) -> Response {
     let text = text.into();
-    let halign = crate::bidi::halign_for(&text);
-    let display = crate::bidi::display_text(&text);
+    let (halign, display) = crate::bidi::align_and_display(&text);
     let response = ui.add(
         egui::Label::new(
             egui::RichText::new(display.into_owned())
@@ -1010,6 +1025,13 @@ mod tests {
                 }
             }
             assert!(Palette::dark().window.b() >= Palette::dark().window.g());
+        }
+    }
+
+    #[test]
+    fn every_icon_uri_matches_the_bytes_table() {
+        for (icon, uri, _) in super::ICONS {
+            assert_eq!(icon.uri(), *uri);
         }
     }
 }

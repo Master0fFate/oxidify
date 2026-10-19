@@ -983,7 +983,7 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
         );
     }
     let is_current = app
-        .current_track_uri()
+        .current_track_uri_str()
         .is_some_and(|uri| uri == row.item.uri());
     let playing = is_current && app.believed_playing();
     let hovered = ui.rect_contains_pointer(rect);
@@ -1802,6 +1802,31 @@ pub fn empty_state(ui: &mut Ui, palette: &Palette, icon: Icon, title: &str, body
     });
 }
 
+const SCROLL_STEP: f32 = 0.05;
+const POINTS_PER_SCROLL_STEP: f32 = 50.0;
+
+fn wheel_steps(ui: &Ui, id: egui::Id) -> f32 {
+    let moved = ui.input(|input| {
+        input.events.iter().fold(0.0, |sum, event| match event {
+            egui::Event::MouseWheel { unit, delta, .. } => {
+                sum + match unit {
+                    egui::MouseWheelUnit::Line => delta.y,
+                    egui::MouseWheelUnit::Point => delta.y / POINTS_PER_SCROLL_STEP,
+                    egui::MouseWheelUnit::Page => delta.y / SCROLL_STEP,
+                }
+            }
+            _ => sum,
+        })
+    });
+    if moved == 0.0 {
+        return 0.0;
+    }
+    let total = ui.data(|data| data.get_temp::<f32>(id).unwrap_or(0.0)) + moved;
+    let steps = total.trunc();
+    ui.data_mut(|data| data.insert_temp(id, total - steps));
+    steps
+}
+
 pub enum SliderEvent {
     None,
     Dragging(f32),
@@ -1839,11 +1864,10 @@ pub fn thin_slider_with_scroll(
         .map(|pos| ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0));
     let mut event = SliderEvent::None;
     if scroll && response.hovered() && !response.dragged() {
-        let delta = ui.input(|input| input.smooth_scroll_delta.y);
-        if delta.abs() > 0.1 {
-            ui.input_mut(|input| input.smooth_scroll_delta.y = 0.0);
-            let step = if delta > 0.0 { 0.05 } else { -0.05 };
-            event = SliderEvent::Committed((value + step).clamp(0.0, 1.0));
+        ui.input_mut(|input| input.smooth_scroll_delta.y = 0.0);
+        let steps = wheel_steps(ui, id.with("wheel"));
+        if steps != 0.0 {
+            event = SliderEvent::Committed((value + steps * SCROLL_STEP).clamp(0.0, 1.0));
         }
     }
     if (response.drag_started() || response.dragged())

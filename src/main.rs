@@ -701,7 +701,7 @@ impl eframe::App for Shell {
                 };
                 app.actions.push(action);
             }
-            app.background_frame(ctx);
+            app.pump(ctx);
         }
         #[cfg(feature = "demo")]
         self.drive_shot(ctx);

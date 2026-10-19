@@ -180,6 +180,10 @@ impl AppDirs {
         self.state.join("credentials")
     }
 
+    pub fn proxy_password_file(&self) -> PathBuf {
+        self.credentials_dir().join("proxy-password")
+    }
+
     pub fn volume_dir(&self) -> PathBuf {
         self.state.join("volume")
     }
@@ -212,7 +216,11 @@ impl AppDirs {
     /// The library as last seen, per account: the playlist list and Liked
     /// Songs, so they show the moment the app opens.
     pub fn account_library_cache_dir(&self, account_id: &str) -> PathBuf {
-        self.cache.join("library").join(account_id)
+        self.library_cache_dir().join(account_id)
+    }
+
+    pub fn library_cache_dir(&self) -> PathBuf {
+        self.cache.join("library")
     }
 
     pub fn ensure(&self) -> std::io::Result<()> {

@@ -23,6 +23,8 @@ const BASE_URL: &str = "https://api.spotify.com/v1";
 const MAX_IN_FLIGHT: usize = 6;
 const RATE_LIMIT_RETRIES: u32 = 3;
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
+const QUEUE_WRITE_RETRIES: u32 = 2;
+const QUEUE_WRITE_RETRY_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Error)]
 pub enum ApiError {
@@ -392,6 +394,7 @@ pub struct ApiClient {
     http: reqwest::Client,
     tokens: Mutex<Option<TokenProvider>>,
     limiter: Semaphore,
+    queue_writes: tokio::sync::Mutex<()>,
     cooldown_until: tokio::sync::Mutex<Instant>,
     search_limit: u32,
     artist_albums_limit: u32,
@@ -400,6 +403,7 @@ pub struct ApiClient {
     /// The single library endpoint refused this app or account once, so
     /// library writes and checks go to the classic endpoint of each kind.
     classic_library: AtomicBool,
+    base_url: Option<String>,
 }
 
 impl ApiClient {
@@ -414,12 +418,14 @@ impl ApiClient {
             http,
             tokens: Mutex::new(None),
             limiter: Semaphore::new(MAX_IN_FLIGHT),
+            queue_writes: tokio::sync::Mutex::new(()),
             cooldown_until: tokio::sync::Mutex::new(Instant::now()),
             classic_library: AtomicBool::new(false),
             search_limit,
             artist_albums_limit,
             source,
             activity,
+            base_url: None,
         }
     }
 
@@ -462,7 +468,8 @@ impl ApiClient {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
-            format!("{BASE_URL}{path}")
+            let base = self.base_url.as_deref().unwrap_or(BASE_URL);
+            format!("{base}{path}")
         };
         let provider = self.provider()?;
         let started = Instant::now();
@@ -733,6 +740,29 @@ impl ApiClient {
     }
 
     pub async fn add_to_queue(&self, uri: &str, device_id: Option<&str>) -> Result<()> {
+        let _write = self.queue_writes.lock().await;
+        self.append_to_queue(uri, device_id).await
+    }
+
+    pub async fn add_many_to_queue(&self, uris: &[String], device_id: Option<&str>) -> Result<()> {
+        let _write = self.queue_writes.lock().await;
+        for uri in uris {
+            let mut waits = 0;
+            loop {
+                match self.append_to_queue(uri, device_id).await {
+                    Ok(()) => break,
+                    Err(ApiError::RateLimited) if waits < QUEUE_WRITE_RETRIES => {
+                        waits += 1;
+                        tokio::time::sleep(QUEUE_WRITE_RETRY_WAIT).await;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn append_to_queue(&self, uri: &str, device_id: Option<&str>) -> Result<()> {
         let mut query = Self::device_query(device_id);
         query.push(("uri", uri.to_string()));
         self.write(Method::POST, "/me/player/queue", &query, None)
@@ -1398,5 +1428,87 @@ mod tests {
         // Serializing for the Web API must not mutate librespot's request.
         assert_eq!(song.context_uri.as_deref(), Some("spotify:track:first"));
         assert_eq!(song.offset_uri.as_deref(), Some("spotify:track:resumed"));
+    }
+
+    #[tokio::test]
+    async fn queue_batch_keeps_order_and_stops_on_the_first_failure() {
+        use std::sync::Arc as StdArc;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut uris: Vec<String> = Vec::new();
+            for expected in 0..6 {
+                let request = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    read_request(&listener),
+                )
+                .await
+                .expect("a request should arrive");
+                let mut request = request.expect("the request should read");
+                let line = request.1.lines().next().unwrap().to_string();
+                let uri = line
+                    .split("uri=")
+                    .nth(1)
+                    .and_then(|rest| rest.split(' ').next())
+                    .unwrap_or("")
+                    .to_string();
+                uris.push(uri);
+                let status = if expected == 3 { 500 } else { 204 };
+                let reply = format!(
+                    "HTTP/1.1 {status} NO CONTENT\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                );
+                use tokio::io::AsyncWriteExt;
+                request.0.write_all(reply.as_bytes()).await.unwrap();
+            }
+            uris
+        });
+        let mut client = ApiClient::new(
+            reqwest::Client::new(),
+            StdArc::new(NetActivity::default()),
+            20,
+            20,
+            ApiSource::Shared,
+        );
+        client.base_url = Some(format!("http://{address}"));
+        client.set_token_provider(Some(TokenProvider::Web(
+            crate::api::client::WebTokens::new(
+                reqwest::Client::new(),
+                crate::auth::StoredToken {
+                    client_id: "client".into(),
+                    access_token: "test".into(),
+                    refresh_token: "refresh".into(),
+                    expires_at: u64::MAX / 2,
+                    scope: String::new(),
+                },
+                std::path::PathBuf::from("unused"),
+                ApiSource::Shared,
+            ),
+        )));
+        let batch = ["a", "b", "c", "d"].map(String::from);
+        assert!(client.add_many_to_queue(&batch, None).await.is_err());
+        let batch = ["e", "f"].map(String::from);
+        assert!(client.add_many_to_queue(&batch, None).await.is_ok());
+        let uris = server.await.unwrap();
+        assert_eq!(uris, vec!["a", "b", "c", "d", "e", "f"]);
+    }
+
+    async fn read_request(
+        listener: &tokio::net::TcpListener,
+    ) -> std::io::Result<(tokio::net::TcpStream, String)> {
+        use tokio::io::AsyncReadExt;
+        let (mut socket, _) = listener.accept().await?;
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0u8; 1];
+            let read = socket.read(&mut byte).await?;
+            if read == 0 {
+                break;
+            }
+            request.push(byte[0]);
+            assert!(request.len() < 8192, "runaway test request");
+        }
+        let text = String::from_utf8(request)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        Ok((socket, text))
     }
 }

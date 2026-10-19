@@ -9,7 +9,8 @@ use crate::api::models::{PlayableItem, Track};
 use crate::player::{LoadSpec, LocalTrack};
 use crate::util::{uri_id, uri_kind};
 
-const MAX_TRACKS: usize = 200;
+pub const MAX_TRACKS: usize = 200;
+const AUTOPLAY_TRACKS: u32 = 20;
 
 pub async fn expand_load(api: &ApiClient, spec: &LoadSpec) -> Result<Vec<LocalTrack>> {
     if spec.uris.iter().any(|uri| is_podcast(uri))
@@ -62,6 +63,44 @@ pub fn seed_queue(spec: &LoadSpec) -> Vec<LocalTrack> {
         .cloned()
         .into_iter()
         .collect()
+}
+
+pub fn known_queue(spec: &LoadSpec) -> Vec<LocalTrack> {
+    spec.known_tracks
+        .iter()
+        .filter(|track| query_ready(track) && !track.is_episode)
+        .take(MAX_TRACKS)
+        .cloned()
+        .collect()
+}
+
+pub async fn autoplay_tracks(api: &ApiClient, seed: &LocalTrack) -> Result<Vec<LocalTrack>> {
+    let recommended = match uri_id(&seed.uri) {
+        Some(id) => api
+            .recommendations(&[id.to_string()], &[], AUTOPLAY_TRACKS)
+            .await
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let tracks = if recommended.is_empty() {
+        let artist = seed
+            .artists
+            .first()
+            .ok_or_else(|| anyhow!("nothing to continue from"))?;
+        api.search(&format!("artist:\"{artist}\""), &["track"])
+            .await
+            .map_err(|error| anyhow!("{error}"))?
+            .tracks
+            .map(|page| page.items)
+            .unwrap_or_default()
+    } else {
+        recommended
+    };
+    Ok(tracks
+        .iter()
+        .map(local_from_track)
+        .filter(|track| track.uri != seed.uri && query_ready(track))
+        .collect())
 }
 
 fn tracks_from_known(uris: &[String], known: &[LocalTrack]) -> Option<Vec<LocalTrack>> {

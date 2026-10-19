@@ -562,7 +562,8 @@ async fn range_followup(
         if !ctx.buffer.is_open() {
             return Ok(());
         }
-        maybe_ready(ctx.buffer, &prefix.data, false, on_ready);
+        let tail = tail_bytes(ctx.buffer, &prefix.data);
+        maybe_ready_with_tail(&prefix.data, false, on_ready, &tail);
         let Some(total) = ctx.buffer.content_length() else {
             return Err(permanent("Couldn't fetch matched audio."));
         };
@@ -571,11 +572,7 @@ async fn range_followup(
             return finish_complete_body(&prefix.data, ctx.buffer.len(), true, on_ready)
                 .map_err(permanent);
         }
-        let ready = probe::playback_ready_sparse(
-            &prefix.data,
-            &tail_bytes(ctx.buffer, &prefix.data),
-            false,
-        );
+        let ready = probe::playback_ready_sparse(&prefix.data, &tail, false);
         let Some(work) = next_work(ctx.buffer, &prefix.data, total, did_tail, ready) else {
             tokio::select! {
                 _ = ctx.buffer.notified() => {}
@@ -731,7 +728,11 @@ fn tail_bytes(buffer: &SharedAudio, prefix: &[u8]) -> Vec<u8> {
 }
 
 fn maybe_ready(buffer: &SharedAudio, prefix: &[u8], complete: bool, on_ready: &mut impl FnMut()) {
-    if probe::playback_ready_sparse(prefix, &tail_bytes(buffer, prefix), complete) {
+    maybe_ready_with_tail(prefix, complete, on_ready, &tail_bytes(buffer, prefix));
+}
+
+fn maybe_ready_with_tail(prefix: &[u8], complete: bool, on_ready: &mut impl FnMut(), tail: &[u8]) {
+    if probe::playback_ready_sparse(prefix, tail, complete) {
         on_ready();
     }
 }
