@@ -1,8 +1,8 @@
 //! The words of the playing track, in a side panel that follows the song.
 
-use egui::{Align, Frame, Layout, Margin, Rect, Sense, pos2};
+use egui::{Align, Frame, Layout, Margin, Rect, Sense, UiBuilder, pos2, vec2};
 
-use crate::app::App;
+use crate::app::{App, NowPlaying};
 use crate::model::{Action, Loadable};
 use crate::theme::{self, Icon};
 
@@ -11,6 +11,11 @@ use super::widgets;
 const LINE_SIZE: f32 = 19.0;
 const FULLSCREEN_LINE_SIZE: f32 = 34.0;
 const LINE_GAP: f32 = 10.0;
+const SUNG_LINE_AT: f32 = 0.2;
+const LYRICS_BESIDE_WIDTH: f32 = 640.0;
+const COVER_BESIDE_MIN_WIDTH: f32 = 900.0;
+const COLUMN_GAP: f32 = 64.0;
+const COVER_CAPTION: f32 = 90.0;
 /// How long a line takes to light up or fade.
 const LIGHT_UP_SECONDS: f32 = 0.22;
 
@@ -106,8 +111,148 @@ pub fn fullscreen(app: &mut App, ui: &mut egui::Ui) {
                     }
                 });
             });
-            contents(app, ui, FULLSCREEN_LINE_SIZE, true);
+            match app.now_playing() {
+                Some(now) if ui.available_width() >= COVER_BESIDE_MIN_WIDTH => {
+                    with_cover(app, ui, &now);
+                }
+                _ => contents(app, ui, FULLSCREEN_LINE_SIZE, true),
+            }
         });
+}
+
+fn with_cover(app: &mut App, ui: &mut egui::Ui, now: &NowPlaying) {
+    let rest = ui.available_rect_before_wrap();
+    let below = Rect::from_min_max(rest.min, pos2(rest.right(), rest.bottom() - 24.0));
+    let words = matches!(&app.lyrics, Loadable::Loaded(Some(lyrics)) if !lyrics.instrumental);
+    let mut span = below;
+    if app.show_queue_panel {
+        let width = super::queue::fullscreen_column_width(app.settings.queue_width);
+        span.max.x -= width + COLUMN_GAP;
+        let column = Rect::from_min_max(pos2(below.right() - width, below.top()), below.max);
+        let mut queue_ui = ui.new_child(UiBuilder::new().max_rect(column));
+        super::queue::fullscreen_column(app, &mut queue_ui);
+    }
+    if words {
+        cover_beside_lyrics(app, ui, now, span);
+    } else {
+        cover_alone(app, ui, now, span);
+    }
+}
+
+fn cover_beside_lyrics(app: &mut App, ui: &mut egui::Ui, now: &NowPlaying, span: Rect) {
+    let side = (span.width() * 0.4)
+        .min(span.height() - COVER_CAPTION)
+        .clamp(160.0, 520.0);
+    let lyrics_width = (span.width() - side - COLUMN_GAP).clamp(80.0, LYRICS_BESIDE_WIDTH);
+    let left = span.center().x - (side + COLUMN_GAP + lyrics_width) / 2.0;
+    let column = Rect::from_min_size(
+        pos2(left, span.center().y - (side + COVER_CAPTION) / 2.0),
+        vec2(side, side + COVER_CAPTION),
+    );
+    big_cover(app, ui, now, column, Align::Min);
+    let lyrics = Rect::from_min_max(
+        pos2(column.right() + COLUMN_GAP, span.top()),
+        pos2(column.right() + COLUMN_GAP + lyrics_width, span.bottom()),
+    );
+    let mut content = ui.new_child(UiBuilder::new().max_rect(lyrics));
+    let line_size = (lyrics_width * 0.046).clamp(26.0, FULLSCREEN_LINE_SIZE);
+    contents(app, &mut content, line_size, false);
+}
+
+fn cover_alone(app: &mut App, ui: &mut egui::Ui, now: &NowPlaying, span: Rect) {
+    let palette = app.palette;
+    let side = (span.height() - 140.0)
+        .min(span.width() * 0.5)
+        .clamp(200.0, 560.0);
+    let column = Rect::from_center_size(span.center(), vec2(side, side + COVER_CAPTION));
+    big_cover(app, ui, now, column, Align::Center);
+    let note = Rect::from_min_size(
+        pos2(column.left(), column.bottom() + 8.0),
+        vec2(column.width(), 120.0),
+    );
+    let mut note_ui = ui.new_child(
+        UiBuilder::new()
+            .max_rect(note)
+            .layout(Layout::top_down(Align::Center)),
+    );
+    note_ui.spacing_mut().item_spacing.y = 4.0;
+    let ui = &mut note_ui;
+    match &app.lyrics {
+        Loadable::NotLoaded | Loadable::Loading => {
+            theme::text(ui, "Loading…", theme::semibold(13.0), palette.secondary);
+        }
+        Loadable::Failed(error) => {
+            let message = format!("Couldn't fetch the lyrics: {error}");
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(message)
+                        .font(theme::regular(13.0))
+                        .color(palette.secondary),
+                )
+                .wrap(),
+            );
+            ui.add_space(4.0);
+            if theme::pill_button(ui, &palette, "Try again", false).clicked() {
+                app.actions.push(Action::RetryLyrics);
+            }
+        }
+        Loadable::Loaded(None) => {
+            theme::text(ui, "No lyrics", theme::semibold(13.0), palette.text);
+            theme::text(
+                ui,
+                "No lyrics found for this one.",
+                theme::regular(13.0),
+                palette.secondary,
+            );
+        }
+        Loadable::Loaded(Some(_)) => {
+            theme::text(ui, "Instrumental", theme::semibold(13.0), palette.text);
+            theme::text(
+                ui,
+                "No words to follow on this one.",
+                theme::regular(13.0),
+                palette.secondary,
+            );
+        }
+    }
+}
+
+fn big_cover(app: &App, ui: &mut egui::Ui, now: &NowPlaying, column: Rect, align: Align) {
+    let palette = app.palette;
+    let cover = Rect::from_min_size(column.min, vec2(column.width(), column.width()));
+    let radius = 10.0;
+    widgets::paint_shadow(ui, &palette, cover, radius);
+    widgets::paint_cover(
+        ui,
+        &palette,
+        now.art_url.as_deref().or(now.art_small.as_deref()),
+        cover,
+        radius,
+        Icon::Music,
+    );
+    let caption = Rect::from_min_max(pos2(column.left(), cover.bottom() + 18.0), column.max);
+    let mut text = ui.new_child(
+        UiBuilder::new()
+            .max_rect(caption)
+            .layout(Layout::top_down(align)),
+    );
+    text.spacing_mut().item_spacing.y = 4.0;
+    theme::text(&mut text, &now.title, theme::semibold(22.0), palette.text);
+    theme::text(
+        &mut text,
+        &now.subtitle,
+        theme::regular(14.0),
+        palette.secondary,
+    );
+    if let Some(source) = &now.source_label {
+        theme::text(&mut text, source, theme::regular(12.5), palette.dim);
+    }
+}
+
+fn show_sung_line(ui: &egui::Ui, line: Rect) {
+    let above = (ui.clip_rect().height() * SUNG_LINE_AT - line.height() / 2.0).max(0.0);
+    let target = Rect::from_min_max(pos2(line.left(), line.top() - above), line.max);
+    ui.scroll_to_rect(target, Some(Align::Min));
 }
 
 fn contents(app: &mut App, ui: &mut egui::Ui, line_size: f32, centered: bool) {
@@ -133,7 +278,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui, line_size: f32, centered: bool) {
             theme::text(ui, message, theme::regular(13.0), palette.secondary);
             ui.add_space(8.0);
             if theme::pill_button(ui, &palette, "Try again", false).clicked() {
-                app.request_lyrics();
+                app.actions.push(Action::RetryLyrics);
             }
             return;
         }
@@ -185,13 +330,22 @@ fn contents(app: &mut App, ui: &mut egui::Ui, line_size: f32, centered: bool) {
                         Some(Align::Min),
                     );
                 }
-                ui.add_space(12.0);
+                let height = ui.clip_rect().height();
+                let (above, below) = if lyrics.synced {
+                    (
+                        (height * SUNG_LINE_AT - line_size).max(12.0),
+                        (height * (1.0 - SUNG_LINE_AT)).max(60.0),
+                    )
+                } else {
+                    (12.0, 60.0)
+                };
+                ui.add_space(above);
                 for (index, line) in lyrics.lines.iter().enumerate() {
                     let is_active = active == Some(index);
                     let lit = ui.ctx().animate_bool_with_time(
                         egui::Id::new("lyric-line").with(index),
                         is_active,
-                        LIGHT_UP_SECONDS,
+                        crate::motion::seconds(ui.ctx(), LIGHT_UP_SECONDS),
                     );
                     let color = blend(quiet, palette.accent, lit);
                     let font = if lit > 0.5 {
@@ -235,15 +389,8 @@ fn contents(app: &mut App, ui: &mut egui::Ui, line_size: f32, centered: bool) {
                             app.lyrics_following = true;
                         }
                     }
-                    if is_active && follow && centered {
-                        ui.scroll_to_rect(rect, Some(Align::Center));
-                    } else if is_active && follow {
-                        // The line being sung sits a third of the way down,
-                        // so the lines still to come fill the view.
-                        let lead = ui.clip_rect().height() * 0.3;
-                        let target =
-                            Rect::from_min_max(pos2(rect.left(), rect.top() - lead), rect.max);
-                        ui.scroll_to_rect(target, Some(Align::Min));
+                    if is_active && follow {
+                        show_sung_line(ui, rect);
                     }
                     ui.add_space(LINE_GAP);
                 }
@@ -262,7 +409,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui, line_size: f32, centered: bool) {
                         Some(Align::Center),
                     );
                 }
-                ui.add_space(60.0);
+                ui.add_space(below);
             });
         });
     // Scrolling by hand means the reader wants to look elsewhere; the

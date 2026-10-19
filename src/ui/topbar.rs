@@ -248,6 +248,9 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     }
     let id = egui::Id::new("global-search");
     let before = app.search.query.clone();
+    let selected = egui::TextEdit::load_state(ui.ctx(), id)
+        .and_then(|state| state.cursor.char_range())
+        .is_some_and(|range| !range.is_empty());
     let response = super::widgets::search_field(
         &mut middle,
         &palette,
@@ -267,6 +270,9 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
         app.actions.push(Action::Open(Page::Search));
     }
     if app.search.query != before {
+        if selected || app.search.query.is_empty() {
+            app.actions.push(Action::EndSearchRun);
+        }
         app.search.typed_at = Some(std::time::Instant::now());
         if !cleared && !matches!(app.page(), Page::Search) {
             app.actions.push(Action::Open(Page::Search));
@@ -626,7 +632,12 @@ mod tests {
                     },
                 ],
             );
-            assert!(app.actions.is_empty(), "clearing must not navigate");
+            assert!(
+                !app.actions
+                    .iter()
+                    .any(|action| matches!(action, Action::Open(_))),
+                "clearing must not navigate"
+            );
         }
         assert!(app.search.query.is_empty());
         for _ in 0..3 {

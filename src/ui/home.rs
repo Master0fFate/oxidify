@@ -246,7 +246,7 @@ fn made_for_you(app: &mut App, ui: &mut egui::Ui) {
     }
     widgets::shelf(ui, &palette, "made-for-you", "Made for you", |ui| {
         if playlists.is_empty() && loading {
-            widgets::loading_row(ui, &palette);
+            widgets::skeleton_cards(ui, &palette, 7, false);
         } else if playlists.is_empty() && failed {
             widgets::error_row(ui, app, "Couldn't load this shelf", Some(Page::Home));
         }
@@ -288,7 +288,7 @@ fn recently_played(app: &mut App, ui: &mut egui::Ui) {
         Loadable::Loaded(history) => history,
         Loadable::Loading | Loadable::NotLoaded => {
             widgets::shelf(ui, &palette, "recent", "Recently played", |ui| {
-                widgets::loading_row(ui, &palette)
+                widgets::skeleton_cards(ui, &palette, 7, false)
             });
             return;
         }
@@ -351,7 +351,7 @@ fn top_artists(app: &mut App, ui: &mut egui::Ui) {
         Loadable::Loaded(artists) => artists,
         Loadable::Loading | Loadable::NotLoaded => {
             widgets::shelf(ui, &palette, "top-artists", "Your top artists", |ui| {
-                widgets::loading_row(ui, &palette)
+                widgets::skeleton_cards(ui, &palette, 7, true)
             });
             return;
         }
@@ -532,7 +532,7 @@ fn track_list(
             if show_all && let Some(page) = title_page {
                 app.actions.push(Action::Open(page));
             }
-            widgets::loading_row(ui, &palette);
+            widgets::skeleton_rows(ui, &palette, 4);
             ui.add_space(12.0);
             return;
         }

@@ -36,42 +36,31 @@ pub fn paint_cover(
     radius: f32,
     fallback: Icon,
 ) {
+    paint_cover_from(ui, palette, &[url], rect, radius, fallback);
+}
+
+pub fn paint_cover_from(
+    ui: &Ui,
+    palette: &Palette,
+    urls: &[Option<&str>],
+    rect: Rect,
+    radius: f32,
+    fallback: Icon,
+) {
     if !ui.is_rect_visible(rect) {
         return;
     }
     let corner = CornerRadius::same(radius.min(127.0) as u8);
-    let painter = ui.painter();
-    let loaded = url.is_some_and(|url| {
-        let image = egui::Image::new(url).show_loading_spinner(false);
-        let Ok(egui::load::TexturePoll::Ready { texture }) =
-            image.load_for_size(ui.ctx(), rect.size())
-        else {
-            return false;
-        };
-
-        let image_aspect = texture.size.x / texture.size.y;
-        let rect_aspect = rect.width() / rect.height();
-        let uv = if image_aspect > rect_aspect {
-            let visible_width = rect_aspect / image_aspect;
-            let inset = (1.0 - visible_width) / 2.0;
-            Rect::from_min_max(pos2(inset, 0.0), pos2(1.0 - inset, 1.0))
-        } else {
-            let visible_height = image_aspect / rect_aspect;
-            let inset = (1.0 - visible_height) / 2.0;
-            Rect::from_min_max(pos2(0.0, inset), pos2(1.0, 1.0 - inset))
-        };
-        egui::Image::new(texture)
-            .uv(uv)
-            .corner_radius(corner)
-            .paint_at(ui, rect);
-        true
-    });
+    let loaded = urls
+        .iter()
+        .any(|url| url.is_some_and(|url| paint_cover_image(ui, url, rect, corner)));
     if !loaded {
         let fill = if palette.dark {
             palette.surface_hover
         } else {
             palette.surface_active
         };
+        let painter = ui.painter();
         if radius >= rect.width() / 2.0 - 0.5 {
             painter.circle_filled(rect.center(), rect.width() / 2.0, fill);
         } else {
@@ -80,6 +69,31 @@ pub fn paint_cover(
         let icon_size = (rect.width() * 0.42).clamp(12.0, 64.0);
         theme::paint_icon(ui, fallback, rect, icon_size, palette.dim);
     }
+}
+
+fn paint_cover_image(ui: &Ui, url: &str, rect: Rect, corner: CornerRadius) -> bool {
+    let image = egui::Image::new(url).show_loading_spinner(false);
+    let Ok(egui::load::TexturePoll::Ready { texture }) = image.load_for_size(ui.ctx(), rect.size())
+    else {
+        return false;
+    };
+
+    let image_aspect = texture.size.x / texture.size.y;
+    let rect_aspect = rect.width() / rect.height();
+    let uv = if image_aspect > rect_aspect {
+        let visible_width = rect_aspect / image_aspect;
+        let inset = (1.0 - visible_width) / 2.0;
+        Rect::from_min_max(pos2(inset, 0.0), pos2(1.0 - inset, 1.0))
+    } else {
+        let visible_height = image_aspect / rect_aspect;
+        let inset = (1.0 - visible_height) / 2.0;
+        Rect::from_min_max(pos2(0.0, inset), pos2(1.0, 1.0 - inset))
+    };
+    egui::Image::new(texture)
+        .uv(uv)
+        .corner_radius(corner)
+        .paint_at(ui, rect);
+    true
 }
 
 /// A soft drop shadow under a cover or card.
@@ -543,6 +557,40 @@ pub fn playlist_picker(ui: &mut Ui, app: &mut App, uri: &str) {
         .data(|data| data.get_temp::<String>(filter_id))
         .unwrap_or_default();
     let mut leave = false;
+    let rows = picker_rows(app, uri);
+    let field_id = filter_id.with("field");
+    let highlight_id = picker_id.with("highlight");
+    let frame = ui.ctx().cumulative_frame_nr();
+    let (mut highlighted, chosen_for) = ui
+        .data(|data| data.get_temp::<(u64, Option<usize>, String)>(highlight_id))
+        .filter(|(last_frame, _, _)| frame.saturating_sub(*last_frame) <= 1)
+        .map(|(_, highlighted, query)| (highlighted, query))
+        .unwrap_or_default();
+    let mut moved = false;
+    let mut enter = false;
+    if ui.memory(|memory| memory.has_focus(field_id)) {
+        let count = addable_rows(&rows, &filter).count();
+        let (down, up, pressed) = ui.input_mut(|input| {
+            (
+                input.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                input.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                count > 0 && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+            )
+        });
+        enter = pressed;
+        if count > 0 && down + up > 0 {
+            moved = true;
+            let last = count - 1;
+            let mut index = highlighted.map(|index| index.min(last));
+            for _ in 0..down {
+                index = Some(index.map_or(0, |index| (index + 1).min(last)));
+            }
+            for _ in 0..up {
+                index = Some(index.map_or(last, |index| index.saturating_sub(1)));
+            }
+            highlighted = index;
+        }
+    }
 
     ui.horizontal(|ui| {
         ui.add_space(6.0);
@@ -556,7 +604,7 @@ pub fn playlist_picker(ui: &mut Ui, app: &mut App, uri: &str) {
     let search = search_field(
         ui,
         &palette,
-        filter_id.with("field"),
+        field_id,
         &mut filter,
         "Find a playlist",
         WIDTH,
@@ -572,18 +620,20 @@ pub fn playlist_picker(ui: &mut Ui, app: &mut App, uri: &str) {
         search.request_focus();
         ui.data_mut(|data| data.insert_temp(focused_id, true));
     }
-    let rows = picker_rows(app, uri);
     let needle = filter.trim().to_lowercase();
     let shown: Vec<&PickerRow> = rows
         .iter()
         .filter(|row| needle.is_empty() || row.name.to_lowercase().contains(&needle))
         .collect();
+    if filter != chosen_for {
+        highlighted = (!needle.is_empty()).then_some(0);
+    }
+    let addable: Vec<&PickerRow> = addable_rows(&rows, &filter).collect();
+    highlighted = highlighted.filter(|index| *index < addable.len());
+    let highlighted_key = highlighted.map(|index| addable[index].key.as_str());
     // Enter takes the first matching playlist, so a song reaches one with
     // a few letters and a keystroke.
-    if search.lost_focus()
-        && ui.input(|input| input.key_pressed(egui::Key::Enter))
-        && let Some(row) = shown.iter().find(|row| !row.liked && !row.holds)
-    {
+    if enter && let Some(row) = addable.get(highlighted.unwrap_or(0)) {
         app.actions.push(Action::AddToPlaylist {
             playlist_id: row.key.clone(),
             playlist_name: row.name.clone(),
@@ -623,7 +673,12 @@ pub fn playlist_picker(ui: &mut Ui, app: &mut App, uri: &str) {
                 });
                 for row in group {
                     let wanted = pending.get(&row.key).copied().unwrap_or(row.holds);
-                    if picker_row(ui, &palette, row, wanted).clicked() {
+                    let chosen = highlighted_key == Some(row.key.as_str());
+                    let response = picker_row(ui, &palette, row, wanted, chosen);
+                    if chosen && moved {
+                        response.scroll_to_me(None);
+                    }
+                    if response.clicked() {
                         if !wanted == row.holds {
                             pending.remove(&row.key);
                         } else {
@@ -663,20 +718,45 @@ pub fn playlist_picker(ui: &mut Ui, app: &mut App, uri: &str) {
             data.remove::<std::collections::HashMap<String, bool>>(pending_id);
             data.remove::<String>(filter_id);
             data.remove::<bool>(focused_id);
+            data.remove::<(u64, Option<usize>, String)>(highlight_id);
         });
         ui.close();
     } else {
-        ui.data_mut(|data| data.insert_temp(pending_id, pending));
+        ui.data_mut(|data| {
+            data.insert_temp(pending_id, pending);
+            data.insert_temp(highlight_id, (frame, highlighted, filter));
+        });
     }
+}
+
+fn addable_rows<'a>(rows: &'a [PickerRow], filter: &str) -> impl Iterator<Item = &'a PickerRow> {
+    let needle = filter.trim().to_lowercase();
+    rows.iter().filter(move |row| {
+        !row.liked && !row.holds && (needle.is_empty() || row.name.to_lowercase().contains(&needle))
+    })
 }
 
 /// One row of the sheet: cover, name, pin and count, and a check in a
 /// filled circle when the song is (or is about to be) in it, an empty
 /// circle otherwise.
-fn picker_row(ui: &mut Ui, palette: &Palette, row: &PickerRow, wanted: bool) -> egui::Response {
+fn picker_row(
+    ui: &mut Ui,
+    palette: &Palette,
+    row: &PickerRow,
+    wanted: bool,
+    highlighted: bool,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 50.0), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            true,
+            highlighted,
+            &row.name,
+        )
+    });
     if ui.is_rect_visible(rect) {
-        if response.hovered() {
+        if response.hovered() || highlighted {
             ui.painter()
                 .rect_filled(rect, CornerRadius::same(6), palette.surface_hover);
         }
@@ -766,9 +846,13 @@ pub fn liked_control(ui: &mut Ui, app: &mut App, item: &PlayableItem, size: f32,
 /// fades instead of jumping.
 pub fn animate_color(ctx: &egui::Context, id: egui::Id, target: Color32, seconds: f32) -> Color32 {
     let channel = |index: usize, value: u8| {
-        ctx.animate_value_with_time(id.with(index), f32::from(value), seconds)
-            .round()
-            .clamp(0.0, 255.0) as u8
+        ctx.animate_value_with_time(
+            id.with(index),
+            f32::from(value),
+            crate::motion::seconds(ctx, seconds),
+        )
+        .round()
+        .clamp(0.0, 255.0) as u8
     };
     Color32::from_rgb(
         channel(0, target.r()),
@@ -982,9 +1066,12 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
             },
         );
     }
-    let is_current = app
-        .current_track_uri_str()
-        .is_some_and(|uri| uri == row.item.uri());
+    let played_copy = app.row_is_played_copy(row.context, row.index, row.item.uri());
+    let is_current = played_copy
+        && app
+            .current_track_uri_str()
+            .is_some_and(|uri| uri == row.item.uri());
+    let pending = played_copy && app.play_pending(row.item.uri());
     let playing = is_current && app.believed_playing();
     let hovered = ui.rect_contains_pointer(rect);
     let unavailable = match row.item {
@@ -1008,7 +1095,7 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
     // Number / play.
     if cols.number > 0.0 {
         let cell = Rect::from_min_size(pos2(x, rect.top()), vec2(cols.number, row_height));
-        if app.play_pending(row.item.uri()) {
+        if pending {
             let mut child = ui.new_child(
                 UiBuilder::new()
                     .max_rect(cell)
@@ -1573,6 +1660,39 @@ pub struct CardResponse {
 /// A cover card. `context` is what its play button plays; a card whose
 /// context is playing shows pause instead, and toggles playback rather
 /// than starting the context over.
+const CARD_PAD: f32 = 12.0;
+const CARD_TITLE_GAP: f32 = 10.0;
+const CARD_SUBTITLE_GAP: f32 = 2.0;
+const CARD_BOTTOM_PAD: f32 = 8.0;
+const CARD_ART: f32 = CARD_WIDTH - 2.0 * CARD_PAD;
+
+fn card_title_font() -> egui::FontId {
+    theme::semibold(14.0)
+}
+
+fn card_subtitle_font() -> egui::FontId {
+    theme::regular(12.5)
+}
+
+fn card_text_rows(ui: &mut Ui) -> (f32, f32) {
+    ui.fonts_mut(|fonts| {
+        (
+            fonts.row_height(&card_title_font()),
+            fonts.row_height(&card_subtitle_font()),
+        )
+    })
+}
+
+fn card_height(title_row: f32, subtitle_row: f32) -> f32 {
+    CARD_PAD
+        + CARD_ART
+        + CARD_TITLE_GAP
+        + title_row
+        + CARD_SUBTITLE_GAP
+        + 2.0 * subtitle_row
+        + CARD_BOTTOM_PAD
+}
+
 pub fn card(
     ui: &mut Ui,
     app: &mut App,
@@ -1586,26 +1706,16 @@ pub fn card(
     let playable = context.is_some();
     let current = context.is_some_and(|uri| app.is_current_context(uri));
     let playing = current && app.believed_playing();
-    const PAD: f32 = 12.0;
-    const TITLE_GAP: f32 = 10.0;
-    const SUBTITLE_GAP: f32 = 2.0;
-    const BOTTOM_PAD: f32 = 8.0;
-    let image_size = CARD_WIDTH - 2.0 * PAD;
+    let image_size = CARD_ART;
     let text_width = image_size;
-    let title_font = theme::semibold(14.0);
-    let subtitle_font = theme::regular(12.5);
+    let title_font = card_title_font();
+    let subtitle_font = card_subtitle_font();
     // Every card reserves the title row and two subtitle rows, whatever its
     // own subtitle needs: a two-line subtitle then sits inside the hover
     // background, and a shelf that mixes one- and two-line subtitles keeps
     // its covers on one line instead of centring cards of different heights.
-    let (title_row, subtitle_row) = ui.fonts_mut(|fonts| {
-        (
-            fonts.row_height(&title_font),
-            fonts.row_height(&subtitle_font),
-        )
-    });
-    let height =
-        PAD + image_size + TITLE_GAP + title_row + SUBTITLE_GAP + 2.0 * subtitle_row + BOTTOM_PAD;
+    let (title_row, subtitle_row) = card_text_rows(ui);
+    let height = card_height(title_row, subtitle_row);
     let (rect, response) = ui.allocate_exact_size(vec2(CARD_WIDTH, height), Sense::click());
     let mut play = false;
     if ui.is_rect_visible(rect) {
@@ -1619,7 +1729,8 @@ pub fn card(
                     .gamma_multiply(if palette.dark { 0.8 } else { 1.0 }),
             );
         }
-        let image_rect = Rect::from_min_size(rect.min + vec2(PAD, PAD), Vec2::splat(image_size));
+        let image_rect =
+            Rect::from_min_size(rect.min + vec2(CARD_PAD, CARD_PAD), Vec2::splat(image_size));
         let radius = if round { image_size / 2.0 } else { 6.0 };
         paint_shadow(ui, &palette, image_rect, radius);
         paint_cover(
@@ -1630,10 +1741,10 @@ pub fn card(
             radius,
             if round { Icon::User } else { Icon::Music },
         );
-        let text_left = rect.left() + PAD;
+        let text_left = rect.left() + CARD_PAD;
         let title_galley = ellipsized(ui, title, title_font, palette.text, text_width, 1);
         let title_rect = Rect::from_min_size(
-            pos2(text_left, image_rect.bottom() + TITLE_GAP),
+            pos2(text_left, image_rect.bottom() + CARD_TITLE_GAP),
             vec2(text_width, title_row),
         );
         let title_pos = match title_galley.job.halign {
@@ -1651,7 +1762,7 @@ pub fn card(
             2,
         );
         let subtitle_rect = Rect::from_min_size(
-            pos2(text_left, title_rect.bottom() + SUBTITLE_GAP),
+            pos2(text_left, title_rect.bottom() + CARD_SUBTITLE_GAP),
             vec2(text_width, 2.0 * subtitle_row),
         );
         let subtitle_pos = match subtitle_galley.job.halign {
@@ -1767,6 +1878,80 @@ pub fn grid(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
         ui.spacing_mut().item_spacing = vec2(CARD_GAP / 2.0, CARD_GAP);
         add_contents(ui);
     });
+}
+
+fn skeleton_fill(palette: &Palette) -> egui::Color32 {
+    palette
+        .surface_hover
+        .gamma_multiply(if palette.dark { 0.9 } else { 1.0 })
+}
+
+fn skeleton_share(index: usize, line: usize) -> f32 {
+    const SHARES: [f32; 5] = [0.62, 0.48, 0.71, 0.55, 0.4];
+    SHARES[(index * 2 + line) % SHARES.len()] * if line == 0 { 1.0 } else { 0.7 }
+}
+
+pub fn skeleton_rows(ui: &mut Ui, palette: &Palette, count: usize) {
+    let fill = skeleton_fill(palette);
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme::ROW_HEIGHT * count as f32),
+        Sense::hover(),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "Loading…"));
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    for index in 0..count {
+        let top = rect.top() + theme::ROW_HEIGHT * index as f32;
+        let cover = Rect::from_min_size(
+            pos2(rect.left() + 12.0, top + (theme::ROW_HEIGHT - 40.0) / 2.0),
+            Vec2::splat(40.0),
+        );
+        painter.rect_filled(cover, CornerRadius::same(4), fill);
+        let room = (rect.right() - cover.right() - 32.0).clamp(0.0, 420.0);
+        for (line, (y, height)) in [(top + 18.0, 10.0), (top + 34.0, 8.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let bar = Rect::from_min_size(
+                pos2(cover.right() + 14.0, y),
+                vec2(room * skeleton_share(index, line), height),
+            );
+            painter.rect_filled(bar, CornerRadius::same(4), fill);
+        }
+    }
+}
+
+pub fn skeleton_cards(ui: &mut Ui, palette: &Palette, count: usize, round: bool) {
+    let fill = skeleton_fill(palette);
+    let (title_row, subtitle_row) = card_text_rows(ui);
+    let height = card_height(title_row, subtitle_row);
+    for index in 0..count {
+        let (rect, response) = ui.allocate_exact_size(vec2(CARD_WIDTH, height), Sense::hover());
+        if index == 0 {
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "Loading…")
+            });
+        }
+        if !ui.is_rect_visible(rect) {
+            continue;
+        }
+        let painter = ui.painter();
+        let art = Rect::from_min_size(rect.min + vec2(CARD_PAD, CARD_PAD), Vec2::splat(CARD_ART));
+        let radius = if round { CARD_ART / 2.0 } else { 6.0 };
+        painter.rect_filled(art, CornerRadius::same(radius as u8), fill);
+        let title = Rect::from_min_size(
+            pos2(art.left(), art.bottom() + CARD_TITLE_GAP + 2.0),
+            vec2(CARD_ART * skeleton_share(index, 0), 12.0),
+        );
+        painter.rect_filled(title, CornerRadius::same(4), fill);
+        let subtitle = Rect::from_min_size(
+            pos2(art.left(), title.bottom() + 8.0),
+            vec2(CARD_ART * skeleton_share(index, 1), 9.0),
+        );
+        painter.rect_filled(subtitle, CornerRadius::same(4), fill);
+    }
 }
 
 pub fn loading_row(ui: &mut Ui, palette: &Palette) {
@@ -1984,9 +2169,10 @@ pub fn search_field(
             .vertical_align(Align::Center),
     );
     if !text.is_empty() {
+        let clear_size = 15.0;
         let clear_rect = Rect::from_center_size(
             pos2(rect.right() - 17.0, rect.center().y),
-            Vec2::splat(24.0),
+            Vec2::splat(clear_size + theme::ICON_BUTTON_PAD),
         );
         let mut clear = ui.new_child(
             UiBuilder::new()
@@ -1996,7 +2182,7 @@ pub fn search_field(
         if theme::icon_button(
             &mut clear,
             Icon::X,
-            15.0,
+            clear_size,
             palette.secondary,
             palette.text,
             "Clear",

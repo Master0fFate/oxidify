@@ -266,7 +266,6 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
     if let Some(item) = &item {
         // Playing from a playlist of one's own, the menu can take the song
         // out of it, as a row of that playlist would.
-        let context = app.playing_editable_context(item.uri());
         for response in [
             &cover_response,
             &info_response,
@@ -275,7 +274,10 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
         ] {
             egui::Popup::context_menu(response)
                 .frame(super::widgets::menu_frame(&palette))
-                .show(|ui| super::widgets::item_menu(ui, app, item, context.as_ref(), None));
+                .show(|ui| {
+                    let context = app.playing_editable_context(item.uri());
+                    super::widgets::item_menu(ui, app, item, context.as_ref(), None)
+                });
         }
     }
 

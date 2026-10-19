@@ -215,6 +215,7 @@ pub struct LoadSpec {
     /// Already-known title/artist/duration. Alternate playback uses this to
     /// skip a redundant Spotify track fetch. Premium Connect ignores it.
     pub known_tracks: Vec<LocalTrack>,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -484,6 +485,7 @@ impl Engine {
                 };
                 spirc.activate()?;
                 spirc.load(request)?;
+                self.state.lock().unwrap_or_else(|p| p.into_inner()).repeat = spec.repeat;
             }
         }
         Ok(())

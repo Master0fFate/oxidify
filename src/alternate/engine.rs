@@ -16,13 +16,17 @@ use super::audio::{AudioOutput, OutputStatus, RodioOutput, volume_f32};
 use super::buffer::SharedAudio;
 use super::decode::{DecodeHandle, DurationProbe, FormatHint, PcmSource, spawn_decoder};
 use super::fetch::{self, FetchPolicy};
-use super::hydrate::{autoplay_tracks, expand_load, known_queue, offset_index, seed_queue};
+use super::hydrate::{
+    MAX_TRACKS, autoplay_tracks, expand_load, known_queue, offset_index, seed_queue,
+};
 use super::matching::{TrackQuery, rank_candidates};
 use super::provider::{MediaLookup, Resolver};
 use super::session::{Advance, Session};
 use super::streams::select_audio_stream;
 use crate::api::ApiClient;
-use crate::player::{EngineEvent, LoadSpec, LocalTrack, Notify, Playback, PlayerCommand};
+use crate::player::{
+    EngineEvent, LoadSpec, LocalTrack, Notify, Playback, PlayerCommand, RepeatMode,
+};
 use crate::util::uri_kind;
 
 const TICK: Duration = Duration::from_millis(50);
@@ -238,6 +242,7 @@ struct Engine {
     miss_skips: u32,
     seeded_play: bool,
     hydrating: bool,
+    truncated: bool,
     autoplay_for: Option<String>,
     device_retry_at: Option<Instant>,
     device_backoff: Duration,
@@ -283,6 +288,7 @@ async fn run(
         miss_skips: 0,
         seeded_play: false,
         hydrating: false,
+        truncated: false,
         autoplay_for: None,
         device_retry_at: None,
         device_backoff: DEVICE_BACKOFF_INITIAL,
@@ -546,6 +552,7 @@ impl Engine {
     fn start_hydrate(&mut self, spec: LoadSpec) {
         let token = self.bump();
         self.unplayable.clear();
+        self.truncated = spec.truncated;
         let seed = seed_queue(&spec);
         if seed.is_empty() {
             self.session.set_loading();
@@ -729,6 +736,7 @@ impl Engine {
                 self.note_job_done(&uri);
                 self.unplayable.insert(uri.clone(), error.clone());
                 if self.drop_failed_prefetch(&uri, &error) {
+                    self.sync_prefetch();
                     return;
                 }
                 if self.overlap_uri.as_deref() == Some(uri.as_str()) {
@@ -833,6 +841,12 @@ impl Engine {
             }
         };
         self.miss_skips = 0;
+        self.truncated = spec.truncated
+            || if spec.uris.is_empty() {
+                tracks.len() >= MAX_TRACKS
+            } else {
+                spec.uris.len() > MAX_TRACKS
+            };
         let offset = offset_index(&spec, &tracks);
         if self.seeded_play {
             let prev = self.session.current().map(|track| track.uri.clone());
@@ -932,7 +946,12 @@ impl Engine {
     }
 
     fn maybe_autoplay(&mut self) {
-        if !self.config.autoplay || self.hydrating || self.session.peek_next().is_some() {
+        if !self.config.autoplay
+            || self.hydrating
+            || self.truncated
+            || self.session.repeat() != RepeatMode::Off
+            || self.session.peek_next().is_some()
+        {
             return;
         }
         let Some(seed) = self.session.current().cloned() else {
@@ -1132,7 +1151,10 @@ impl Engine {
             self.miss_skips = self.miss_skips.saturating_add(1);
             self.overlap_uri = Some(track.uri.clone());
             self.start_resolve_track(track, false);
-        } else if self.session.playback() != Playback::Playing {
+        } else {
+            if self.session.playback() == Playback::Playing {
+                self.output.stop();
+            }
             self.session.set_error(message);
             self.emit();
         }
@@ -1285,6 +1307,7 @@ impl Engine {
             shuffle: Some(false),
             repeat: crate::player::RepeatMode::Off,
             known_tracks: Vec::new(),
+            truncated: false,
         };
         self.on_hydrated(spec, Ok(tracks));
     }

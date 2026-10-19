@@ -433,12 +433,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 .frame(egui::Frame::NONE)
                                 .desired_width(200.0),
                         );
-                        if response.changed() {
+                        if response.lost_focus() {
                             app.actions.push(Action::SaveProxyPassword);
                         }
                     },
                 );
                 let note = match settings::manual_proxy_address(&app.settings) {
+                    Ok(address) if app.settings.proxy_mode == ProxyMode::Socks5 => format!(
+                        "Spotify playback connects directly; everything else uses {address}. A new proxy is picked up the next time Oxidify starts."
+                    ),
                     Ok(address) => format!(
                         "Connections use {address}. A new proxy is picked up the next time Oxidify starts."
                     ),

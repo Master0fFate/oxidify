@@ -23,6 +23,7 @@ pub mod media_controls;
 #[path = "media_native.rs"]
 pub mod media_controls;
 pub mod model;
+pub mod motion;
 pub mod paths;
 pub mod player;
 pub mod resample;

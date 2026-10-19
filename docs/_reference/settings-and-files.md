@@ -93,9 +93,11 @@ without resetting preferences. Its main fields are:
 
 ### Proxy settings
 
-A manual proxy covers everything Oxidify asks of the network: catalog and
+An `http` proxy covers everything Oxidify asks of the network: catalog and
 playback control through the Web API, and the audio connection itself.
-The proxy password is never written to `settings.json`; it lives alone in
+A `socks5` proxy covers the Web API, artwork, lyrics and alternate
+playback; the audio connection (librespot) only tunnels through HTTP, so
+with `socks5` Spotify playback connects directly. The proxy password is never written to `settings.json`; it lives alone in
 `credentials/proxy-password` with owner-only permissions, and only the
 Web API client carries it. The audio connection (librespot) cannot sign
 in to a proxy, so an authenticating proxy blocks streaming unless it also

@@ -6,10 +6,16 @@ use crate::app::App;
 use crate::model::{Action, Dialog};
 use crate::theme;
 
+use super::widgets;
+
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let Some(dialog) = app.dialog.clone() else {
         return;
     };
+    if let Dialog::CoverArt { url, shown, title } = &dialog {
+        cover_art(app, ctx, url, shown.as_deref(), title);
+        return;
+    }
     let palette = app.palette;
     let frame = Frame::new()
         .fill(palette.overlay)
@@ -28,6 +34,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.set_width(if dialog == Dialog::Jump { 600.0 } else { 420.0 });
             match dialog {
+                Dialog::CoverArt { .. } => {}
                 Dialog::Jump => super::jump::show(app, ui),
                 Dialog::CreatePlaylist { .. } => create_playlist(app, ui),
                 Dialog::EditPlaylist { .. } => edit_playlist(app, ui),
@@ -45,7 +52,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     );
                     ui.add(egui::Label::new(egui::RichText::new(body).font(theme::regular(14.0)).color(palette.secondary)).wrap());
                     ui.add_space(20.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    buttons(ui, |ui| {
                         if theme::pill_button(ui, &palette, "Add anyway", true).clicked() {
                             app.actions.push(Action::AddToPlaylist {
                                 playlist_id,
@@ -70,7 +77,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     };
                     ui.add(egui::Label::new(egui::RichText::new(body).font(theme::regular(14.0)).color(palette.secondary)).wrap());
                     ui.add_space(20.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    buttons(ui, |ui| {
                         if theme::pill_button(ui, &palette, if owned { "Delete" } else { "Remove" }, true).clicked() {
                             app.actions.push(Action::DeletePlaylist(id.clone()));
                         }
@@ -104,7 +111,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             }
                         });
                     ui.add_space(16.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    buttons(ui, |ui| {
                         if theme::pill_button(ui, &palette, "Done", true).clicked() {
                             app.actions.push(Action::CloseDialog);
                         }
@@ -115,6 +122,52 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     if response.should_close() {
         app.actions.push(Action::CloseDialog);
     }
+}
+
+fn cover_art(app: &mut App, ctx: &egui::Context, url: &str, shown: Option<&str>, title: &str) {
+    let palette = app.palette;
+    let side = cover_art_side(ctx.content_rect().size());
+    let response = egui::Modal::new(egui::Id::new("cover-art"))
+        .frame(Frame::new().shadow(egui::epaint::Shadow {
+            offset: [0, 10],
+            blur: 40,
+            spread: 0,
+            color: palette.shadow,
+        }))
+        .backdrop_color(egui::Color32::from_black_alpha(if palette.dark {
+            190
+        } else {
+            150
+        }))
+        .show(ctx, |ui| {
+            let (rect, cover) =
+                ui.allocate_exact_size(egui::Vec2::splat(side), egui::Sense::click());
+            cover.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, title));
+            widgets::paint_cover_from(
+                ui,
+                &palette,
+                &[Some(url), shown],
+                rect,
+                8.0,
+                theme::Icon::Music,
+            );
+            cover.clicked()
+        });
+    if response.inner || response.should_close() {
+        app.actions.push(Action::CloseDialog);
+    }
+}
+
+fn cover_art_side(window: egui::Vec2) -> f32 {
+    (window.x.min(window.y) - 96.0).clamp(120.0, 640.0)
+}
+
+fn buttons(ui: &mut egui::Ui, add_buttons: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+        Layout::right_to_left(Align::Center),
+        add_buttons,
+    );
 }
 
 fn text_field(
@@ -184,7 +237,7 @@ fn create_playlist(app: &mut App, ui: &mut egui::Ui) {
     let name_value = name.trim().to_string();
     let public_value = *public;
     let uris = add_uris.clone();
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+    buttons(ui, |ui| {
         if busy {
             theme::spinner(ui, 18.0, palette.accent);
         } else {
@@ -248,7 +301,7 @@ fn edit_playlist(app: &mut App, ui: &mut egui::Ui) {
     let name_value = name.trim().to_string();
     let description_value = description.trim().to_string();
     let public_value = *public;
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+    buttons(ui, |ui| {
         if busy {
             theme::spinner(ui, 18.0, palette.accent);
         } else {

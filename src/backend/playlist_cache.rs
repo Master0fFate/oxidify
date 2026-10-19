@@ -6,7 +6,7 @@ use tokio::io::AsyncReadExt;
 use crate::api::models::PlaylistItem;
 
 pub(super) const VERSION: u32 = 2;
-pub(super) const MAX_BYTES: usize = 2 * 1024 * 1024;
+pub(super) const MAX_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct CachedPlaylist {

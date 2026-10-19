@@ -78,6 +78,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             key(Modifiers::COMMAND, Key::ArrowRight, Action::Next);
             key(Modifiers::COMMAND, Key::ArrowUp, Action::VolumeBy(5));
             key(Modifiers::COMMAND, Key::ArrowDown, Action::VolumeBy(-5));
+            key(Modifiers::NONE, Key::Space, Action::TogglePlay);
         }
         if !typing {
             key(
@@ -92,8 +93,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             );
             key(Modifiers::SHIFT, Key::ArrowLeft, Action::SeekBy(-10_000));
             key(Modifiers::SHIFT, Key::ArrowRight, Action::SeekBy(10_000));
+            key(Modifiers::NONE, Key::F, Action::ToggleFullscreenLyrics);
             key(Modifiers::NONE, Key::F11, Action::ToggleFullscreenLyrics);
-            key(Modifiers::NONE, Key::Space, Action::TogglePlay);
             key(Modifiers::NONE, Key::M, Action::ToggleMute);
             key(Modifiers::NONE, Key::S, Action::ToggleShuffle);
             key(Modifiers::NONE, Key::R, Action::CycleRepeat);
@@ -175,9 +176,9 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("B", "Like or unlike the playing song"),
     ("S", "Toggle shuffle"),
     ("R", "Cycle repeat"),
-    ("Q", "Show the queue"),
+    ("Q", "Show the queue, also in full-screen lyrics"),
     ("L", "Show the lyrics"),
-    ("F11", "Full-screen lyrics"),
+    ("F  or  F11", "Full-screen lyrics"),
     ("Ctrl+F  or  /", "Search"),
     ("Ctrl+B", "Show or hide the sidebar"),
     ("Alt+←  /  Alt+→", "Back or forward"),

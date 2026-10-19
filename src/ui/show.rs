@@ -30,6 +30,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 ui,
                 Hero {
                     image: pick_image(&show.images, 300),
+                    enlarged: pick_image(&show.images, u32::MAX),
                     liked: false,
                     kind: "Podcast",
                     title: &show.name,
@@ -129,7 +130,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
         }
         Loadable::Loading | Loadable::NotLoaded => {
             ui.add_space(40.0);
-            widgets::loading_row(ui, &palette);
+            widgets::skeleton_rows(ui, &palette, 6);
         }
         Loadable::Failed(error) => {
             let error = error.clone();

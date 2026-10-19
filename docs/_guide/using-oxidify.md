@@ -25,8 +25,9 @@ check, and pressing that opens the **Add to playlist** sheet: a search,
 ones already holding the song under **Saved in** with a check and the rest
 under **Recently updated** with an empty circle. Click rows to tick or
 untick them, Liked Songs included, and **Done** applies every change at
-once; **Cancel** drops them. Enter in the search adds the song to the
-first matching playlist straight away. The same control sits in every
+once; **Cancel** drops them. Typing in the search highlights the first
+playlist that can take the song, Up and Down move the highlight, and Enter
+adds the song to it straight away. The same control sits in every
 track row and in the Now Playing view. While a song plays from a playlist you can edit, the bar's right-click
 menu also offers **Remove from this playlist**.
 Drag the cover or title onto a playlist in Your Library, or between rows of
@@ -142,6 +143,12 @@ follows the visible songs in their displayed order. Clearing a destination
 filter restores the Add to playlist menu's full scrollable height.
 Adding a song that is already in the playlist asks first. Dropping a song on
 Liked Songs saves it. Playlists you follow can be followed and unfollowed.
+When a playlist holds the same song more than once, double-clicking one copy
+starts that copy, and only its row shows as playing. Editing a playlist's
+details sends only what changed; Spotify does not let apps clear a
+description, so an emptied description is kept and Oxidify says so.
+Click the cover at the top of a playlist, album, artist, or podcast page to
+see it enlarged; click again or press `Esc` to close it.
 
 Settings → Appearance chooses the accent, Oxidify's blue or a green, and
 can show track tables as one-line rows without covers;
@@ -154,7 +161,10 @@ dates stay aligned when other rows have dates.
 
 Ctrl+F (or `/`) focuses search from anywhere. Results are grouped into top
 result, songs, artists, albums, playlists, podcasts, and episodes. Use the
-chips to show one type. The empty search page lists recent searches.
+chips to show one type. The empty search page lists recent searches; a query
+typed with pauses leaves one entry. Double-click a song in the results to play
+it on its own, and with Autoplay on, Spotify continues with songs like it.
+With alternate playback the results play in order instead.
 Clearing a previous query keeps your current page open. Typing the next query
 opens Search again.
 
@@ -197,8 +207,13 @@ The microphone button in the player bar (or `L`) opens lyrics for the playing
 track beside the page. For timed lyrics, the current line is
 highlighted and the panel scrolls automatically; click a line to seek to it.
 Manual scrolling pauses automatic following, and **Follow** resumes it.
-The expand button in the panel, or `F11`, shows the lyrics over the whole
-screen; `Esc` or `F11` comes back.
+The sung line stays a fifth of the way down, so the lines still to come
+fill the rest.
+The expand button in the panel, `F`, or `F11` shows the lyrics over the whole
+screen; `Esc`, `F`, or `F11` comes back. From 900 points wide the cover sits
+large beside them, with the title and artists under it, and a song without
+words shows just its cover with the reason beneath. `Q` adds the queue as a
+column on the right; drag its left edge to resize it.
 Oxidify requests lyrics from Spotify when local playback is authorized.
 Otherwise, or when Spotify has no lyrics for a track, it uses
 [LRCLIB](https://lrclib.net), an open database that needs no account. Podcasts
@@ -294,7 +309,7 @@ Connect devices and conflicting media-key handlers.
 | `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
 | `Ctrl+M` | Winamp mini player |
-| `F11` | Full-screen lyrics |
+| `F` or `F11` | Full-screen lyrics |
 | `Ctrl+,` | Settings |
 | `Ctrl+/` or `?` | All shortcuts |
 | `Ctrl+Q` | Quit |

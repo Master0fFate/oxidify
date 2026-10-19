@@ -97,6 +97,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     if app.fullscreen_lyrics {
         lyrics::fullscreen(app, ui);
+        devices::popup(app, ctx);
+        dialogs::show(app, ctx);
         toasts(app, ctx, 16.0);
         return;
     }
@@ -148,7 +150,12 @@ fn page_tint(app: &mut App) -> Option<Color32> {
             .and_then(|page| page.show.get())
             .and_then(|show| pick_image(&show.images, 300))
             .map(str::to_string),
-        Page::LikedSongs => return Some(Color32::from_rgb(0x2b, 0x4c, 0x73)),
+        Page::LikedSongs => {
+            return app
+                .settings
+                .accent_from_art
+                .then_some(Color32::from_rgb(0x2b, 0x4c, 0x73));
+        }
         _ => None,
     };
     if !app.settings.accent_from_art && image.is_some() {
@@ -187,13 +194,14 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                 );
             }
             ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+            ui.spacing_mut().scroll.fade.strength = 0.0;
             let page = app.page().clone();
             // Home's filter chips stay put while the shelves scroll under
             // them, as the official client's do.
             if page == Page::Home {
                 home::filter_row(app, ui);
             }
-            egui::ScrollArea::vertical()
+            let scroll = egui::ScrollArea::vertical()
                 .id_salt(("page", page.encode()))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -224,7 +232,23 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                             }
                         });
                 });
+            header_shadow(ui, scroll.inner_rect, scroll.state.offset.y, palette.dark);
         });
+}
+
+fn header_shadow(ui: &egui::Ui, page: Rect, scrolled: f32, dark: bool) {
+    let depth = (scrolled / 24.0).clamp(0.0, 1.0);
+    if depth <= 0.0 {
+        return;
+    }
+    let strength = if dark { 110.0 } else { 36.0 };
+    let rect = Rect::from_min_size(page.min, vec2(page.width(), 14.0));
+    widgets::paint_vertical_gradient(
+        ui,
+        rect,
+        Color32::from_black_alpha((strength * depth) as u8),
+        Color32::TRANSPARENT,
+    );
 }
 
 pub fn blend(base: Color32, tint: Color32, amount: f32) -> Color32 {

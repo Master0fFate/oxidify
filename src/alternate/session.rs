@@ -267,6 +267,10 @@ impl Session {
         self.repeat = mode;
     }
 
+    pub fn repeat(&self) -> RepeatMode {
+        self.repeat
+    }
+
     pub fn set_loading(&mut self) {
         self.playback = Playback::Loading;
         self.position_at = None;

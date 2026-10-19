@@ -168,6 +168,7 @@ pub struct PagedList<T> {
     pub error: Option<String>,
     pub loaded_once: bool,
     pub revision: u64,
+    pub grown_from: Option<(u64, usize)>,
     /// Offsets requested and not yet answered.
     pub pending: std::collections::BTreeSet<u32>,
     /// Pages that arrived before the ones ahead of them.
@@ -186,6 +187,7 @@ impl<T> Default for PagedList<T> {
             error: None,
             loaded_once: false,
             revision: next_view_revision(),
+            grown_from: None,
             pending: std::collections::BTreeSet::new(),
             parked: std::collections::BTreeMap::new(),
             page_size: 50,
@@ -252,6 +254,7 @@ impl<T> PagedList<T> {
         self.loaded_once = true;
         self.error = None;
         let held = self.items.len() as u32;
+        let before = (self.revision, self.items.len());
         if offset == 0 {
             // A fresh start: whatever was parked belongs to the old list
             // only if it was fetched under the same total; keep it, since
@@ -274,6 +277,7 @@ impl<T> PagedList<T> {
             .retain(|parked, _| *parked > self.items.len() as u32);
         self.settle();
         self.revision = next_view_revision();
+        self.grown_from = (offset > 0 && offset >= held).then_some(before);
     }
 
     /// Works out what is still to come from what is held, parked and in
@@ -301,6 +305,7 @@ impl<T> PagedList<T> {
     {
         self.items.retain(f);
         self.revision = next_view_revision();
+        self.grown_from = None;
     }
 
     pub fn reorder(&mut self, from: usize, to: usize) {
@@ -309,6 +314,7 @@ impl<T> PagedList<T> {
             let insert_at = if to > from { to - 1 } else { to };
             self.items.insert(insert_at.min(self.items.len()), item);
             self.revision = next_view_revision();
+            self.grown_from = None;
         }
     }
 
@@ -322,6 +328,7 @@ impl<T> PagedList<T> {
         self.loaded_once = true;
         self.error = None;
         self.revision = next_view_revision();
+        self.grown_from = None;
     }
 
     /// One page failed: the others in flight keep going, and the failed
@@ -385,6 +392,7 @@ pub type TableItem = (PlayableItem, Option<String>, Option<String>);
 pub struct TableRows {
     pub items_revision: u64,
     pub names_revision: u64,
+    pub source_len: usize,
     pub rows: std::sync::Arc<Vec<TableItem>>,
 }
 
@@ -394,6 +402,7 @@ pub struct Library {
     /// The pages of the playlist list as they come in; `playlists` is
     /// published from it.
     pub playlist_fetch: PagedList<Playlist>,
+    pub playlists_generation: u64,
     /// `playlists` came from disk and the live list is still on its way.
     pub playlists_cached: bool,
     pub liked: PagedList<SavedTrack>,
@@ -503,6 +512,9 @@ pub struct SearchState {
     pub playlists_pending: bool,
     pub filter: SearchFilter,
     pub typed_at: Option<Instant>,
+    pub edit_run: u64,
+    pub committed_run: Option<(u64, bool)>,
+    pub typed_entry: Option<(u64, String)>,
     pub focus_requested: bool,
 }
 
@@ -657,6 +669,11 @@ pub struct DragEntry {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Dialog {
+    CoverArt {
+        url: String,
+        shown: Option<String>,
+        title: String,
+    },
     CreatePlaylist {
         name: String,
         public: bool,
@@ -870,6 +887,7 @@ pub enum Action {
     OpenUrl(String),
     OpenInSpotify(String),
     Search(String),
+    EndSearchRun,
     SetSearchFilter(SearchFilter),
     FocusSearch,
     LoadMore(Page),
@@ -895,6 +913,7 @@ pub enum Action {
     /// Which of Home's shelves to show.
     SetHomeFilter(HomeFilter),
     ToggleFullscreenLyrics,
+    RetryLyrics,
     ToggleDevicesPopup,
     CheckForUpdates,
     SettingsChanged,

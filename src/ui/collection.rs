@@ -7,7 +7,8 @@ use egui::{Align, Layout, Sense, Vec2};
 use crate::api::models::{Album, PlayableItem, Playlist, pick_image};
 use crate::app::App;
 use crate::model::{
-    Action, DragTrack, Loadable, Page, PagedList, RowContext, SortColumn, TableSort,
+    Action, Dialog, DragTrack, Loadable, Page, PagedList, RowContext, SortColumn, TableRows,
+    TableSort,
 };
 use crate::theme::{self, Icon};
 use crate::util;
@@ -16,6 +17,7 @@ use super::widgets::{self, TrackRow};
 
 pub struct Hero<'a> {
     pub image: Option<&'a str>,
+    pub enlarged: Option<&'a str>,
     pub liked: bool,
     pub kind: &'a str,
     pub title: &'a str,
@@ -34,7 +36,29 @@ pub fn hero(app: &mut App, ui: &mut egui::Ui, hero: Hero<'_>) {
     };
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 24.0;
-        let (rect, _) = ui.allocate_exact_size(Vec2::splat(cover_size), Sense::hover());
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::splat(cover_size),
+            if hero.enlarged.is_some() {
+                Sense::click()
+            } else {
+                Sense::hover()
+            },
+        );
+        if let Some(url) = hero.enlarged {
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Enlarge cover")
+            });
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                app.actions.push(Action::ShowDialog(Dialog::CoverArt {
+                    url: url.to_string(),
+                    shown: hero.image.map(str::to_string),
+                    title: hero.title.to_string(),
+                }));
+            }
+        }
         let radius = if hero.round { cover_size / 2.0 } else { 6.0 };
         widgets::paint_shadow(ui, &palette, rect, radius);
         if hero.liked {
@@ -198,7 +222,11 @@ pub fn actions_row(
                 } else {
                     palette.secondary
                 },
-                palette.text,
+                if shuffling_here {
+                    palette.accent_hover
+                } else {
+                    palette.text
+                },
                 if shuffling_here {
                     "Shuffle off"
                 } else if context_here {
@@ -217,20 +245,22 @@ pub fn actions_row(
             }
         }
         if let Some((uri, saved)) = &actions.saved {
-            let (icon, tooltip, color) = if *saved {
+            let (icon, tooltip, color, hover) = if *saved {
                 (
                     actions.saved_icons.1,
                     actions.saved_tooltips.1,
                     palette.accent,
+                    palette.accent_hover,
                 )
             } else {
                 (
                     actions.saved_icons.0,
                     actions.saved_tooltips.0,
                     palette.secondary,
+                    palette.text,
                 )
             };
-            if theme::icon_button(ui, icon, 26.0, color, palette.text, tooltip).clicked() {
+            if theme::icon_button(ui, icon, 26.0, color, hover, tooltip).clicked() {
                 app.actions.push(Action::ToggleSaved(uri.clone()));
             }
         }
@@ -489,7 +519,7 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
                 Some(_) => 4.0,
                 None => 0.0,
             },
-            0.12,
+            crate::motion::seconds(ui.ctx(), 0.12),
         );
         widgets::track_row(
             ui,
@@ -564,8 +594,12 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
         }
     }
     if table.loading {
-        ui.add_space(8.0);
-        widgets::loading_row(ui, &palette);
+        if table.items.is_empty() {
+            widgets::skeleton_rows(ui, &palette, 8);
+        } else {
+            ui.add_space(8.0);
+            widgets::loading_row(ui, &palette);
+        }
     }
     if let Some(error) = table.error {
         ui.add_space(8.0);
@@ -624,68 +658,82 @@ fn view_indices(items: &[TableItem], needle: &str, sort: Option<TableSort>) -> V
         .map(|(index, _)| index)
         .collect();
     if let Some(sort) = sort {
-        // An album's name and, to tell two of the same name apart, its id
-        // or uri; same-named albums stay separate groups.
-        let album_of = |item: &PlayableItem| match item {
-            PlayableItem::Track(track) => track
-                .album
-                .as_ref()
-                .map(|album| {
-                    let key = if album.id.is_empty() {
-                        album.uri.clone()
-                    } else {
-                        album.id.clone()
+        match sort.column {
+            SortColumn::Title => sort_by_text_key(&mut visible, sort.ascending, |index| {
+                items[index].0.name().to_lowercase()
+            }),
+            SortColumn::Album => sort_by_album(&mut visible, sort.ascending, items),
+            SortColumn::AddedBy => sort_by_text_key(&mut visible, sort.ascending, |index| {
+                items[index].2.as_deref().unwrap_or_default().to_lowercase()
+            }),
+            SortColumn::Added | SortColumn::Index | SortColumn::Duration => {
+                visible.sort_by(|a, b| {
+                    let ordering = match sort.column {
+                        SortColumn::Added => items[*a].1.cmp(&items[*b].1),
+                        SortColumn::Index => a.cmp(b),
+                        _ => items[*a].0.duration_ms().cmp(&items[*b].0.duration_ms()),
                     };
-                    (album.name.to_lowercase(), key)
-                })
-                .unwrap_or_default(),
-            PlayableItem::Episode(_) => (String::new(), String::new()),
-        };
-        let place_of = |item: &PlayableItem| match item {
-            PlayableItem::Track(track) => (
-                track.disc_number.unwrap_or(0),
-                track.track_number.unwrap_or(0),
-            ),
-            PlayableItem::Episode(_) => (0, 0),
-        };
-        let duration_of = |item: &PlayableItem| match item {
-            PlayableItem::Track(track) => track.duration_ms,
-            PlayableItem::Episode(episode) => episode.duration_ms,
-        };
-        visible.sort_by(|a, b| {
-            let (item_a, added_a, adder_a) = &items[*a];
-            let (item_b, added_b, adder_b) = &items[*b];
-            let ordering = match sort.column {
-                SortColumn::Title => item_a
-                    .name()
-                    .to_lowercase()
-                    .cmp(&item_b.name().to_lowercase()),
-                SortColumn::Album => {
-                    let albums = album_of(item_a).cmp(&album_of(item_b));
-                    if albums == std::cmp::Ordering::Equal {
-                        // Within an album the songs keep their disc and
-                        // track order, whichever way the albums run.
-                        return place_of(item_a).cmp(&place_of(item_b));
+                    if sort.ascending {
+                        ordering
+                    } else {
+                        ordering.reverse()
                     }
-                    albums
-                }
-                SortColumn::Added => added_a.cmp(added_b),
-                SortColumn::Index => a.cmp(b),
-                SortColumn::AddedBy => adder_a
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .cmp(&adder_b.as_deref().unwrap_or_default().to_lowercase()),
-                SortColumn::Duration => duration_of(item_a).cmp(&duration_of(item_b)),
-            };
-            if sort.ascending {
-                ordering
-            } else {
-                ordering.reverse()
+                });
             }
-        });
+        }
     }
     visible
+}
+
+fn sort_by_text_key(visible: &mut [usize], ascending: bool, key: impl Fn(usize) -> String) {
+    if ascending {
+        visible.sort_by_cached_key(|&index| key(index));
+    } else {
+        visible.sort_by_cached_key(|&index| std::cmp::Reverse(key(index)));
+    }
+}
+
+fn sort_by_album(visible: &mut [usize], ascending: bool, items: &[TableItem]) {
+    let mut keyed: Vec<_> = visible
+        .iter()
+        .map(|&index| {
+            let (name, id, disc, number) = match &items[index].0 {
+                PlayableItem::Track(track) => {
+                    let (name, id) = track
+                        .album
+                        .as_ref()
+                        .map(|album| {
+                            let id = if album.id.is_empty() {
+                                album.uri.as_str()
+                            } else {
+                                album.id.as_str()
+                            };
+                            (album.name.to_lowercase(), id)
+                        })
+                        .unwrap_or_default();
+                    (
+                        name,
+                        id,
+                        track.disc_number.unwrap_or(0),
+                        track.track_number.unwrap_or(0),
+                    )
+                }
+                PlayableItem::Episode(_) => (String::new(), "", 0, 0),
+            };
+            (name, id, disc, number, index)
+        })
+        .collect();
+    keyed.sort_by(|a, b| {
+        let albums = if ascending {
+            (&a.0, a.1).cmp(&(&b.0, b.1))
+        } else {
+            (&b.0, b.1).cmp(&(&a.0, a.1))
+        };
+        albums.then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3))
+    });
+    for (slot, key) in visible.iter_mut().zip(keyed) {
+        *slot = key.4;
+    }
 }
 
 /// Spotify mixes can contain missing dates or the epoch used for unknown
@@ -698,6 +746,36 @@ fn has_added_dates(items: &[TableItem]) -> bool {
     })
 }
 
+const SPOTIFY_USER: &str = "spotify";
+
+fn spotify_owned(owner_id: Option<&str>) -> bool {
+    owner_id == Some(SPOTIFY_USER)
+}
+
+fn other_adders<'a>(
+    owner_id: Option<&str>,
+    contributors: &'a std::collections::BTreeSet<String>,
+    listener: &str,
+) -> Vec<&'a str> {
+    let others = contributors
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !id.is_empty() && Some(*id) != owner_id);
+    if !spotify_owned(owner_id) {
+        return others.collect();
+    }
+    let blended = !listener.is_empty()
+        && contributors.contains(listener)
+        && contributors
+            .iter()
+            .any(|id| !id.is_empty() && id != listener && id != SPOTIFY_USER);
+    if blended {
+        others.collect()
+    } else {
+        Vec::new()
+    }
+}
+
 fn total_duration(items: &[TableItem]) -> u64 {
     items
         .iter()
@@ -705,13 +783,51 @@ fn total_duration(items: &[TableItem]) -> u64 {
         .sum()
 }
 
+struct RowSource {
+    revision: u64,
+    names_revision: u64,
+    grown_from: Option<(u64, usize)>,
+    len: usize,
+}
+
+fn refreshed_rows(
+    held: Option<TableRows>,
+    source: RowSource,
+    build: impl FnOnce(usize) -> Vec<TableItem>,
+) -> TableRows {
+    match held {
+        Some(rows)
+            if rows.items_revision == source.revision
+                && rows.names_revision == source.names_revision =>
+        {
+            rows
+        }
+        held => {
+            let kept = held.filter(|rows| {
+                rows.names_revision == source.names_revision
+                    && source.grown_from == Some((rows.items_revision, rows.source_len))
+            });
+            let (start, mut rows) =
+                kept.map_or((0, Arc::default()), |rows| (rows.source_len, rows.rows));
+            Arc::make_mut(&mut rows).extend(build(start));
+            TableRows {
+                items_revision: source.revision,
+                names_revision: source.names_revision,
+                source_len: source.len,
+                rows,
+            }
+        }
+    }
+}
+
 fn items_of(
     list: &PagedList<crate::api::models::PlaylistItem>,
+    start: usize,
     owner_id: Option<&str>,
     owner_name: &str,
     names: &std::collections::HashMap<String, Option<String>>,
 ) -> Vec<TableItem> {
-    list.items
+    list.items[start..]
         .iter()
         .filter_map(|item| {
             let playable = item.playable().cloned()?;
@@ -751,7 +867,7 @@ pub fn top_songs(app: &mut App, ui: &mut egui::Ui) {
     let tracks = match &app.home.top_songs {
         Loadable::Loaded(tracks) => tracks.clone(),
         Loadable::Loading | Loadable::NotLoaded => {
-            widgets::loading_row(ui, &palette);
+            widgets::skeleton_rows(ui, &palette, 10);
             return;
         }
         Loadable::Failed(error) => {
@@ -808,53 +924,41 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
     };
     match playlist {
         Some(playlist) => {
-            let names_revision = app.user_names_revision;
-            let items = match &page.table_rows {
-                Some(rows)
-                    if rows.items_revision == page.items.revision
-                        && rows.names_revision == names_revision =>
-                {
-                    std::sync::Arc::clone(&rows.rows)
-                }
-                _ => {
-                    let rows = std::sync::Arc::new(items_of(
+            let rows = refreshed_rows(
+                page.table_rows.take(),
+                RowSource {
+                    revision: page.items.revision,
+                    names_revision: app.user_names_revision,
+                    grown_from: page.items.grown_from,
+                    len: page.items.items.len(),
+                },
+                |start| {
+                    items_of(
                         &page.items,
+                        start,
                         playlist.owner.id.as_deref(),
                         playlist.owner_name(),
                         &app.user_names,
-                    ));
-                    page.table_rows = Some(crate::model::TableRows {
-                        items_revision: page.items.revision,
-                        names_revision,
-                        rows: std::sync::Arc::clone(&rows),
-                    });
-                    rows
-                }
-            };
+                    )
+                },
+            );
+            let items = Arc::clone(&rows.rows);
+            page.table_rows = Some(rows);
             let count = playlist.track_total().max(items.len() as u32);
             // Spotify's collaborative flag covers secret collaborations; a
             // playlist made together today is recognised by who added songs.
             let owner_id = playlist.owner.id.as_deref();
-            // Spotify's own playlists carry adder ids of their machinery;
-            // nothing about them is a collaboration.
-            let editorial = owner_id == Some("spotify");
-            let others = if editorial {
-                0
-            } else {
-                page.contributors
-                    .iter()
-                    .filter(|id| !id.is_empty() && Some(id.as_str()) != owner_id)
-                    .count()
-            };
-            let made_together = playlist.collaborative || others > 0;
+            let others = other_adders(owner_id, &page.contributors, &user_id);
+            let made_together = playlist.collaborative || !others.is_empty();
+            let collaborative =
+                playlist.collaborative || (made_together && !spotify_owned(owner_id));
             let mut byline = vec![(playlist.owner_name().to_string(), None)];
-            if others > 0 {
-                let named: Vec<String> = page
-                    .contributors
+            if !others.is_empty() {
+                let named: Vec<String> = others
                     .iter()
-                    .filter(|id| Some(id.as_str()) != owner_id)
-                    .filter_map(|id| app.user_names.get(id)?.clone())
+                    .filter_map(|id| app.user_names.get(*id)?.clone())
                     .collect();
+                let others = others.len();
                 byline.push((
                     if named.len() == others && others <= 2 {
                         format!("with {}", named.join(" and "))
@@ -881,8 +985,9 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 ui,
                 Hero {
                     image: pick_image(&playlist.images, 300),
+                    enlarged: pick_image(&playlist.images, u32::MAX),
                     liked: false,
-                    kind: if made_together {
+                    kind: if collaborative {
                         "Collaborative Playlist"
                     } else if playlist.public == Some(true) {
                         "Public Playlist"
@@ -959,7 +1064,7 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
             }
             _ => {
                 ui.add_space(40.0);
-                widgets::loading_row(ui, &palette);
+                widgets::skeleton_rows(ui, &palette, 8);
             }
         },
     }
@@ -1097,7 +1202,7 @@ pub fn album(app: &mut App, ui: &mut egui::Ui, id: &str) {
         }
         Loadable::Loading | Loadable::NotLoaded => {
             ui.add_space(40.0);
-            widgets::loading_row(ui, &palette);
+            widgets::skeleton_rows(ui, &palette, 8);
         }
         Loadable::Failed(error) => {
             let error = error.clone();
@@ -1139,6 +1244,7 @@ fn album_hero(
         ui,
         Hero {
             image: pick_image(&album.images, 300),
+            enlarged: pick_image(&album.images, u32::MAX),
             liked: false,
             kind: album.kind_label(),
             title: &album.name,
@@ -1151,32 +1257,30 @@ fn album_hero(
 
 pub fn liked(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let revision = app.library.liked.revision;
-    let items = match &app.liked_rows {
-        Some(rows) if rows.items_revision == revision => std::sync::Arc::clone(&rows.rows),
-        _ => {
-            let rows: std::sync::Arc<Vec<TableItem>> = std::sync::Arc::new(
-                app.library
-                    .liked
-                    .items
-                    .iter()
-                    .map(|saved| {
-                        (
-                            PlayableItem::Track(saved.track.clone()),
-                            saved.added_at.clone(),
-                            None,
-                        )
-                    })
-                    .collect(),
-            );
-            app.liked_rows = Some(crate::model::TableRows {
-                items_revision: revision,
-                names_revision: 0,
-                rows: std::sync::Arc::clone(&rows),
-            });
-            rows
-        }
-    };
+    let liked = &app.library.liked;
+    let rows = refreshed_rows(
+        app.liked_rows.take(),
+        RowSource {
+            revision: liked.revision,
+            names_revision: 0,
+            grown_from: liked.grown_from,
+            len: liked.items.len(),
+        },
+        |start| {
+            liked.items[start..]
+                .iter()
+                .map(|saved| {
+                    (
+                        PlayableItem::Track(saved.track.clone()),
+                        saved.added_at.clone(),
+                        None,
+                    )
+                })
+                .collect()
+        },
+    );
+    let items = Arc::clone(&rows.rows);
+    app.liked_rows = Some(rows);
     let total = app.library.liked.total.unwrap_or(items.len() as u32);
     let user = app
         .user
@@ -1197,6 +1301,7 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
         ui,
         Hero {
             image: None,
+            enlarged: None,
             liked: true,
             kind: "Playlist",
             title: "Liked Songs",

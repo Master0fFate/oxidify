@@ -134,14 +134,16 @@ uses the Web API for subsequent control requests.
 
 Outbound traffic follows one proxy setting. `system` (the default) leaves
 routing to environment variables and the platform; `off` connects directly
-no matter what the environment says; `http` and `socks5` route everything
+no matter what the environment says; `http` and `socks5` route traffic
 through one configured proxy. The Web API client signs in to that proxy
 when a user and password are given; the password is read once at startup
-from its own file in the credentials directory and never logged. librespot
-receives the same proxy address but never credentials: its own clients
-cannot carry a proxy sign-in, so streaming needs a proxy that accepts
-anonymous CONNECT. Access-point discovery through `apresolve.spotify.com`
-also goes through the proxy. A changed proxy takes effect on the next
+from its own file in the credentials directory and never logged. With
+`http`, librespot receives the same proxy address but never credentials:
+its own clients cannot carry a proxy sign-in, so streaming needs a proxy
+that accepts anonymous CONNECT, and access-point discovery through
+`apresolve.spotify.com` also goes through the proxy. librespot only speaks
+HTTP CONNECT, so with `socks5` it connects directly and only the Web API,
+artwork, lyrics and alternate playback use the proxy. A changed proxy takes effect on the next
 start; the engine keeps its current routing until then.
 
 ## The engine

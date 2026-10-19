@@ -73,8 +73,7 @@ impl OutputControl {
 
     pub fn discard_queued(&self) {
         self.stale_processing.store(true, Ordering::SeqCst);
-        if let Some(sink) = self.lock().as_ref() {
-            sink.stop();
+        if self.lock().is_some() {
             self.reset.store(true, Ordering::SeqCst);
         }
     }

@@ -89,7 +89,13 @@ getting started, everyday use, and how it connects to Spotify.
 - **Queue** as a side panel or a page; it names what is playing from, and
   anything can be added to it from a row menu.
 - **Lyrics** beside whatever is playing, timed lines that follow the song,
-  from Spotify or [LRCLIB](https://lrclib.net).
+  from Spotify or [LRCLIB](https://lrclib.net). `F` or `F11` fills the window
+  with them, the cover large beside the words, and `Q` adds the queue as a
+  column.
+- **Click a cover** at the top of a playlist, album, artist or podcast page to
+  see it enlarged.
+- **Less motion.** On Windows and macOS, Oxidify follows the system setting
+  for animations and skips its fades and easing when it asks for none.
 - **Album-art colour.** Pages and the player bar can take a tint from the
   cover of what you are looking at or listening to, and the bar fades from
   one song's colour to the next. Turn it off in Settings and the interface
@@ -304,7 +310,7 @@ responsibility; see the section above.
 | `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
 | `Ctrl+M` | Winamp mini player |
-| `F11` | Full-screen lyrics |
+| `F` or `F11` | Full-screen lyrics |
 | `Ctrl+,` | Settings |
 | `Ctrl+/` or `?` | All shortcuts |
 | `Ctrl+Q` | Quit |
@@ -370,7 +376,9 @@ playback fields (`playback_backend`, `piped_api_base`, `ytdlp_path`,
 (`proxy_mode`, `proxy_host`, `proxy_port`, `proxy_username`). A proxy
 carries everything Oxidify asks of the network: `system` follows the
 environment and platform settings, `off` connects directly no matter
-what, `http` and `socks5` use one named proxy. Its optional password
+what, `http` and `socks5` use one named proxy. Spotify playback itself
+can only tunnel through `http`; with `socks5` it connects directly while
+the Web API, artwork, lyrics and alternate playback use the proxy. Its optional password
 never sits in the settings file; it is kept alone, with owner-only
 permissions, in the credentials directory. A changed proxy applies the
 next time Oxidify starts.

@@ -762,7 +762,7 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                             _ => 0.0,
                         }
                     },
-                    0.12,
+                    crate::motion::seconds(ui.ctx(), 0.12),
                 );
                 let rect = rect.translate(vec2(0.0, shift));
                 if ui.is_rect_visible(rect) {

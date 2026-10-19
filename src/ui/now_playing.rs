@@ -84,10 +84,12 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
                     palette.text,
                     "More",
                 );
-                let context = app.playing_editable_context(item.uri());
                 egui::Popup::menu(&more)
                     .frame(widgets::menu_frame(&palette))
-                    .show(|ui| widgets::item_menu(ui, app, &item, context.as_ref(), None));
+                    .show(|ui| {
+                        let context = app.playing_editable_context(item.uri());
+                        widgets::item_menu(ui, app, &item, context.as_ref(), None)
+                    });
             }
         });
     });

@@ -287,7 +287,7 @@ pub fn apply(ctx: &egui::Context, palette: &Palette) {
     };
     style.interaction.selectable_labels = false;
     style.interaction.tooltip_delay = 0.4;
-    style.animation_time = 0.12;
+    style.animation_time = crate::motion::ANIMATION_TIME;
     style.url_in_tooltip = false;
     ctx.set_global_style(style);
 }
@@ -585,6 +585,8 @@ pub fn paint_icon(ui: &egui::Ui, icon: Icon, rect: egui::Rect, size: f32, color:
     icon.image(color, size).paint_at(ui, icon_rect);
 }
 
+pub const ICON_BUTTON_PAD: f32 = 12.0;
+
 /// A frameless icon control whose colour lifts on hover.
 pub fn icon_button(
     ui: &mut egui::Ui,
@@ -594,7 +596,7 @@ pub fn icon_button(
     hover: Color32,
     tooltip: &str,
 ) -> Response {
-    let edge = size + 12.0;
+    let edge = size + ICON_BUTTON_PAD;
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(edge), Sense::click());
     if ui.is_rect_visible(rect) {
         let tint = if response.hovered() || response.has_focus() {

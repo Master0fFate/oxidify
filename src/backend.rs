@@ -25,6 +25,7 @@ use crate::images::{ArtLoader, accent_color};
 use crate::paths::AppDirs;
 use crate::player::{
     Engine, EngineConfig, EngineEvent, Heard, LoadSpec, LocalState, Playback, PlayerCommand,
+    RepeatMode,
 };
 use crate::settings::{PlaybackBackend, ProxySetting};
 
@@ -34,6 +35,7 @@ const PREMIUM_NEEDED: &str = "Local playback needs Spotify Premium.";
 const REJECTED_GRANT: &str = "Spotify rejected the saved sign-in. Please sign in again.";
 const ENGINE_RETRY_DELAYS: [u64; 6] = [5, 15, 60, 120, 300, 600];
 const ENGINE_CONNECT_TIMEOUT: Duration = Duration::from_secs(75);
+const RESUME_WINDOW: Duration = Duration::from_secs(120);
 pub const PLAYLIST_PAGE_SIZE: u32 = 50;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -89,6 +91,7 @@ pub enum ApiRequest {
     },
     MyPlaylists {
         offset: u32,
+        generation: u64,
     },
     Playlist {
         id: String,
@@ -294,6 +297,7 @@ pub enum ApiResponse {
     },
     MyPlaylists {
         offset: u32,
+        generation: u64,
         result: ApiResult<Page<Playlist>>,
     },
     Playlist {
@@ -863,7 +867,7 @@ struct Worker {
     authorizing_source: Option<ApiSource>,
     pending_authorization: Option<ApiSource>,
     reconnects: Vec<Instant>,
-    resume: Option<LoadSpec>,
+    resume: Option<(LoadSpec, Instant)>,
     engine_retries: usize,
     engine_retry_generation: u64,
     engine_retry_quiet: bool,
@@ -1006,7 +1010,7 @@ impl Worker {
                 }
                 Command::AccountChecked { premium } => self.on_account_checked(premium),
                 Command::SessionDropped { resume } => {
-                    self.resume = resume;
+                    self.resume = resume.map(|spec| (spec, Instant::now()));
                     self.reconnect_engine();
                 }
                 Command::Reconnect => self.reconnect_engine(),
@@ -1379,7 +1383,7 @@ impl Worker {
             }
             match event {
                 EngineEvent::State(state) => {
-                    if state.track.is_some() {
+                    if state.connected && state.track.is_some() {
                         *last.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
                             Some(state.clone());
                     }
@@ -1719,7 +1723,9 @@ impl Worker {
                 let device_id = engine.device_id().to_string();
                 self.heard = Some(engine.heard());
                 let engine = Arc::new(engine);
-                if let Some(resume) = self.resume.take() {
+                if let Some((resume, dropped_at)) = self.resume.take()
+                    && dropped_at.elapsed() < RESUME_WINDOW
+                {
                     self.apply_resume(&engine, resume);
                 }
                 self.engine = Some(engine);
@@ -2364,8 +2370,9 @@ async fn handle(api: &ApiGateway, request: ApiRequest) -> (ApiResponse, Option<A
                 result,
             }
         }
-        ApiRequest::MyPlaylists { offset } => ApiResponse::MyPlaylists {
+        ApiRequest::MyPlaylists { offset, generation } => ApiResponse::MyPlaylists {
             offset,
+            generation,
             result: routed!(my_playlists(offset, 50)),
         },
         ApiRequest::Playlist { id, generation } => ApiResponse::Playlist {
@@ -2664,7 +2671,10 @@ fn resume_spec(state: &LocalState) -> Option<LoadSpec> {
         position_ms: state.position_now(),
         play: state.playback == Playback::Playing,
         shuffle: Some(state.shuffle),
-        repeat: state.repeat,
+        repeat: match state.repeat {
+            RepeatMode::Context => RepeatMode::Off,
+            mode => mode,
+        },
         known_tracks: vec![track.clone()],
         ..LoadSpec::default()
     })
@@ -2850,7 +2860,13 @@ mod tests {
                 .background()
             );
         }
-        assert!(ApiRequest::MyPlaylists { offset: 0 }.background());
+        assert!(
+            ApiRequest::MyPlaylists {
+                offset: 0,
+                generation: 0
+            }
+            .background()
+        );
     }
 
     #[test]

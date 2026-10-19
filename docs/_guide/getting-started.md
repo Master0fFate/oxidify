@@ -101,7 +101,7 @@ skipping.
   turn this off.
 - **Play requests show their progress.** A pressed play button spins until
   Spotify responds.
-- **Common actions have shortcuts.** Space plays and pauses, Ctrl+F or `/`
+- **Common actions have shortcuts.** Space plays and pauses (even when a button has focus), Ctrl+F or `/`
   searches, and `Q` opens the queue. Ctrl+/ shows the full list.
 - **Rows and cards have context menus.** Right-click a song, playlist, album,
   or artist to see actions such as queue, save, add to playlist, and copy link.

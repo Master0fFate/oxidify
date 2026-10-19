@@ -41,6 +41,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 ui,
                 Hero {
                     image: pick_image(&artist.images, 300),
+                    enlarged: pick_image(&artist.images, u32::MAX),
                     liked: false,
                     kind: "Artist",
                     title: &artist.name,
@@ -148,7 +149,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 Loadable::Loaded(_) => {
                     theme::subtle(ui, &palette, "No popular songs to show.");
                 }
-                Loadable::Loading | Loadable::NotLoaded => widgets::loading_row(ui, &palette),
+                Loadable::Loading | Loadable::NotLoaded => widgets::skeleton_rows(ui, &palette, 5),
                 Loadable::Failed(error) => {
                     let error = error.clone();
                     widgets::error_row(ui, app, &error, None);
@@ -219,7 +220,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
                         }
                     }
                 }
-                None => widgets::loading_row(ui, &palette),
+                None => widgets::grid(ui, |ui| widgets::skeleton_cards(ui, &palette, 6, false)),
             }
             ui.add_space(20.0);
 
@@ -255,7 +256,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
         }
         Loadable::Loading | Loadable::NotLoaded => {
             ui.add_space(40.0);
-            widgets::loading_row(ui, &palette);
+            widgets::skeleton_rows(ui, &palette, 5);
         }
         Loadable::Failed(error) => {
             let error = error.clone();

@@ -8,8 +8,8 @@ use egui::Color32;
 use crate::alternate::{AlternateConfig, MAX_QUEUE_TRACKS, local_from_track};
 use crate::api::PlayRequest;
 use crate::api::models::{
-    Album, ArtistRef, Device, PlayableItem, PlaybackState, Playlist, Queue, SavedTrack, Track,
-    User, pick_image,
+    Album, ArtistRef, Device, PlayableItem, PlaybackState, Playlist, PlaylistItem, Queue,
+    SavedTrack, Track, User, pick_image,
 };
 use crate::backend::{
     ApiRequest, ApiResponse, AuthStatus, Backend, Command, Event, LocalPlayback, LyricsRequest,
@@ -141,6 +141,20 @@ struct PendingAlbumQueue {
     device_id: Option<String>,
 }
 
+struct PlayedRow {
+    context: String,
+    view: bool,
+    index: u32,
+    uri: String,
+}
+
+struct PlaylistDetailChanges {
+    name: Option<String>,
+    description: Option<String>,
+    public: Option<bool>,
+    kept_description: bool,
+}
+
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
@@ -250,7 +264,9 @@ pub struct App {
     pub show_lyrics_panel: bool,
     /// The Now Playing view is open beside the page.
     pub show_now_playing_panel: bool,
+    pub motion: crate::motion::Motion,
     pub fullscreen_lyrics: bool,
+    fullscreen_reached: bool,
     /// The track the lyrics below are for.
     pub lyrics_uri: Option<String>,
     /// `Loaded(None)` when nobody has transcribed the track.
@@ -305,6 +321,7 @@ pub struct App {
     /// The track a play just asked for, marked current at once; the
     /// engine's report (or time) hands back to the reported state.
     intent_track: Option<(String, Instant)>,
+    played_row: Option<PlayedRow>,
     /// Shuffle as the listener set it: a mode, not a property of one
     /// context. Every play of a context applies it until turned off.
     shuffle_wanted: bool,
@@ -503,7 +520,9 @@ impl App {
             show_queue_panel: session.queue_open.unwrap_or(false),
             show_lyrics_panel: false,
             show_now_playing_panel: session.now_playing_open.unwrap_or(false),
+            motion: crate::motion::Motion::default(),
             fullscreen_lyrics: false,
+            fullscreen_reached: false,
             lyrics_uri: None,
             lyrics: Loadable::NotLoaded,
             lyrics_following: true,
@@ -535,6 +554,7 @@ impl App {
             pending_local_volume: None,
             optimistic_playing: None,
             intent_track: None,
+            played_row: None,
             shuffle_wanted: session.shuffle_on,
             repeat_wanted: RepeatMode::from_api(&session.repeat),
             keeping_awake: false,
@@ -804,6 +824,75 @@ impl App {
         self.current_track_uri_str().map(str::to_string)
     }
 
+    pub fn row_is_played_copy(&self, context: &RowContext, index: usize, uri: &str) -> bool {
+        let Some(played) = self.played_row.as_ref().filter(|played| played.uri == uri) else {
+            return true;
+        };
+        let applies = match context {
+            RowContext::Context {
+                uri: context_uri, ..
+            } => {
+                !played.view
+                    && played.context == *context_uri
+                    && self.playlist_row_holds(context_uri, played.index, uri) != Some(false)
+            }
+            RowContext::View {
+                uris, context_uri, ..
+            } => {
+                played.view
+                    && played.context == *context_uri
+                    && uris
+                        .get(played.index as usize)
+                        .is_some_and(|held| held == uri)
+            }
+            RowContext::Uris(_) => false,
+        };
+        !applies || played.index as usize == index
+    }
+
+    fn playlist_row(&self, context_uri: &str, position: u32) -> Option<&PlaylistItem> {
+        let id = context_uri.strip_prefix("spotify:playlist:")?;
+        self.playlist_pages
+            .get(id)?
+            .items
+            .items
+            .get(position as usize)
+    }
+
+    fn playlist_row_holds(&self, context_uri: &str, position: u32, uri: &str) -> Option<bool> {
+        let row = self.playlist_row(context_uri, position)?;
+        Some(row.playable().is_some_and(|item| item.uri() == uri))
+    }
+
+    fn repeated_row_position(&self, context_uri: &str, uri: &str, index: u32) -> Option<u32> {
+        if self.alternate_local() {
+            return None;
+        }
+        let id = context_uri.strip_prefix("spotify:playlist:")?;
+        let rows = &self.playlist_pages.get(id)?.items.items;
+        let row = rows.get(index as usize)?;
+        let holds = |row: &PlaylistItem| row.playable().is_some_and(|item| item.uri() == uri);
+        let counted = |row: &PlaylistItem| {
+            !row.is_local
+                && row.playable().is_some_and(|item| {
+                    !item.uri().is_empty()
+                        && !matches!(item, PlayableItem::Track(track) if track.is_local)
+                })
+        };
+        let repeated = rows.iter().filter(|row| holds(row)).count() > 1;
+        (holds(row) && repeated && rows[..index as usize].iter().all(counted)).then_some(index)
+    }
+
+    fn playlist_track_at(&self, context_uri: &str, position: u32) -> Option<String> {
+        let row = self.playlist_row(context_uri, position)?;
+        let item = row.playable()?;
+        (!row.is_local
+            && !item.uri().is_empty()
+            && !matches!(item, PlayableItem::Track(track)
+                if track.is_local || track.is_playable == Some(false)))
+        .then(|| item.uri().to_string())
+    }
+
     /// Whether `uri` is the context being played, or paused in, now.
     pub fn is_current_context(&self, uri: &str) -> bool {
         self.playing_context_uri()
@@ -1010,6 +1099,9 @@ impl App {
     }
 
     pub fn set_user_name(&mut self, id: String, name: Option<String>) {
+        if name.is_none() && self.user_names.get(&id).is_some_and(Option::is_some) {
+            return;
+        }
         if self.user_names.get(&id) != Some(&name) {
             self.user_names.insert(id, name);
             self.user_names_revision = crate::model::next_view_revision();
@@ -1289,7 +1381,10 @@ impl App {
     }
 
     fn reset_data(&mut self) {
-        self.library = Library::default();
+        self.library = Library {
+            playlists_generation: self.library.playlists_generation,
+            ..Library::default()
+        };
         self.home = HomeData::default();
         self.user_names_revision = crate::model::next_view_revision();
         self.playlist_pages.clear();
@@ -1304,6 +1399,8 @@ impl App {
         self.devices_fetched_at = None;
         self.search.results = Loadable::NotLoaded;
         self.search.committed.clear();
+        self.search.committed_run = None;
+        self.search.typed_entry = None;
         self.pending_album = None;
     }
 
@@ -1331,7 +1428,10 @@ impl App {
                 self.backend
                     .player(PlayerCommand::Repeat(self.repeat_wanted));
             }
-        } else if state.track.is_some() && state.repeat != self.repeat_wanted {
+        } else if state.track.is_some()
+            && state.repeat != self.local.repeat
+            && state.repeat != self.repeat_wanted
+        {
             self.repeat_wanted = state.repeat;
             self.session_dirty = true;
         }
@@ -1460,7 +1560,7 @@ impl App {
         {
             self.refresh_queue(true);
         }
-        if self.show_lyrics_panel {
+        if self.show_lyrics_panel || self.fullscreen_lyrics {
             self.request_lyrics();
         }
         if self.show_now_playing_panel {
@@ -1547,6 +1647,13 @@ impl App {
         }
         self.toasts
             .retain(|toast| toast.created.elapsed() < TOAST_LIFETIME);
+        if self
+            .played_row
+            .as_ref()
+            .is_some_and(|played| self.current_track_uri_str() != Some(played.uri.as_str()))
+        {
+            self.played_row = None;
+        }
 
         if self.settings.check_for_updates
             && !self.offline
@@ -1598,7 +1705,7 @@ impl App {
             if typed.elapsed() >= SEARCH_DEBOUNCE {
                 self.search.typed_at = None;
                 let query = self.search.query.trim().to_string();
-                self.run_search(query);
+                self.run_typed_search(query);
             } else {
                 ctx.request_repaint_after(SEARCH_DEBOUNCE - typed.elapsed());
             }
@@ -1609,6 +1716,7 @@ impl App {
             self.backend.art().evict_stale(ctx);
         }
         self.sync_skin(ctx);
+        self.sync_motion(ctx, now);
         if self.settings_dirty && self.last_settings_save.elapsed() > Duration::from_secs(2) {
             self.save_settings();
         }
@@ -1704,10 +1812,17 @@ impl App {
             }
             .with_accent(accent);
             theme::apply(ctx, &self.palette);
+            crate::motion::apply(ctx, self.motion.reduced());
             self.applied_dark = Some(dark);
             self.applied_accent = Some(accent);
             self.accents.clear();
             self.accent_pending.clear();
+        }
+    }
+
+    fn sync_motion(&mut self, ctx: &egui::Context, now: Instant) {
+        if self.motion.refresh(now) {
+            crate::motion::apply(ctx, self.motion.reduced());
         }
     }
 
@@ -1959,6 +2074,7 @@ impl App {
             self.library.playlists = Loadable::Loading;
         }
         self.library.playlist_fetch.reset();
+        self.library.playlists_generation += 1;
         self.fill_ahead(Page::Home, false);
     }
 
@@ -2029,7 +2145,10 @@ impl App {
                     .playlist_fetch
                     .fill_ahead(PAGE_WINDOW, u32::MAX)
                 {
-                    self.backend.api(ApiRequest::MyPlaylists { offset });
+                    self.backend.api(ApiRequest::MyPlaylists {
+                        offset,
+                        generation: self.library.playlists_generation,
+                    });
                 }
             }
             _ => {}
@@ -2456,6 +2575,7 @@ impl App {
         }
         self.search.serial += 1;
         self.search.committed = query.clone();
+        self.search.committed_run = None;
         self.search.catalogue_pending = true;
         self.search.playlists_pending = true;
         if self.search.results.get().is_none() {
@@ -2465,6 +2585,47 @@ impl App {
             query,
             serial: self.search.serial,
         });
+    }
+
+    fn run_typed_search(&mut self, query: String) {
+        let serial = self.search.serial;
+        self.run_search(query);
+        if self.search.serial != serial {
+            self.search.committed_run = Some((self.search.edit_run, true));
+        }
+    }
+
+    fn submit_typed_search(&mut self, query: String) {
+        let run = self.search.edit_run;
+        self.search.edit_run += 1;
+        let committing = !query.is_empty();
+        self.run_search(query);
+        if committing {
+            self.search.committed_run = Some((run, false));
+        }
+    }
+
+    fn remember_search(&mut self, query: &str) {
+        let query = query.trim();
+        if let Some((run, typing)) = self.search.committed_run
+            && self.search.typed_entry != Some((run, query.to_string()))
+        {
+            if let Some((entry_run, entry)) = self.search.typed_entry.take()
+                && entry_run == run
+                && (query.starts_with(entry.as_str()) || entry.starts_with(query))
+                && self.settings.search_history.first() == Some(&entry)
+            {
+                self.settings.search_history.remove(0);
+            }
+            let added = !self
+                .settings
+                .search_history
+                .iter()
+                .any(|entry| entry == query);
+            self.search.typed_entry = (typing && added).then(|| (run, query.to_string()));
+        }
+        self.settings.remember_search(query);
+        self.settings_dirty = true;
     }
 
     /// One half of a search has landed. The first half of a search
@@ -2496,8 +2657,7 @@ impl App {
                         .map(|track| track.uri.clone())
                         .collect();
                     self.request_contains(uris);
-                    self.settings.remember_search(query);
-                    self.settings_dirty = true;
+                    self.remember_search(query);
                 }
                 let same_search = self.search.results_serial == serial;
                 match self.search.results.get_mut().filter(|_| same_search) {
@@ -2882,7 +3042,11 @@ impl App {
                     self.home.discover = std::mem::take(&mut self.home.discover_pending);
                 }
             }
-            ApiResponse::MyPlaylists { offset, result } => match result {
+            ApiResponse::MyPlaylists {
+                offset, generation, ..
+            } if generation != self.library.playlists_generation
+                || !self.library.playlist_fetch.pending.contains(&offset) => {}
+            ApiResponse::MyPlaylists { offset, result, .. } => match result {
                 Ok(page) => {
                     for playlist in &page.items {
                         self.saved.insert(playlist.uri.clone(), true);
@@ -3786,6 +3950,7 @@ impl App {
             shuffle,
             repeat: self.repeat_wanted,
             known_tracks: Vec::new(),
+            truncated: false,
         };
         if self.alternate_local() {
             self.fill_known_tracks(&mut spec);
@@ -3813,6 +3978,7 @@ impl App {
             return;
         };
         let start = if offset < MAX_QUEUE_TRACKS { 0 } else { offset };
+        let total = rows.len();
         let window: Vec<LocalTrack> = rows
             .into_iter()
             .skip(start)
@@ -3833,9 +3999,10 @@ impl App {
                 local
             })
             .collect();
-        if complete || window.len() == MAX_QUEUE_TRACKS {
+        if complete || window.len() == MAX_QUEUE_TRACKS || start > 0 {
             spec.uris = window.iter().map(|track| track.uri.clone()).collect();
             spec.offset_index = Some((offset - start) as u32);
+            spec.truncated = !complete || start + window.len() < total;
         }
         spec.known_tracks = window;
     }
@@ -3948,6 +4115,7 @@ impl App {
         // whichever playlist it starts. A chosen row still starts the
         // play; without one, a random song does.
         let mut request = request;
+        self.played_row = None;
         if shuffle_first {
             self.shuffle_wanted = true;
             self.shuffle_set_at = Some(Instant::now());
@@ -3967,6 +4135,14 @@ impl App {
         }
         if let Some(offset) = &request.offset_uri {
             keys.push(offset.clone());
+        } else if request.uris.is_empty()
+            && let Some(position) = request.offset_position
+            && let Some(uri) = request
+                .context_uri
+                .as_deref()
+                .and_then(|context| self.playlist_track_at(context, position))
+        {
+            keys.push(uri);
         }
         match request.offset_position {
             // The play starts at a chosen row; only that row is starting.
@@ -4590,7 +4766,7 @@ impl App {
             self.toast_error(format!("No songs of {} can be queued", pending.label));
             return;
         }
-        if pending.device_id.is_none() {
+        if self.alternate_local() {
             for track in &tracks {
                 self.backend
                     .player(PlayerCommand::AddToQueue(local_from_track(track)));
@@ -4729,26 +4905,59 @@ impl App {
                     }
                     return;
                 }
-                let (mut request, view_context) = match context {
+                let (mut request, view_context, played) = match context {
                     RowContext::Context {
                         uri: context_uri, ..
-                    } => (PlayRequest::context(context_uri).starting_at_uri(uri), None),
+                    } => {
+                        let request = match self.repeated_row_position(&context_uri, &uri, index) {
+                            Some(position) => PlayRequest::context(context_uri.clone())
+                                .starting_at_index(position),
+                            None => PlayRequest::context(context_uri.clone())
+                                .starting_at_uri(uri.clone()),
+                        };
+                        let played = PlayedRow {
+                            context: context_uri,
+                            view: false,
+                            index,
+                            uri,
+                        };
+                        (request, None, Some(played))
+                    }
                     RowContext::Uris(uris) => {
+                        let index = if uris.get(index as usize).is_some_and(|held| *held == uri) {
+                            index
+                        } else {
+                            uris.iter()
+                                .position(|held| *held == uri)
+                                .map_or(index, |position| position as u32)
+                        };
                         let (uris, index) = cap_uris(uris, index);
-                        (PlayRequest::tracks(uris).starting_at_index(index), None)
+                        (
+                            PlayRequest::tracks(uris).starting_at_index(index),
+                            None,
+                            None,
+                        )
                     }
                     RowContext::View {
                         uris, context_uri, ..
                     } => {
+                        let played = uris.get(index as usize).cloned().map(|uri| PlayedRow {
+                            context: context_uri.clone(),
+                            view: true,
+                            index,
+                            uri,
+                        });
                         let (uris, index) = cap_uris(uris, index);
                         (
                             PlayRequest::tracks(uris).starting_at_index(index),
                             Some(context_uri),
+                            played,
                         )
                     }
                 };
                 request.position_ms = resume_ms.unwrap_or(0);
                 self.play_request(request, false);
+                self.played_row = played;
                 if let Some(context_uri) = view_context {
                     self.note_recent_context(&context_uri);
                     self.assumed_context = Some(AssumedContext {
@@ -4935,13 +5144,24 @@ impl App {
                 public,
             } => {
                 self.dialog = None;
-                self.playlist_busy = true;
-                self.backend.api(ApiRequest::UpdatePlaylist {
-                    id,
-                    name: Some(name),
-                    description: Some(description),
-                    public: Some(public),
-                });
+                let changes = self.changed_playlist_details(&id, name, description, public);
+                if changes.kept_description {
+                    self.toast_error(
+                        "Spotify doesn't let apps remove a playlist description, so it was kept",
+                    );
+                }
+                if changes.name.is_some()
+                    || changes.description.is_some()
+                    || changes.public.is_some()
+                {
+                    self.playlist_busy = true;
+                    self.backend.api(ApiRequest::UpdatePlaylist {
+                        id,
+                        name: changes.name,
+                        description: changes.description,
+                        public: changes.public,
+                    });
+                }
             }
             Action::DeletePlaylist(id) => {
                 self.dialog = None;
@@ -4987,11 +5207,18 @@ impl App {
                 }
             }
             Action::Search(query) => {
+                let typed = query == self.search.query;
                 self.search.query = query.clone();
                 self.search.typed_at = None;
                 self.open(Page::Search);
-                self.run_search(query.trim().to_string());
+                if typed {
+                    self.submit_typed_search(query.trim().to_string());
+                } else {
+                    self.search.edit_run += 1;
+                    self.run_search(query.trim().to_string());
+                }
             }
+            Action::EndSearchRun => self.search.edit_run += 1,
             Action::SetSearchFilter(filter) => self.search.filter = filter,
             Action::FocusSearch => {
                 self.search.focus_requested = true;
@@ -5081,12 +5308,11 @@ impl App {
                 self.note_session_change();
             }
             Action::SetHomeFilter(filter) => self.home.filter = filter,
+            Action::RetryLyrics => self.request_lyrics(),
             Action::ToggleFullscreenLyrics => {
                 self.fullscreen_lyrics = !self.fullscreen_lyrics;
+                self.fullscreen_reached = false;
                 if self.fullscreen_lyrics {
-                    self.show_lyrics_panel = true;
-                    self.show_queue_panel = false;
-                    self.show_now_playing_panel = false;
                     self.lyrics_following = true;
                     self.request_lyrics();
                 }
@@ -5304,6 +5530,40 @@ impl App {
         }
     }
 
+    fn changed_playlist_details(
+        &self,
+        id: &str,
+        name: String,
+        description: String,
+        public: bool,
+    ) -> PlaylistDetailChanges {
+        let original = self
+            .playlist_pages
+            .get(id)
+            .and_then(|page| page.playlist.get())
+            .or_else(|| {
+                self.library
+                    .playlists
+                    .get()
+                    .and_then(|playlists| playlists.iter().find(|playlist| playlist.id == id))
+            });
+        let original_description = original
+            .and_then(|playlist| playlist.description.as_deref())
+            .map(util::strip_html)
+            .unwrap_or_default();
+        let cleared = description.is_empty();
+        PlaylistDetailChanges {
+            name: original
+                .is_none_or(|playlist| playlist.name != name)
+                .then_some(name),
+            kept_description: cleared && !original_description.is_empty(),
+            description: (!cleared && description != original_description).then_some(description),
+            public: original
+                .is_none_or(|playlist| playlist.public != Some(public))
+                .then_some(public),
+        }
+    }
+
     pub fn toast(&mut self, message: impl Into<String>) {
         self.toasts.push(Toast {
             message: message.into(),
@@ -5517,6 +5777,16 @@ impl App {
             }
             if let Some(rect) = ctx.input(|input| input.viewport().outer_rect) {
                 self.last_window_pos = Some([rect.min.x, rect.min.y]);
+            }
+            if self.fullscreen_lyrics {
+                match ctx.input(|input| input.viewport().fullscreen) {
+                    Some(true) => self.fullscreen_reached = true,
+                    Some(false) if self.fullscreen_reached => {
+                        self.fullscreen_lyrics = false;
+                        self.fullscreen_reached = false;
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -5741,7 +6011,7 @@ pub fn engine_config(
         volume_dir: dirs.volume_dir(),
         audio_cache_dir: settings.audio_cache.then(|| dirs.audio_cache_dir()),
         audio_cache_limit: Some(settings.audio_cache_mb.max(64) * 1024 * 1024),
-        proxy: if settings.proxy_mode.is_manual() {
+        proxy: if settings.proxy_mode == settings::ProxyMode::Http {
             match settings::manual_proxy_address(settings) {
                 Ok(address) => Some(address),
                 Err(error) => {
@@ -6552,6 +6822,7 @@ mod tests {
         assert_eq!(app.library.playlists.get().map(Vec::len), Some(1));
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
+            generation: app.library.playlists_generation,
             result: Ok(list_page(0, 80)),
         });
         assert_eq!(
@@ -6561,6 +6832,7 @@ mod tests {
         );
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 50,
+            generation: app.library.playlists_generation,
             result: Ok(list_page(50, 80)),
         });
         assert_eq!(app.library.playlists.get().map(Vec::len), Some(80));

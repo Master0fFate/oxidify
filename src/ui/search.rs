@@ -25,7 +25,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let results = match &app.search.results {
         Loadable::Loaded(results) => results.clone(),
         Loadable::Loading | Loadable::NotLoaded => {
-            widgets::loading_row(ui, &palette);
+            widgets::skeleton_rows(ui, &palette, 6);
             return;
         }
         Loadable::Failed(error) => {
@@ -357,8 +357,10 @@ fn songs(app: &mut App, ui: &mut egui::Ui, results: &SearchResults, limit: usize
     }
     theme::section_title(ui, &palette, "Songs");
     ui.add_space(4.0);
-    let uris: Vec<String> = page.items.iter().map(|track| track.uri.clone()).collect();
-    let context = RowContext::Uris(uris);
+    let results = app.alternate_local().then(|| {
+        let uris: Vec<String> = page.items.iter().map(|track| track.uri.clone()).collect();
+        RowContext::Uris(uris)
+    });
     let items: Vec<PlayableItem> = page
         .items
         .iter()
@@ -366,6 +368,14 @@ fn songs(app: &mut App, ui: &mut egui::Ui, results: &SearchResults, limit: usize
         .map(PlayableItem::Track)
         .collect();
     for (index, item) in items.iter().take(limit).enumerate() {
+        let own;
+        let context = match &results {
+            Some(results) => results,
+            None => {
+                own = RowContext::Uris(vec![item.uri().to_string()]);
+                &own
+            }
+        };
         widgets::track_row(
             ui,
             app,
@@ -373,7 +383,7 @@ fn songs(app: &mut App, ui: &mut egui::Ui, results: &SearchResults, limit: usize
                 index,
                 number: None,
                 item,
-                context: &context,
+                context,
                 show_cover: true,
                 show_album: limit == usize::MAX,
                 added_at: None,
