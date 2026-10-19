@@ -211,6 +211,7 @@ pub struct LoadSpec {
     pub position_ms: u32,
     pub play: bool,
     pub shuffle: Option<bool>,
+    pub repeat: RepeatMode,
     /// Already-known title/artist/duration. Alternate playback uses this to
     /// skip a redundant Spotify track fetch. Premium Connect ignores it.
     pub known_tracks: Vec<LocalTrack>,
@@ -351,6 +352,7 @@ impl Engine {
             {
                 let mut current = ended_state.lock().unwrap_or_else(|p| p.into_inner());
                 current.connected = false;
+                current.loading = false;
                 current.playback = Playback::Stopped;
                 current.position_at = None;
                 ended_notify(EngineEvent::State(current.clone()));
@@ -462,12 +464,11 @@ impl Engine {
                     .clone()
                     .map(PlayingTrack::Uri)
                     .or_else(|| spec.offset_index.map(PlayingTrack::Index));
-                let context_options = spec.shuffle.map(|shuffle| {
-                    LoadContextOptions::Options(Options {
-                        shuffle,
-                        ..Options::default()
-                    })
-                });
+                let context_options = Some(LoadContextOptions::Options(Options {
+                    shuffle: spec.shuffle.unwrap_or(false),
+                    repeat: spec.repeat == RepeatMode::Context,
+                    repeat_track: spec.repeat == RepeatMode::Track,
+                }));
                 let options = LoadRequestOptions {
                     start_playing: spec.play,
                     seek_to: spec.position_ms,
@@ -558,10 +559,12 @@ fn sink_builder(
                 // The player applies the volume before these sinks see the
                 // samples; the tap is told, so the bars show the music.
                 let applied = mixer.get_soft_volume();
+                let control = control.clone();
                 return (
                     Box::new(move || {
                         let sink = builder(device, AudioFormat::S16);
-                        Box::new(Tapped::new(sink, tap, Some(applied), eq)) as Box<dyn Sink>
+                        Box::new(Tapped::new(sink, control, tap, Some(applied), eq))
+                            as Box<dyn Sink>
                     }),
                     mixer.get_soft_volume(),
                 );
@@ -574,7 +577,7 @@ fn sink_builder(
     (
         Box::new(move || {
             let sink = Box::new(RodioSink::new(device, report, volume, control.clone()));
-            Box::new(Tapped::new(sink, tap, None, eq)) as Box<dyn Sink>
+            Box::new(Tapped::new(sink, control, tap, None, eq)) as Box<dyn Sink>
         }),
         Box::new(NoOpVolume),
     )
@@ -587,6 +590,7 @@ async fn run_events(
     output: OutputControl,
 ) {
     let mut play_request_id = None;
+    let mut replay_pending = false;
     while let Some(event) = events.recv().await {
         if let PlayerEvent::PlayRequestIdChanged {
             play_request_id: next,
@@ -605,7 +609,7 @@ async fn run_events(
         }
         let snapshot = {
             let mut current = state.lock().unwrap_or_else(|p| p.into_inner());
-            if apply_event(&mut current, event) {
+            if apply_event(&mut current, event, &mut replay_pending) {
                 Some(current.clone())
             } else {
                 None
@@ -626,7 +630,16 @@ fn set<T: PartialEq>(target: &mut T, value: T) -> bool {
     }
 }
 
-fn apply_event(state: &mut LocalState, event: PlayerEvent) -> bool {
+fn start_replay(state: &mut LocalState, replay_pending: &mut bool) -> bool {
+    if std::mem::take(replay_pending) {
+        state.seek_sequence = state.seek_sequence.wrapping_add(1);
+        true
+    } else {
+        false
+    }
+}
+
+fn apply_event(state: &mut LocalState, event: PlayerEvent, replay_pending: &mut bool) -> bool {
     match event {
         PlayerEvent::Stopped { .. } => {
             let mut changed = set(&mut state.playback, Playback::Stopped);
@@ -654,6 +667,7 @@ fn apply_event(state: &mut LocalState, event: PlayerEvent) -> bool {
             changed |= set(&mut state.loading, false);
             changed |= set(&mut state.position_ms, position_ms);
             state.position_at = Some(Instant::now());
+            changed |= start_replay(state, replay_pending);
             changed || true
         }
         PlayerEvent::Paused { position_ms, .. } => {
@@ -661,7 +675,7 @@ fn apply_event(state: &mut LocalState, event: PlayerEvent) -> bool {
             changed |= set(&mut state.loading, false);
             changed |= set(&mut state.position_ms, position_ms);
             changed |= set(&mut state.position_at, None);
-            changed
+            changed | start_replay(state, replay_pending)
         }
         PlayerEvent::PositionCorrection { position_ms, .. }
         | PlayerEvent::PositionChanged { position_ms, .. } => {
@@ -680,7 +694,12 @@ fn apply_event(state: &mut LocalState, event: PlayerEvent) -> bool {
             true
         }
         PlayerEvent::TrackChanged { audio_item } => {
-            let mut changed = set(&mut state.track, Some(local_track(&audio_item)));
+            let track = local_track(&audio_item);
+            *replay_pending = state
+                .track
+                .as_ref()
+                .is_some_and(|previous| previous.uri == track.uri);
+            let mut changed = set(&mut state.track, Some(track));
             changed |= set(&mut state.error, None);
             changed
         }
@@ -705,6 +724,7 @@ fn apply_event(state: &mut LocalState, event: PlayerEvent) -> bool {
         }
         PlayerEvent::SessionDisconnected { .. } => {
             let mut changed = set(&mut state.connected, false);
+            changed |= set(&mut state.loading, false);
             changed |= set(&mut state.active_client, String::new());
             changed
         }
@@ -803,7 +823,11 @@ mod tests {
         assert_eq!(heard.level(), 3_276);
         assert_eq!(state.volume, 52_428);
         // Nor should a delayed event restore a previous, louder level.
-        apply_event(&mut state, PlayerEvent::VolumeChanged { volume: 26_214 });
+        apply_event(
+            &mut state,
+            PlayerEvent::VolumeChanged { volume: 26_214 },
+            &mut false,
+        );
         assert_eq!(heard.level(), 3_276);
     }
 
@@ -833,6 +857,7 @@ mod tests {
                 track_id: uri(),
                 position_ms: 0,
             },
+            &mut false,
         );
         assert_eq!(state.playback, Playback::Playing);
         assert!(state.loading, "the transport spins for the load");
@@ -843,6 +868,7 @@ mod tests {
                 track_id: uri(),
                 position_ms: 0,
             },
+            &mut false,
         );
         assert!(!state.loading);
         // A load that fails never reaches Playing; it stops the spinner too.
@@ -853,6 +879,7 @@ mod tests {
                 track_id: uri(),
                 position_ms: 0,
             },
+            &mut false,
         );
         apply_event(
             &mut state,
@@ -860,6 +887,7 @@ mod tests {
                 play_request_id: 1,
                 track_id: uri(),
             },
+            &mut false,
         );
         assert!(!state.loading);
     }

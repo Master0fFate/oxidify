@@ -36,7 +36,9 @@ const REMOTE_POLL_HIDDEN: Duration = Duration::from_secs(30);
 /// How often the resume point is noted while music plays, so a crash or
 /// a hard shutdown resumes near where it was.
 const RESUME_NOTE_INTERVAL: Duration = Duration::from_secs(30);
-const REMOTE_FRESH: Duration = Duration::from_secs(45);
+const REMOTE_POLL_MIN: Duration = Duration::from_secs(15);
+const REMOTE_COMMAND_WINDOW: Duration = Duration::from_secs(10);
+const REMOTE_FRESH: Duration = Duration::from_secs(60);
 const DEVICES_FRESH: Duration = Duration::from_secs(12);
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
 const TOAST_LIFETIME: Duration = Duration::from_millis(3200);
@@ -82,6 +84,7 @@ struct PlayClock {
 pub struct NowPlaying {
     pub local: bool,
     pub device_name: Option<String>,
+    pub device_kind: Option<String>,
     pub uri: String,
     pub id: Option<String>,
     pub title: String,
@@ -185,6 +188,8 @@ pub struct App {
     pub remote: Option<RemoteSnapshot>,
     remote_polled_at: Instant,
     remote_poll_pending: bool,
+    remote_end_polled_at: Option<Instant>,
+    remote_command_at: Option<Instant>,
     /// Serial of the newest playback poll sent; older answers are stale.
     remote_poll_seq: u64,
     /// The restorable session (sorts, recents, resume point) changed and
@@ -303,6 +308,8 @@ pub struct App {
     /// Shuffle as the listener set it: a mode, not a property of one
     /// context. Every play of a context applies it until turned off.
     shuffle_wanted: bool,
+    repeat_wanted: RepeatMode,
+    keeping_awake: bool,
     /// When the listener last set shuffle here, so an echo of that same
     /// change from the engine is not mistaken for another client's toggle.
     shuffle_set_at: Option<Instant>,
@@ -451,8 +458,12 @@ impl App {
             local_playback: LocalPlayback::Unavailable,
             local: LocalState::default(),
             remote: None,
-            remote_polled_at: Instant::now() - REMOTE_POLL_IDLE,
+            remote_polled_at: Instant::now()
+                .checked_sub(REMOTE_POLL_HIDDEN)
+                .unwrap_or_else(Instant::now),
             remote_poll_pending: false,
+            remote_end_polled_at: None,
+            remote_command_at: None,
             remote_poll_seq: 0,
             session_dirty: false,
             last_session_save: Instant::now(),
@@ -525,6 +536,8 @@ impl App {
             optimistic_playing: None,
             intent_track: None,
             shuffle_wanted: session.shuffle_on,
+            repeat_wanted: RepeatMode::from_api(&session.repeat),
+            keeping_awake: false,
             shuffle_set_at: None,
             unavailable_at: Vec::new(),
             last_unavailable_reconnect: None,
@@ -860,6 +873,7 @@ impl App {
             return Some(NowPlaying {
                 local: true,
                 device_name: None,
+                device_kind: None,
                 uri: track.uri.clone(),
                 id: util::uri_id(&track.uri).map(str::to_string),
                 title: track.title.clone(),
@@ -946,6 +960,7 @@ impl App {
         Some(NowPlaying {
             local: false,
             device_name: device.map(|device| device.name.clone()),
+            device_kind: device.map(|device| device.kind.clone()),
             uri: item.uri().to_string(),
             id: item.id().map(str::to_string),
             title: item.name().to_string(),
@@ -1216,6 +1231,7 @@ impl App {
                 self.profile_playback_applied = false;
                 self.loading_account_toasted = false;
                 self.local = LocalState::default();
+                self.sync_keep_awake();
                 self.local_ready = false;
                 self.local_device_id = None;
                 self.local_playback = LocalPlayback::Unavailable;
@@ -1262,7 +1278,12 @@ impl App {
                     self.toast_error(format!("Local playback: {message}"));
                 }
             }
-            LocalPlayback::Authorizing | LocalPlayback::Connecting => {}
+            LocalPlayback::Authorizing => {
+                if !matches!(self.local_playback, LocalPlayback::Authorizing) {
+                    self.toast("Opening Spotify to enable playback here");
+                }
+            }
+            LocalPlayback::Connecting => {}
         }
         self.local_playback = status;
     }
@@ -1286,6 +1307,14 @@ impl App {
         self.pending_album = None;
     }
 
+    fn sync_keep_awake(&mut self) {
+        let awake = matches!(self.local.playback, Playback::Playing | Playback::Loading);
+        if awake != self.keeping_awake {
+            self.keeping_awake = awake;
+            crate::awake::keep_awake(awake);
+        }
+    }
+
     fn handle_local(&mut self, state: LocalState) {
         let track_changed = state.track != self.local.track;
         let reconnected = state.connected && !self.local.connected;
@@ -1296,6 +1325,15 @@ impl App {
         {
             // Another client toggled it; that is the listener too.
             self.shuffle_wanted = state.shuffle;
+        }
+        if reconnected {
+            if self.repeat_wanted != RepeatMode::Off && self.alternate_local() {
+                self.backend
+                    .player(PlayerCommand::Repeat(self.repeat_wanted));
+            }
+        } else if state.track.is_some() && state.repeat != self.repeat_wanted {
+            self.repeat_wanted = state.repeat;
+            self.session_dirty = true;
         }
         if state.playback != self.local.playback {
             self.optimistic_playing = None;
@@ -1353,10 +1391,14 @@ impl App {
                     || track_changed
                     || state.queue != self.local.queue
                     || state.source_label != self.local.source_label);
+        if self.local.is_active() && !state.is_active() {
+            self.poll_remote_soon();
+        }
         self.local = state;
         if let Some(volume) = held_volume {
             self.local.volume = volume;
         }
+        self.sync_keep_awake();
         if matches!(self.local_playback, LocalPlayback::AlternateReady { .. }) {
             if rebuild_alternate_queue {
                 self.queue = Loadable::Loaded(queue_from_local(&self.local, &self.track_cache));
@@ -1521,15 +1563,9 @@ impl App {
         self.note_play();
 
         if self.is_connected() && !self.offline {
-            let minimised = ctx.input(|input| input.viewport().minimized.unwrap_or(false));
-            let interval = match self.target() {
-                _ if minimised && !self.believed_playing() => REMOTE_POLL_HIDDEN,
-                Target::Local if self.local.is_active() => REMOTE_POLL_IDLE,
-                _ => REMOTE_POLL_ACTIVE,
-            };
-            if !self.remote_poll_pending && self.remote_polled_at.elapsed() >= interval {
-                self.poll_remote(false);
-            }
+            let unseen = self.window_hidden
+                || ctx.input(|input| input.viewport().minimized.unwrap_or(false));
+            self.poll_remote_if_due(unseen);
             if let Some(due) = self.remote_recheck_at
                 && Instant::now() >= due
             {
@@ -3460,6 +3496,7 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.remote_recheck_at = Some(Instant::now() + REMOTE_RECHECK);
+                        self.remote_command_at = Some(Instant::now());
                         self.poll_remote_soon();
                     }
                     Err(error) if error.is_premium_required() => {
@@ -3494,6 +3531,7 @@ impl App {
                 Ok(()) => {
                     self.selected_device = Some(device_id);
                     self.show_devices = false;
+                    self.remote_command_at = Some(Instant::now());
                     self.poll_remote_soon();
                     self.refresh_devices();
                 }
@@ -3516,7 +3554,65 @@ impl App {
     }
 
     fn poll_remote_soon(&mut self) {
-        self.remote_polled_at = Instant::now() - REMOTE_POLL_IDLE + Duration::from_millis(700);
+        self.remote_polled_at = Instant::now()
+            .checked_sub(REMOTE_POLL_HIDDEN)
+            .unwrap_or_else(Instant::now)
+            + Duration::from_millis(700);
+    }
+
+    fn poll_interval(&self, unseen: bool) -> Duration {
+        match self.target() {
+            _ if unseen && !self.believed_playing() => REMOTE_POLL_HIDDEN,
+            Target::Local if self.local.is_active() => REMOTE_POLL_IDLE,
+            _ => REMOTE_POLL_ACTIVE,
+        }
+    }
+
+    fn regular_poll_interval(&self, unseen: bool) -> Duration {
+        let floor = if self
+            .remote_command_at
+            .is_some_and(|at| at.elapsed() < REMOTE_COMMAND_WINDOW)
+        {
+            Duration::ZERO
+        } else {
+            REMOTE_POLL_MIN
+        };
+        self.poll_interval(unseen).max(floor)
+    }
+
+    fn poll_remote_if_due(&mut self, unseen: bool) {
+        let interval = self.regular_poll_interval(unseen);
+        let song_end = self.remote_song_end().filter(|end| *end < interval);
+        let elapsed = self.remote_polled_at.elapsed();
+        if self.remote_poll_pending || elapsed < song_end.unwrap_or(interval) {
+            return;
+        }
+        if song_end.is_some() && elapsed < interval {
+            self.remote_end_polled_at = Some(Instant::now());
+        }
+        self.poll_remote(false);
+    }
+
+    fn remote_song_end(&self) -> Option<Duration> {
+        if matches!(self.target(), Target::Local)
+            || self
+                .remote_end_polled_at
+                .is_some_and(|at| at.elapsed() < REMOTE_POLL_MIN)
+        {
+            return None;
+        }
+        let remote = self
+            .remote_fresh()
+            .filter(|remote| remote.state.is_playing)?;
+        let left = remote
+            .state
+            .item
+            .as_ref()?
+            .duration_ms()
+            .checked_sub(remote.state.progress_ms?)
+            .filter(|left| *left > 0)?;
+        let due = remote.received_at + Duration::from_millis(left.into()) + Duration::from_secs(1);
+        due.checked_duration_since(self.remote_polled_at)
     }
 
     fn clear_remote_control_state(&mut self) {
@@ -3688,6 +3784,7 @@ impl App {
             position_ms: request.position_ms,
             play,
             shuffle,
+            repeat: self.repeat_wanted,
             known_tracks: Vec::new(),
         };
         if self.alternate_local() {
@@ -4330,6 +4427,8 @@ impl App {
         match self.target() {
             Target::Local => {
                 self.local.repeat = mode;
+                self.repeat_wanted = mode;
+                self.session_dirty = true;
                 self.backend.player(PlayerCommand::Repeat(mode));
             }
             Target::Remote(device_id) => {
@@ -5078,7 +5177,6 @@ impl App {
                     self.settings.playback_authorized = true;
                     self.settings_dirty = true;
                     self.backend.send(Command::AuthorizePlayback);
-                    self.toast("Opening Spotify to enable playback here");
                 }
             }
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
@@ -5570,6 +5668,7 @@ impl App {
                 last_track: self.resume_track.clone(),
                 last_position_ms: self.resume_position_ms,
                 shuffle_on: self.shuffle_wanted,
+                repeat: self.repeat_wanted.api_name().into(),
                 sorts: self
                     .table_sorts
                     .iter()

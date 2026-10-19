@@ -151,10 +151,15 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
         .activity()
         .busy(std::time::Duration::from_millis(1000));
     let remote_label = app.now_playing().filter(|now| !now.local).map(|now| {
-        format!(
+        let icon = now
+            .device_kind
+            .as_deref()
+            .map_or(Icon::Speaker, super::devices::device_icon);
+        let label = format!(
             "Playing on {}",
             now.device_name.unwrap_or_else(|| "another device".into())
-        )
+        );
+        (icon, label)
     });
 
     // The three clusters are placed by hand: Home and search sit in the
@@ -326,11 +331,11 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
         right.add_space(4.0);
         update_notice(&mut right, &palette, update, &mut app.actions);
     }
-    if let Some(label) = remote_label {
+    if let Some((icon, label)) = remote_label {
         right.add_space(4.0);
         let max_w = right.available_width();
         if max_w >= SOURCE_MIN {
-            source_chip(&mut right, &palette, &label, max_w, &mut app.actions);
+            source_chip(&mut right, &palette, icon, &label, max_w, &mut app.actions);
         }
     }
 }
@@ -476,6 +481,7 @@ fn update_notice(
 fn source_chip(
     ui: &mut egui::Ui,
     palette: &Palette,
+    icon: Icon,
     label: &str,
     max_width: f32,
     actions: &mut Vec<Action>,
@@ -506,9 +512,7 @@ fn source_chip(
     );
     let icon_rect =
         egui::Rect::from_center_size(pos2(rect.left() + 14.0, rect.center().y), Vec2::splat(13.0));
-    Icon::Speaker
-        .image(palette.accent, 13.0)
-        .paint_at(ui, icon_rect);
+    icon.image(palette.accent, 13.0).paint_at(ui, icon_rect);
     ui.painter().galley(
         pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0),
         galley,

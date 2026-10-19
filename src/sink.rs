@@ -46,6 +46,8 @@ const REFILL: Duration = Duration::from_millis(20);
 /// again: a stream that has failed finishes no chunk to wake them.
 const QUEUE_WAIT: Duration = Duration::from_millis(50);
 
+const STALL: Duration = Duration::from_secs(2);
+
 /// How long `stop` lets the queue play out before pausing regardless.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -53,6 +55,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct OutputControl {
     slot: Arc<Mutex<Option<rodio::Sink>>>,
     reset: Arc<AtomicBool>,
+    stale_processing: Arc<AtomicBool>,
 }
 
 impl OutputControl {
@@ -69,10 +72,15 @@ impl OutputControl {
     }
 
     pub fn discard_queued(&self) {
+        self.stale_processing.store(true, Ordering::SeqCst);
         if let Some(sink) = self.lock().as_ref() {
             sink.stop();
             self.reset.store(true, Ordering::SeqCst);
         }
+    }
+
+    pub fn take_stale_processing(&self) -> bool {
+        self.stale_processing.swap(false, Ordering::SeqCst)
     }
 
     fn take_reset(&self) -> bool {
@@ -243,6 +251,32 @@ impl Drop for Chunk {
     }
 }
 
+struct Stall {
+    queued: u64,
+    since: Instant,
+    seen: Instant,
+}
+
+impl Stall {
+    fn new(queued: u64, now: Instant) -> Self {
+        Self {
+            queued,
+            since: now,
+            seen: now,
+        }
+    }
+
+    fn observe(&mut self, queued: u64, now: Instant) -> bool {
+        let asleep = now.duration_since(self.seen) >= STALL;
+        self.seen = now;
+        if queued != self.queued || asleep {
+            *self = Self::new(queued, now);
+            return false;
+        }
+        now.duration_since(self.since) >= STALL
+    }
+}
+
 impl RodioSink {
     pub fn new(
         device: Option<String>,
@@ -270,35 +304,41 @@ impl RodioSink {
         }
     }
 
+    fn drop_output(&mut self) {
+        self.output = None;
+        self.control.detach();
+    }
+
     /// Opens the output if it is not open, or if it died since.
-    fn ensure_open(&mut self) -> SinkResult<()> {
+    fn open_if_needed(&mut self) -> Result<(), OpenError> {
+        take_precedence();
         if self.output.as_ref().is_some_and(Output::failed) {
             log::warn!("the audio output stopped working; reopening it");
-            self.output = None;
-            self.control.detach();
+            self.drop_output();
         }
-        if self.output.is_some() {
-            return Ok(());
+        if self.output.is_none() {
+            self.output = Some(open_output(self.device.as_deref(), &self.control)?);
+            self.applied_volume = -1.0;
         }
-        match open_output(self.device.as_deref(), &self.control) {
-            Ok(output) => {
-                self.output = Some(output);
-                self.applied_volume = -1.0;
-                Ok(())
-            }
-            Err(error) => {
-                let message = error.to_string();
-                log::error!("{message}");
-                (self.on_error)(message.clone());
-                Err(SinkError::ConnectionRefused(message))
-            }
-        }
+        Ok(())
+    }
+
+    fn ensure_open(&mut self) -> SinkResult<()> {
+        self.open_if_needed().map_err(|error| {
+            let message = error.to_string();
+            log::error!("{message}");
+            (self.on_error)(message.clone());
+            SinkError::ConnectionRefused(message)
+        })
     }
 }
 
 impl Sink for RodioSink {
     fn start(&mut self) -> SinkResult<()> {
-        self.ensure_open()?;
+        if let Err(error) = self.open_if_needed() {
+            log::debug!("audio output not open at start: {error}");
+            return Ok(());
+        }
         self.apply_volume();
         self.control.with_sink(|sink| sink.play());
         Ok(())
@@ -360,21 +400,31 @@ impl Sink for RodioSink {
             * u64::from(NUM_CHANNELS as u32)
             * REFILL.as_millis() as u64
             / 1_000;
-        let mut failed = false;
+        let mut reopen = false;
+        let mut stall: Option<Stall> = None;
         while self.control.with_sink(|sink| sink.len()).unwrap_or(0) > QUEUE_LIMIT {
             if output.failed() {
-                failed = true;
+                log::warn!("the audio output stopped working; reopening it");
+                reopen = true;
+                break;
+            }
+            let now = Instant::now();
+            let queued = output.queued.samples();
+            if stall
+                .get_or_insert_with(|| Stall::new(queued, now))
+                .observe(queued, now)
+            {
+                log::warn!("the audio output stopped playing for {STALL:?}; opening it again");
+                reopen = true;
                 break;
             }
             output.queued.wait_for_room(refill);
         }
-        if failed {
+        if reopen {
             // Headphones connected or the default output changed: the old
             // stream is gone, so open the output to use now and carry on.
             // Only an output that will not open stops the music.
-            log::warn!("the audio output stopped working; reopening it");
-            self.output = None;
-            self.control.detach();
+            self.drop_output();
             self.applied_volume = -1.0;
             self.ensure_open()?;
             self.apply_volume();
@@ -383,6 +433,25 @@ impl Sink for RodioSink {
         Ok(())
     }
 }
+
+#[cfg(windows)]
+fn take_precedence() {
+    use std::cell::Cell;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+    };
+    thread_local! {
+        static RAISED: Cell<bool> = const { Cell::new(false) };
+    }
+    if !RAISED.replace(true) {
+        unsafe {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn take_precedence() {}
 
 #[derive(Debug, thiserror::Error)]
 enum OpenError {

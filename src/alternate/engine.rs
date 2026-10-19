@@ -1283,6 +1283,7 @@ impl Engine {
             position_ms: 0,
             play: true,
             shuffle: Some(false),
+            repeat: crate::player::RepeatMode::Off,
             known_tracks: Vec::new(),
         };
         self.on_hydrated(spec, Ok(tracks));

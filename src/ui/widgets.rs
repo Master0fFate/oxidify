@@ -1870,7 +1870,7 @@ pub fn thin_slider_with_scroll(
             event = SliderEvent::Committed((value + steps * SCROLL_STEP).clamp(0.0, 1.0));
         }
     }
-    if (response.drag_started() || response.dragged())
+    if (response.is_pointer_button_down_on() || response.drag_started() || response.dragged())
         && let Some(v) = pointer_value
     {
         ui.data_mut(|data| data.insert_temp(id, v));
@@ -1883,6 +1883,7 @@ pub fn thin_slider_with_scroll(
     } else if response.clicked()
         && let Some(v) = pointer_value
     {
+        ui.data_mut(|data| data.remove::<f32>(id));
         event = SliderEvent::Committed(v);
     }
     let shown = match &event {

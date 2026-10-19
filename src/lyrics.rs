@@ -27,6 +27,8 @@ const CACHE_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// A candidate this far from the playing track's length is another
 /// recording, however well the names match.
 const MAX_DRIFT_SECS: f64 = 30.0;
+const RATE_LIMIT_RETRIES: u32 = 3;
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(5);
 
 /// What is playing, as a lyrics database wants it asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,13 +177,30 @@ async fn get<T: DeserializeOwned>(
     path: &str,
     params: &[(&str, &str)],
 ) -> Result<Option<T>> {
-    let response = http
-        .get(format!("{API}{path}"))
-        .query(params)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .context("cannot reach LRCLIB")?;
+    let mut attempt = 0;
+    let response = loop {
+        let response = http
+            .get(format!("{API}{path}"))
+            .query(params)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("cannot reach LRCLIB")?;
+        if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+            || attempt == RATE_LIMIT_RETRIES
+        {
+            break response;
+        }
+        let wait = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .map_or(Duration::from_secs(1), Duration::from_secs)
+            .min(MAX_RETRY_AFTER);
+        attempt += 1;
+        tokio::time::sleep(wait).await;
+    };
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::BAD_REQUEST {
         return Ok(None);

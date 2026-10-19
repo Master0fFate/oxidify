@@ -16,7 +16,7 @@ pub mod layout;
 pub mod sprites;
 pub mod zip;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
@@ -141,11 +141,20 @@ impl Skin {
     /// Reads an unpacked skin: a folder with the bitmaps in it.
     pub fn from_dir(name: impl Into<String>, dir: &Path) -> Result<Self, SkinError> {
         let mut files = Files::new();
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let file_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-            if wanted(&file_name) && entry.file_type()?.is_file() {
-                files.insert(file_name, std::fs::read(entry.path())?);
+        let mut folders = VecDeque::from([(dir.to_path_buf(), 0)]);
+        while let Some((folder, depth)) = folders.pop_front() {
+            let mut entries = std::fs::read_dir(folder)?.collect::<Result<Vec<_>, _>>()?;
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let kind = entry.file_type()?;
+                if kind.is_dir() && depth < MAX_SKIN_DEPTH {
+                    folders.push_back((entry.path(), depth + 1));
+                } else if kind.is_file() {
+                    let file_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                    if wanted(&file_name) && !files.contains_key(&file_name) {
+                        files.insert(file_name, std::fs::read(entry.path())?);
+                    }
+                }
             }
         }
         Self::from_files(name.into(), files)
@@ -246,6 +255,8 @@ impl Skin {
         Some((bitmap, clipped))
     }
 }
+
+pub(crate) const MAX_SKIN_DEPTH: usize = 8;
 
 /// Whether a file inside a skin is one this reader looks at, so cursors,
 /// readmes, and the equalizer's bitmaps are never inflated.

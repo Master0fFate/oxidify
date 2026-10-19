@@ -25,12 +25,23 @@ personal acceleration, and local playback:
 Local playback authorization stays separate from both Web API grants. Before
 Oxidify opens either browser flow, it starts the loopback receiver that accepts
 the redirect. The main sign-in waiting screen can also reopen or copy its URL.
+If another app holds the port (8989 for the Web API, 8898 for playback), the
+browser stays closed and the error stays on screen or in Settings until you
+close that app and try again. A saved playback approval is kept.
 
 By default the Web API uses the shared public application also used by
 spotify-player, ncspot, and Omarchy Spotify, whose allowance Spotify
 divides among everyone running any of them. An application of your own adds a
 separate Development Mode quota; [Make It Even Faster](/make-it-even-faster/)
 shows how to add one.
+
+Playback state is checked every 15 seconds, every 20 while this computer's
+player is active, every 30 while the window is minimised or in the tray and
+nothing plays, every 4 for ten seconds after a command or a switch to another
+device, once more just after a song on another device should end, and as soon
+as this computer's player stops. The requests are the same ones as before,
+only less frequent; none of this applies to alternate local audio, which makes
+no playback request to Spotify.
 
 ## What the client stores
 
@@ -143,10 +154,23 @@ interface never blocks on any of it. Replacement engines preserve the last volum
 reconnect, while an explicit settings change remains authoritative. This
 applies to the local Spotify engine and does not change account eligibility.
 
+A connection that fails for any reason other than Spotify rejecting the
+credential, such as a reset after the computer wakes, is tried again with the
+stored credential after 5 and 15 seconds, 1, 2 and 5 minutes, then every 10
+minutes, without flickering through "Connecting". **Enable playback here** and
+**Try again** reconnect with the stored credential first and open the browser
+only when there is none or Spotify rejects it.
+
 The engine discovers access points
 through `apresolve.spotify.com` and connects over TCP in the resolver's
 preference order: port 4070 first, falling back to 443 and 80. Only outbound
 connections are needed; no inbound ports have to be open.
+
+Each socket setup and handshake has a five-second deadline. The pinned
+librespot can try up to six access points and retry each connection once, so
+Oxidify allows 75 seconds for the whole engine connection. Resolving access
+points and authentication share that deadline, so reaching every fallback
+endpoint is not guaranteed.
 
 The opt-in alternate engine is a separate session. It does not announce a
 Connect device, does not use Spirc, and does not run at the same time as

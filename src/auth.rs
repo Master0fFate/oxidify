@@ -22,7 +22,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
@@ -70,6 +70,8 @@ pub const WEB_SCOPES: &[&str] = &[
 const AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
 const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_LINE_LIMIT: u64 = 8 * 1024;
 /// Refresh this long before the access token expires.
 const REFRESH_MARGIN: Duration = Duration::from_secs(90);
 
@@ -161,11 +163,15 @@ pub struct TokenResponse {
 ///
 /// Keeping this as a separate step prevents a fast browser from redirecting to
 /// the port before Oxidify is ready to accept it.
-pub async fn bind_redirect(port: u16) -> Result<TcpListener> {
+pub fn bind_redirect(port: u16) -> Result<TcpListener> {
     let address: SocketAddr = ([127, 0, 0, 1], port).into();
-    TcpListener::bind(address)
-        .await
-        .with_context(|| format!("unable to listen on {address} for the Spotify redirect"))
+    let listener = std::net::TcpListener::bind(address).with_context(|| {
+        format!(
+            "Cannot start Spotify sign-in: port {port} is in use or unavailable. Close the app using this port, then try again."
+        )
+    })?;
+    listener.set_nonblocking(true)?;
+    Ok(TcpListener::from_std(listener)?)
 }
 
 /// Listens for Spotify's redirect and returns the authorization code.
@@ -190,10 +196,11 @@ pub async fn wait_for_code(
             _ = &mut deadline => bail!("sign-in timed out; try again"),
         };
 
-        let mut reader = BufReader::new(&mut stream);
+        let mut reader = BufReader::new(&mut stream).take(REQUEST_LINE_LIMIT);
         let mut request_line = String::new();
-        if reader.read_line(&mut request_line).await.is_err() {
-            continue;
+        match tokio::time::timeout(REQUEST_TIMEOUT, reader.read_line(&mut request_line)).await {
+            Ok(Ok(_)) if request_line.ends_with('\n') => {}
+            _ => continue,
         }
         let outcome = parse_request_line(&request_line, expected_state);
         let (status, body) = match &outcome {
@@ -339,7 +346,7 @@ fn redact(text: &str) -> String {
 }
 
 /// The Web API grant as kept on disk between runs.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct StoredToken {
     pub client_id: String,
     pub access_token: String,
@@ -539,7 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_prebound_listener_accepts_an_immediate_redirect() {
-        let listener = bind_redirect(0).await.unwrap();
+        let listener = bind_redirect(0).unwrap();
         let address = listener.local_addr().unwrap();
         let (_cancel_tx, cancel_rx) = watch::channel(false);
         let waiting = tokio::spawn(wait_for_code(listener, "expected", cancel_rx));
@@ -573,7 +580,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oxidify-token-{}", std::process::id()));
         let path = dir.join("token.json");
         token.save(&path).unwrap();
-        assert_eq!(StoredToken::load(&path), Some(token));
+        assert!(StoredToken::load(&path) == Some(token));
         StoredToken::remove(&path);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -601,7 +608,7 @@ mod tests {
             };
             token.save(&legacy).unwrap();
             StoredToken::migrate_legacy(&legacy, &shared, &personal).unwrap();
-            assert_eq!(StoredToken::load(target), Some(token));
+            assert!(StoredToken::load(target) == Some(token));
             assert!(!legacy.exists());
         }
         let _ = std::fs::remove_dir_all(dir);

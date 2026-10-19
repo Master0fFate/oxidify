@@ -125,7 +125,8 @@ impl<'a> Archive<'a> {
         let extra_len = usize::from(u16_at(data, at + 28)?);
         let raw = slice(data, at + 30 + name_len + extra_len, entry.compressed_size)?;
         match entry.method {
-            STORED => Ok(raw.to_vec()),
+            STORED if entry.compressed_size == entry.size => Ok(raw.to_vec()),
+            STORED => Err(ZipError::TooLarge(entry.name.clone())),
             DEFLATED => {
                 let mut out = Vec::with_capacity(entry.size);
                 flate2::read::DeflateDecoder::new(raw)

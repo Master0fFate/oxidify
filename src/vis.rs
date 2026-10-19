@@ -109,6 +109,7 @@ impl AudioTap {
 /// the result on its way to the real one, so the bars show what is heard.
 pub struct Tapped {
     inner: Box<dyn Sink>,
+    control: crate::sink::OutputControl,
     tap: Arc<AudioTap>,
     eq: crate::eq::Processor,
     /// Undoes the volume the player already applied to the samples, so the
@@ -120,12 +121,14 @@ pub struct Tapped {
 impl Tapped {
     pub fn new(
         inner: Box<dyn Sink>,
+        control: crate::sink::OutputControl,
         tap: Arc<AudioTap>,
         applied_volume: Option<Box<dyn VolumeGetter + Send>>,
         eq: crate::eq::SharedEq,
     ) -> Self {
         Self {
             inner,
+            control,
             tap,
             eq: crate::eq::Processor::new(eq),
             applied_volume,
@@ -144,6 +147,9 @@ impl Sink for Tapped {
     }
 
     fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
+        if self.control.take_stale_processing() {
+            self.eq.reset();
+        }
         let packet = match packet {
             AudioPacket::Samples(mut samples) => {
                 self.eq.process(&mut samples);

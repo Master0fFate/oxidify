@@ -11,6 +11,11 @@ use crate::theme::{self, Icon, Palette};
 use super::widgets;
 
 const PLAYBACK_DIRTY_ID: &str = "playback-settings-dirty";
+const RELEASE_NOTES_URL: &str = concat!(
+    env!("CARGO_PKG_REPOSITORY"),
+    "/releases/tag/v",
+    env!("CARGO_PKG_VERSION")
+);
 
 fn section(
     ui: &mut egui::Ui,
@@ -55,6 +60,19 @@ fn row_matches<'a>(query: &str, texts: impl Iterator<Item = &'a str> + Clone) ->
             .clone()
             .any(|text| text.to_lowercase().contains(&word))
     })
+}
+
+fn autoplay_row(ui: &mut egui::Ui, app: &mut App, query: &str, palette: &Palette) -> bool {
+    let mut changed = false;
+    search_row(
+        ui,
+        query,
+        palette,
+        "Autoplay",
+        "Keep playing similar songs when your music ends.",
+        |ui| changed = widgets::switch(ui, palette, &mut app.settings.autoplay).changed(),
+    );
+    changed
 }
 
 fn search_row(
@@ -184,23 +202,36 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 },
             );
+            let wanted = app
+                .settings
+                .web_client_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
+            let in_use = wanted
+                .as_deref()
+                .is_some_and(|wanted| app.web_app.as_deref() == Some(wanted));
             let help_id = egui::Id::new("personal-web-app-help");
-            let mut show_help = ui
-                .data(|data| data.get_temp::<bool>(help_id))
-                .unwrap_or(false);
-            search_row(
-                ui,
-                &query,
-                &palette,
-                "Don't have one?",
-                "Set up a personal app in Spotify's developer dashboard. App owners need Premium.",
-                |ui| {
-                    if theme::pill_button(ui, &palette, "Show me how", false).clicked() {
-                        show_help = !show_help;
-                        ui.data_mut(|data| data.insert_temp(help_id, show_help));
-                    }
-                },
-            );
+            let mut show_help = !in_use
+                && ui
+                    .data(|data| data.get_temp::<bool>(help_id))
+                    .unwrap_or(false);
+            if !in_use {
+                search_row(
+                    ui,
+                    &query,
+                    &palette,
+                    "Don't have one?",
+                    "Set up a personal app in Spotify's developer dashboard. App owners need Premium.",
+                    |ui| {
+                        if theme::pill_button(ui, &palette, "Show me how", false).clicked() {
+                            show_help = !show_help;
+                            ui.data_mut(|data| data.insert_temp(help_id, show_help));
+                        }
+                    },
+                );
+            }
             let redirect_uri = crate::auth::Grant::shared_web_api().redirect_uri();
             search_row(
                 ui,
@@ -240,16 +271,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     ));
                 }
             }
-            let wanted = app
-                .settings
-                .web_client_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string);
-            let in_use = wanted
-                .as_deref()
-                .is_some_and(|wanted| app.web_app.as_deref() == Some(wanted));
             if in_use {
                 search_row(
                     ui,
@@ -711,6 +732,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         }
                     },
                 );
+                if autoplay_row(ui, app, &query, &palette) {
+                    changed = true;
+                    playback_dirty = true;
+                }
                 ui.add_space(4.0);
                 theme::subtle(
                     ui,
@@ -770,19 +795,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         }
                     },
                 );
-                search_row(
-                    ui,
-                    &query,
-                    &palette,
-                    "Autoplay",
-                    "Keep playing similar songs when your music ends.",
-                    |ui| {
-                        if widgets::switch(ui, &palette, &mut app.settings.autoplay).changed() {
-                            changed = true;
-                            playback_dirty = true;
-                        }
-                    },
-                );
+                if autoplay_row(ui, app, &query, &palette) {
+                    changed = true;
+                    playback_dirty = true;
+                }
                 search_row(
                     ui,
                     &query,
@@ -1317,6 +1333,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             "about",
             "version",
             "update",
+            "release notes",
             "keyboard shortcuts",
             "source code",
         ],
@@ -1342,7 +1359,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             });
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.spacing_mut().item_spacing = Vec2::splat(8.0);
                 let check_label = if app.update_checking {
                     "Checking…"
                 } else {
@@ -1368,6 +1385,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     .clicked()
                 {
                     app.actions.push(Action::OpenUrl(update.url.clone()));
+                }
+                if theme::soft_button(
+                    ui,
+                    &palette,
+                    Some(Icon::ExternalLink),
+                    "Release notes",
+                    false,
+                )
+                .clicked()
+                {
+                    app.actions
+                        .push(Action::OpenUrl(RELEASE_NOTES_URL.to_owned()));
                 }
                 if theme::soft_button(ui, &palette, Some(Icon::Info), "Keyboard shortcuts", false)
                     .clicked()

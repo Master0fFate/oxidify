@@ -31,6 +31,9 @@ use crate::settings::{PlaybackBackend, ProxySetting};
 pub type ApiResult<T> = Result<T, ApiError>;
 
 const PREMIUM_NEEDED: &str = "Local playback needs Spotify Premium.";
+const REJECTED_GRANT: &str = "Spotify rejected the saved sign-in. Please sign in again.";
+const ENGINE_RETRY_DELAYS: [u64; 6] = [5, 15, 60, 120, 300, 600];
+const ENGINE_CONNECT_TIMEOUT: Duration = Duration::from_secs(75);
 pub const PLAYLIST_PAGE_SIZE: u32 = 50;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -461,6 +464,9 @@ pub enum Command {
     },
     /// Internal: the playback browser flow ended without a credential.
     PlaybackAuthEnded,
+    RetryEngine {
+        generation: u64,
+    },
     /// Internal: the Web API said which plan the account is on (`None` when
     /// it could not tell).
     AccountChecked {
@@ -858,6 +864,10 @@ struct Worker {
     pending_authorization: Option<ApiSource>,
     reconnects: Vec<Instant>,
     resume: Option<LoadSpec>,
+    engine_retries: usize,
+    engine_retry_generation: u64,
+    engine_retry_quiet: bool,
+    authorize_if_rejected: bool,
 }
 
 impl Worker {
@@ -903,6 +913,10 @@ impl Worker {
             pending_authorization: None,
             reconnects: Vec::new(),
             resume: None,
+            engine_retries: 0,
+            engine_retry_generation: 0,
+            engine_retry_quiet: false,
+            authorize_if_rejected: false,
         }
     }
 
@@ -983,6 +997,7 @@ impl Worker {
                         self.finish_authorization(source);
                     }
                 }
+                Command::RetryEngine { generation } => self.retry_engine(generation),
                 Command::PlaybackAuthEnded => {
                     self.cancel_signin = None;
                     if let Some(pending) = self.pending_authorization.take() {
@@ -1049,6 +1064,8 @@ impl Worker {
         self.event_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.resume = None;
+        self.cancel_engine_retry();
+        self.authorize_if_rejected = false;
         self.stop_spotify_only();
         if let Some(alternate) = self.alternate.take() {
             alternate.shutdown().await;
@@ -1077,10 +1094,16 @@ impl Worker {
         let personal = self.web_client_id.as_deref().and_then(|client_id| {
             crate::auth::StoredToken::load(&self.dirs.personal_web_token_file())
                 .filter(|token| token.client_id == client_id)
-                .filter(|token| token.has_scopes(crate::auth::WEB_SCOPES))
         });
-        if let Some(token) = personal {
-            self.on_web_signed_in(ApiSource::Personal, token);
+        match personal {
+            Some(token) if token.has_scopes(crate::auth::WEB_SCOPES) => {
+                self.on_web_signed_in(ApiSource::Personal, token);
+            }
+            Some(_) => self.emit(Event::Error(
+                "Spotify permissions changed for your personal app. Authorize it again in Settings, under Account."
+                    .into(),
+            )),
+            None => {}
         }
     }
 
@@ -1233,6 +1256,21 @@ impl Worker {
                 }
             }
         };
+        let listener = match crate::auth::bind_redirect(grant.redirect_port) {
+            Ok(listener) => listener,
+            Err(error) => {
+                match source {
+                    ApiSource::Shared => {
+                        self.emit(Event::Auth(AuthStatus::Failed(error.to_string())));
+                    }
+                    ApiSource::Personal => {
+                        self.emit(Event::PersonalWebAuthorizing(false));
+                        self.emit(Event::Error(error.to_string()));
+                    }
+                }
+                return;
+            }
+        };
         let flow = crate::auth::begin(grant.clone());
         let (cancel_tx, cancel_rx) = watch::channel(false);
         self.cancel_signin = Some(cancel_tx);
@@ -1247,7 +1285,6 @@ impl Worker {
         let commands = self.commands.clone();
         tokio::spawn(async move {
             let result = async {
-                let listener = crate::auth::bind_redirect(grant.redirect_port).await?;
                 if source == ApiSource::Shared {
                     let _ = events.send(Event::Auth(AuthStatus::WaitingForBrowser {
                         url: flow.url.clone(),
@@ -1442,15 +1479,52 @@ impl Worker {
         if self.engine.is_some() || self.engine_busy || self.premium == Some(false) {
             return;
         }
-        let credentials = self
-            .engine_config
-            .open_cache()
-            .ok()
-            .and_then(|cache| cache.credentials());
-        if let Some(credentials) = credentials {
+        if let Some(credentials) = self.saved_playback_credentials() {
             self.connect_engine(credentials);
         } else if let Some(status) = spotify_idle_status(self.engine.is_some(), self.engine_busy) {
             self.emit(Event::Playback(status));
+        }
+    }
+
+    fn saved_playback_credentials(&self) -> Option<Credentials> {
+        self.engine_config
+            .open_cache()
+            .ok()
+            .and_then(|cache| cache.credentials())
+    }
+
+    fn schedule_engine_retry(&mut self) {
+        let delay = ENGINE_RETRY_DELAYS[self.engine_retries.min(ENGINE_RETRY_DELAYS.len() - 1)];
+        self.engine_retries += 1;
+        self.engine_retry_generation += 1;
+        let generation = self.engine_retry_generation;
+        log::info!("local playback connection failed; trying again in {delay}s");
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(delay)).await;
+            let _ = commands.send(Command::RetryEngine { generation });
+        });
+    }
+
+    fn cancel_engine_retry(&mut self) {
+        self.engine_retries = 0;
+        self.engine_retry_generation += 1;
+    }
+
+    fn retry_engine(&mut self, generation: u64) {
+        if generation != self.engine_retry_generation
+            || !self.signed_in
+            || self.playback_mode != PlaybackBackend::Spotify
+            || self.engine.is_some()
+            || self.engine_busy
+            || self.cancel_signin.is_some()
+        {
+            return;
+        }
+        self.engine_retry_quiet = true;
+        self.resume_engine();
+        if !self.engine_busy {
+            self.engine_retry_quiet = false;
         }
     }
 
@@ -1480,11 +1554,15 @@ impl Worker {
         self.resume_engine();
     }
 
-    /// Start (or re-enter) the playback authorization in the browser. This is
-    /// a distinct grant from the Web API sign-in: it uses Spotify's streaming
-    /// client identity, the one librespot can play with.
     fn authorize_playback(&mut self) {
-        if self.engine_busy || self.cancel_signin.is_some() {
+        if self.cancel_signin.is_some() {
+            return;
+        }
+        if self.engine_busy {
+            if std::mem::take(&mut self.engine_retry_quiet) {
+                self.authorize_if_rejected = true;
+                self.emit(Event::Playback(LocalPlayback::Connecting));
+            }
             return;
         }
         if self.premium == Some(false) {
@@ -1493,7 +1571,34 @@ impl Worker {
             )));
             return;
         }
+        if self.signed_in
+            && self.engine.is_none()
+            && let Some(credentials) = self.saved_playback_credentials()
+        {
+            self.cancel_engine_retry();
+            self.authorize_if_rejected = true;
+            self.connect_engine(credentials);
+            return;
+        }
+        self.authorize_playback_in_browser();
+    }
+
+    /// Start (or re-enter) the playback authorization in the browser. This is
+    /// a distinct grant from the Web API sign-in: it uses Spotify's streaming
+    /// client identity, the one librespot can play with.
+    fn authorize_playback_in_browser(&mut self) {
+        if self.engine_busy || self.cancel_signin.is_some() {
+            return;
+        }
         let grant = crate::auth::Grant::playback();
+        let listener = match crate::auth::bind_redirect(grant.redirect_port) {
+            Ok(listener) => listener,
+            Err(error) => {
+                self.emit(Event::Playback(LocalPlayback::Failed(error.to_string())));
+                return;
+            }
+        };
+        self.cancel_engine_retry();
         let flow = crate::auth::begin(grant.clone());
         let (cancel_tx, cancel_rx) = watch::channel(false);
         self.cancel_signin = Some(cancel_tx);
@@ -1504,7 +1609,6 @@ impl Worker {
         let commands = self.commands.clone();
         tokio::spawn(async move {
             let result = async {
-                let listener = crate::auth::bind_redirect(grant.redirect_port).await?;
                 if let Err(error) = open::that_detached(&flow.url) {
                     log::warn!("unable to open a browser: {error}");
                 }
@@ -1551,7 +1655,9 @@ impl Worker {
         // Retire it before cloning the configuration for its replacement.
         self.stop_spotify_only();
         self.engine_busy = true;
-        self.emit(Event::Playback(LocalPlayback::Connecting));
+        if !self.engine_retry_quiet {
+            self.emit(Event::Playback(LocalPlayback::Connecting));
+        }
         let config = self.engine_config.clone();
         let notify = self.engine_notify();
         let events = self.events.clone();
@@ -1569,7 +1675,7 @@ impl Worker {
                 }
             };
             let attempt = tokio::time::timeout(
-                Duration::from_secs(45),
+                ENGINE_CONNECT_TIMEOUT,
                 Engine::connect(&config, credentials, cache, notify),
             )
             .await;
@@ -1598,6 +1704,8 @@ impl Worker {
 
     fn on_engine_connected(&mut self, engine: Option<Engine>, error: Option<String>) {
         self.engine_busy = false;
+        let quiet = std::mem::take(&mut self.engine_retry_quiet);
+        let authorize_if_rejected = std::mem::take(&mut self.authorize_if_rejected);
         if self.ignore_spotify_engine || self.playback_mode != PlaybackBackend::Spotify {
             self.ignore_spotify_engine = false;
             if let Some(engine) = engine {
@@ -1616,14 +1724,27 @@ impl Worker {
                 }
                 self.engine = Some(engine);
                 self.reconnects.clear();
+                self.cancel_engine_retry();
                 self.emit(Event::Playback(LocalPlayback::Ready { device_id }));
             }
             None => {
                 let message = error.unwrap_or_else(|| "Local playback is unavailable".into());
-                if connect_error_is_entitlement(&message) {
-                    self.reconnects.clear();
+                let rejected = message == REJECTED_GRANT;
+                if authorize_if_rejected && rejected {
+                    self.authorize_playback_in_browser();
+                    return;
                 }
-                self.emit(Event::Playback(LocalPlayback::Failed(message)));
+                let entitlement = connect_error_is_entitlement(&message);
+                let retrying =
+                    !entitlement && !rejected && self.saved_playback_credentials().is_some();
+                if entitlement {
+                    self.reconnects.clear();
+                } else if retrying {
+                    self.schedule_engine_retry();
+                }
+                if !quiet || !retrying {
+                    self.emit(Event::Playback(LocalPlayback::Failed(message)));
+                }
             }
         }
     }
@@ -2061,7 +2182,7 @@ fn friendly_connect_error(error: &anyhow::Error) -> String {
     let text = format!("{error:#}");
     let lower = text.to_lowercase();
     if lower.contains("badcredentials") || lower.contains("bad credentials") {
-        "Spotify rejected the saved sign-in. Please sign in again.".to_string()
+        REJECTED_GRANT.to_string()
     } else if connect_error_is_entitlement(&text) {
         PREMIUM_NEEDED.to_string()
     } else if lower.contains("dns") || lower.contains("connect") || lower.contains("resolve") {
@@ -2543,6 +2664,7 @@ fn resume_spec(state: &LocalState) -> Option<LoadSpec> {
         position_ms: state.position_now(),
         play: state.playback == Playback::Playing,
         shuffle: Some(state.shuffle),
+        repeat: state.repeat,
         known_tracks: vec![track.clone()],
         ..LoadSpec::default()
     })

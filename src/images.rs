@@ -121,7 +121,7 @@ impl Inner {
         let bytes: Vec<u8> = match cached {
             Some(bytes) if !bytes.is_empty() => bytes,
             _ => {
-                let response = self
+                let mut response = self
                     .http
                     .get(url)
                     .send()
@@ -130,11 +130,19 @@ impl Inner {
                 if !response.status().is_success() {
                     return Err(format!("artwork request failed: {}", response.status()));
                 }
-                let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-                if bytes.len() > MAX_ART_BYTES {
+                if response
+                    .content_length()
+                    .is_some_and(|length| length > MAX_ART_BYTES as u64)
+                {
                     return Err("artwork is too large".to_string());
                 }
-                let bytes = bytes.to_vec();
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+                    if bytes.len() + chunk.len() > MAX_ART_BYTES {
+                        return Err("artwork is too large".to_string());
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
                 let write_path = path.clone();
                 let payload = bytes.clone();
                 self.runtime.spawn_blocking(move || {

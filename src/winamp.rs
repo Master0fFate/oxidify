@@ -7,7 +7,7 @@
 //! settings name the skin to wear and `App::tick` keeps the window in step
 //! with them, so choosing a skin is a matter of writing the setting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -340,12 +340,26 @@ pub fn list_skins(folder: &Path) -> Vec<SkinChoice> {
 }
 
 fn has_main_bitmap(folder: &Path) -> bool {
-    std::fs::read_dir(folder).is_ok_and(|entries| {
-        entries.flatten().any(|entry| {
-            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-            name == "main.bmp" || name == "main.png"
-        })
-    })
+    let mut folders = VecDeque::from([(folder.to_path_buf(), 0)]);
+    while let Some((folder, depth)) = folders.pop_front() {
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() && depth < crate::skin::MAX_SKIN_DEPTH {
+                folders.push_back((entry.path(), depth + 1));
+            } else if kind.is_file() {
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                if name == "main.bmp" || name == "main.png" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]

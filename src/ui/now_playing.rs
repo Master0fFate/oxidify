@@ -138,7 +138,11 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
         let response = ui
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                theme::icon(ui, Icon::Speaker, 16.0, palette.accent);
+                let icon = now
+                    .device_kind
+                    .as_deref()
+                    .map_or(Icon::Speaker, super::devices::device_icon);
+                theme::icon(ui, icon, 16.0, palette.accent);
                 theme::text(ui, label, theme::medium(13.0), palette.accent)
             })
             .inner;

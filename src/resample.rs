@@ -18,6 +18,7 @@ use std::f64::consts::PI;
 /// Input samples each output sample is made from. Sixty-four give a
 /// passband flat to about 19 kHz and images under the window's floor.
 const TAPS: usize = 64;
+const LANES: usize = 8;
 
 pub struct Resampler {
     up: usize,
@@ -66,13 +67,18 @@ impl Resampler {
         while self.next + half < frames {
             let taps = &self.taps[self.phase * TAPS..(self.phase + 1) * TAPS];
             let start = (self.next + 1 - half) * self.channels;
-            for channel in 0..self.channels {
-                let sum: f32 = taps
-                    .iter()
-                    .enumerate()
-                    .map(|(k, tap)| self.input[start + k * self.channels + channel] * tap)
-                    .sum();
-                out.push(sum);
+            let reach = &self.input[start..start + TAPS * self.channels];
+            if self.channels == 2 {
+                out.extend_from_slice(&stereo_dot(reach, taps));
+            } else {
+                for channel in 0..self.channels {
+                    let sum: f32 = taps
+                        .iter()
+                        .enumerate()
+                        .map(|(k, tap)| reach[k * self.channels + channel] * tap)
+                        .sum();
+                    out.push(sum);
+                }
             }
             let position = self.phase + self.down;
             self.next += position / self.up;
@@ -84,6 +90,30 @@ impl Resampler {
         self.next -= keep_from;
         out
     }
+}
+
+#[inline]
+fn stereo_dot(reach: &[f32], taps: &[f32]) -> [f32; 2] {
+    let mut left = [0.0f32; LANES];
+    let mut right = [0.0f32; LANES];
+    let (frames, _) = reach.as_chunks::<2>();
+    let (frames, _) = frames.as_chunks::<LANES>();
+    let (taps, _) = taps.as_chunks::<LANES>();
+    for (frames, taps) in frames.iter().zip(taps) {
+        for (((to_left, to_right), frame), tap) in
+            left.iter_mut().zip(&mut right).zip(frames).zip(taps)
+        {
+            *to_left += frame[0] * tap;
+            *to_right += frame[1] * tap;
+        }
+    }
+    [sum_lanes(left), sum_lanes(right)]
+}
+
+#[inline]
+fn sum_lanes(lanes: [f32; LANES]) -> f32 {
+    ((lanes[0] + lanes[4]) + (lanes[2] + lanes[6]))
+        + ((lanes[1] + lanes[5]) + (lanes[3] + lanes[7]))
 }
 
 /// The taps for every phase: a sinc cut just under the lower of the two

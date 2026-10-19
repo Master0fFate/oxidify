@@ -184,6 +184,11 @@ fn is_quota_exhausted(body: &str) -> bool {
         .is_some_and(|reason| reason == "QUOTA_EXCEEDED")
 }
 
+fn logged_path(path: &str) -> &str {
+    let path = path.strip_prefix(BASE_URL).unwrap_or(path);
+    path.split('?').next().unwrap_or_default()
+}
+
 /// Where bearer tokens come from.
 ///
 /// The Web API is driven by a registered application's PKCE grant, refreshed
@@ -539,9 +544,10 @@ impl ApiClient {
             }
             let text = response.text().await?;
             log::debug!(
-                "Spotify request source={} method={} status={} duration_ms={}",
+                "Spotify request source={} method={} path={} status={} duration_ms={}",
                 self.source,
                 method,
+                logged_path(path),
                 status.as_u16(),
                 started.elapsed().as_millis()
             );
