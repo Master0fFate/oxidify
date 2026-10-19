@@ -22,6 +22,8 @@ pub struct Palette {
     pub dim: Color32,
     pub accent: Color32,
     pub accent_hover: Color32,
+    pub accent_mid: Color32,
+    pub accent_warm: Color32,
     pub on_accent: Color32,
     pub danger: Color32,
     pub warning: Color32,
@@ -44,9 +46,11 @@ impl Palette {
             text: Color32::from_rgb(0xf2, 0xf4, 0xf6),
             secondary: Color32::from_rgb(0xa9, 0xb1, 0xbc),
             dim: Color32::from_rgb(0x6e, 0x77, 0x84),
-            accent: Color32::from_rgb(0x4d, 0x9f, 0xff),
-            accent_hover: Color32::from_rgb(0x82, 0xbc, 0xff),
-            on_accent: Color32::from_rgb(0x0a, 0x28, 0x48),
+            accent: Color32::from_rgb(0x75, 0x75, 0xff),
+            accent_hover: Color32::from_rgb(0x95, 0x95, 0xff),
+            accent_mid: Color32::from_rgb(0xc0, 0x6a, 0x9c),
+            accent_warm: Color32::from_rgb(0xe3, 0x6b, 0x3a),
+            on_accent: Color32::from_rgb(0x0b, 0x0b, 0x33),
             danger: Color32::from_rgb(0xf5, 0x71, 0x7f),
             warning: Color32::from_rgb(0xf2, 0xb8, 0x5c),
             overlay: Color32::from_rgb(0x20, 0x24, 0x2a),
@@ -68,9 +72,11 @@ impl Palette {
             text: Color32::from_rgb(0x14, 0x17, 0x1a),
             secondary: Color32::from_rgb(0x53, 0x5b, 0x66),
             dim: Color32::from_rgb(0x8b, 0x93, 0x9e),
-            accent: Color32::from_rgb(0x4d, 0x9f, 0xff),
-            accent_hover: Color32::from_rgb(0x2e, 0x83, 0xe6),
-            on_accent: Color32::from_rgb(0x06, 0x17, 0x29),
+            accent: Color32::from_rgb(0x4f, 0x4f, 0xe6),
+            accent_hover: Color32::from_rgb(0x40, 0x40, 0xcc),
+            accent_mid: Color32::from_rgb(0x9c, 0x46, 0x77),
+            accent_warm: Color32::from_rgb(0xb9, 0x48, 0x1a),
+            on_accent: Color32::from_rgb(0xff, 0xff, 0xff),
             danger: Color32::from_rgb(0xd6, 0x3b, 0x4c),
             warning: Color32::from_rgb(0xb8, 0x7a, 0x14),
             overlay: Color32::from_rgb(0xff, 0xff, 0xff),
@@ -78,39 +84,49 @@ impl Palette {
         }
     }
 
-    /// The palette with the chosen accent. Blue is Oxidify's own; green is
-    /// the alternative, bright on dark and deepened on light so it still
-    /// reads as text.
+    /// The palette with the chosen accent. Oxide is Oxidify's own, the blue
+    /// to purple to orange of the mark; green is the alternative, bright on
+    /// dark and deepened on light so it still reads as text.
     pub fn with_accent(mut self, accent: crate::settings::Accent) -> Self {
         use crate::settings::Accent;
-        let (accent, hover, on_accent) = match (accent, self.dark) {
+        let base = if self.dark {
+            Self::dark()
+        } else {
+            Self::light()
+        };
+        let (accent, hover, mid, warm, on_accent) = match (accent, self.dark) {
             (Accent::Green, true) => (
                 Color32::from_rgb(0x1e, 0xd7, 0x60),
                 Color32::from_rgb(0x4a, 0xe8, 0x84),
+                Color32::from_rgb(0x19, 0xc9, 0xa4),
+                Color32::from_rgb(0x4f, 0xc8, 0xe8),
                 Color32::from_rgb(0x06, 0x14, 0x0b),
             ),
             (Accent::Green, false) => (
                 Color32::from_rgb(0x13, 0x7d, 0x37),
                 Color32::from_rgb(0x0f, 0x6a, 0x2e),
+                Color32::from_rgb(0x0f, 0x78, 0x68),
+                Color32::from_rgb(0x0e, 0x6a, 0x86),
                 Color32::from_rgb(0xff, 0xff, 0xff),
             ),
-            (Accent::Blue, true) => (
-                Color32::from_rgb(0x4d, 0x9f, 0xff),
-                Color32::from_rgb(0x82, 0xbc, 0xff),
-                Color32::from_rgb(0x0a, 0x28, 0x48),
-            ),
-            // Deeper than the dark theme's blue, so a playing title drawn in
-            // it still reads on white.
-            (Accent::Blue, false) => (
-                Color32::from_rgb(0x18, 0x66, 0xc8),
-                Color32::from_rgb(0x12, 0x56, 0xab),
-                Color32::from_rgb(0xff, 0xff, 0xff),
+            (Accent::Oxide, _) => (
+                base.accent,
+                base.accent_hover,
+                base.accent_mid,
+                base.accent_warm,
+                base.on_accent,
             ),
         };
         self.accent = accent;
         self.accent_hover = hover;
+        self.accent_mid = mid;
+        self.accent_warm = warm;
         self.on_accent = on_accent;
         self
+    }
+
+    pub fn gradient(&self) -> [Color32; 3] {
+        [self.accent, self.accent_mid, self.accent_warm]
     }
 
     /// A colour derived from album art, softened so it can sit behind text.
@@ -650,31 +666,85 @@ pub fn logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32, disc: Color32, gly
         .paint_at(ui, icon_rect);
 }
 
-/// Draw the Oxidify crystal brand mark from `packaging/icons/oxidify.svg`.
+pub const BRAND_GRADIENT: [Color32; 3] = brand_colors(crate::util::BRAND_GRADIENT);
+pub const BRAND_WORDMARK: Color32 = brand_color(crate::util::BRAND_WORDMARK);
+
+const fn brand_color([r, g, b]: [u8; 3]) -> Color32 {
+    Color32::from_rgb(r, g, b)
+}
+
+const fn brand_colors(stops: [[u8; 3]; 3]) -> [Color32; 3] {
+    [
+        brand_color(stops[0]),
+        brand_color(stops[1]),
+        brand_color(stops[2]),
+    ]
+}
+
+/// Draw the Oxidify mark from `packaging/icons/oxidify.svg`: the wave that
+/// rusts from blue to orange, fitted into a `size` square.
 ///
 /// This is intentionally separate from [`logo`]: playback controls use the
 /// play disc, while branded surfaces must show the actual Oxidify identity.
-pub fn brand_logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32) {
+pub fn brand_logo(ui: &egui::Ui, center: egui::Pos2, size: f32) {
+    use crate::util::{MARK_BAR_RADIUS, MARK_BARS, MARK_CENTER, MARK_DOT, MARK_FLAKES, MARK_SIDE};
     let painter = ui.painter();
-    let scale = diameter / 128.0;
-    let field = Color32::from_rgb(0x91, 0xc4, 0xff);
-    let ink = Color32::from_rgb(0x0d, 0x3a, 0x73);
-    let inset = 4.0 * scale;
-    painter.rect_filled(
-        egui::Rect::from_center_size(center, Vec2::splat(diameter)).shrink(inset),
-        egui::CornerRadius::same((28.0 * scale).round() as u8),
-        field,
+    let scale = size / MARK_SIDE;
+    let at = |x: f32, y: f32| center + Vec2::new(x - MARK_CENTER.0, y - MARK_CENTER.1) * scale;
+    let radius = MARK_BAR_RADIUS * scale;
+    for (x, top, bottom) in MARK_BARS {
+        let bar = egui::Rect::from_min_max(at(x, top), at(x, bottom)).expand2(Vec2::splat(radius));
+        painter.rect_filled(bar, radius, brand_color(crate::util::brand_color_at(x)));
+    }
+    let flake_color = BRAND_GRADIENT[2];
+    for (cx, cy, side, degrees) in MARK_FLAKES {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let half = side / 2.0;
+        let corners = [(-half, -half), (half, -half), (half, half), (-half, half)]
+            .map(|(dx, dy)| at(cx + dx * cos - dy * sin, cy + dx * sin + dy * cos))
+            .to_vec();
+        painter.add(egui::Shape::convex_polygon(
+            corners,
+            flake_color,
+            Stroke::NONE,
+        ));
+    }
+    let (dot_x, dot_y, dot_radius) = MARK_DOT;
+    painter.circle_filled(at(dot_x, dot_y), dot_radius * scale, flake_color);
+}
+
+pub fn paint_gradient(
+    ui: &egui::Ui,
+    stops: [Color32; 3],
+    rect: egui::Rect,
+    span: egui::Rect,
+    radius: f32,
+) {
+    let texture = gradient_texture(ui.ctx(), stops);
+    let texel = |x: f32| (1.0 + 4.0 * ((x - span.left()) / span.width()).clamp(0.0, 1.0)) / 6.0;
+    let uv = egui::Rect::from_min_max(
+        egui::pos2(texel(rect.left()), 0.0),
+        egui::pos2(texel(rect.right()), 1.0),
     );
-    let points = (0..6)
-        .map(|step| {
-            let angle = std::f32::consts::TAU * step as f32 / 6.0 - std::f32::consts::FRAC_PI_2;
-            center + Vec2::new(angle.cos() * 42.0 * scale, angle.sin() * 42.0 * scale)
-        })
-        .collect::<Vec<_>>();
-    let mut closed = points.clone();
-    closed.push(points[0]);
-    painter.add(egui::Shape::line(closed, Stroke::new(9.0 * scale, ink)));
-    painter.circle_filled(center, 8.0 * scale, ink);
+    egui::Image::new(egui::load::SizedTexture::new(texture.id(), rect.size()))
+        .uv(uv)
+        .corner_radius(CornerRadius::same(radius.min(127.0) as u8))
+        .paint_at(ui, rect);
+}
+
+fn gradient_texture(ctx: &egui::Context, stops: [Color32; 3]) -> egui::TextureHandle {
+    let id = egui::Id::new(("oxidify-gradient", stops));
+    let cached = ctx.data(|data| data.get_temp::<egui::TextureHandle>(id));
+    cached.unwrap_or_else(|| {
+        let image = egui::ColorImage {
+            size: [3, 1],
+            source_size: Vec2::new(3.0, 1.0),
+            pixels: stops.to_vec(),
+        };
+        let handle = ctx.load_texture("oxidify-gradient", image, egui::TextureOptions::LINEAR);
+        ctx.data_mut(|data| data.insert_temp(id, handle.clone()));
+        handle
+    })
 }
 
 pub fn circle_button(
@@ -690,15 +760,52 @@ pub fn circle_button(
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
         let grow = if hovered { 1.05 } else { 1.0 };
-        let radius = diameter / 2.0 * grow;
         let fill = if hovered { fill_hover } else { fill };
-        ui.painter().circle_filled(rect.center(), radius, fill);
-        let icon_size = diameter * 0.46;
-        let offset = play_glyph_offset(icon, icon_size);
-        let icon_rect =
-            egui::Rect::from_center_size(rect.center() + offset, Vec2::splat(icon_size));
-        icon.image(icon_color, icon_size).paint_at(ui, icon_rect);
+        ui.painter()
+            .circle_filled(rect.center(), diameter / 2.0 * grow, fill);
+        paint_disc_glyph(ui, icon, rect, diameter, icon_color);
     }
+    pointer_with_tooltip(response, tooltip)
+}
+
+pub fn accent_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    icon: Icon,
+    diameter: f32,
+    tooltip: &str,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(diameter), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered();
+        let grow = if hovered { 1.05 } else { 1.0 };
+        let disc = egui::Rect::from_center_size(rect.center(), Vec2::splat(diameter * grow));
+        paint_gradient(ui, palette.gradient(), disc, disc, disc.width() / 2.0);
+        if hovered {
+            ui.painter()
+                .circle_filled(disc.center(), disc.width() / 2.0, hover_sheen(palette));
+        }
+        paint_disc_glyph(ui, icon, rect, diameter, palette.on_accent);
+    }
+    pointer_with_tooltip(response, tooltip)
+}
+
+fn hover_sheen(palette: &Palette) -> Color32 {
+    if palette.dark {
+        Color32::from_white_alpha(28)
+    } else {
+        Color32::from_black_alpha(22)
+    }
+}
+
+fn paint_disc_glyph(ui: &egui::Ui, icon: Icon, rect: egui::Rect, diameter: f32, color: Color32) {
+    let icon_size = diameter * 0.46;
+    let offset = play_glyph_offset(icon, icon_size);
+    let icon_rect = egui::Rect::from_center_size(rect.center() + offset, Vec2::splat(icon_size));
+    icon.image(color, icon_size).paint_at(ui, icon_rect);
+}
+
+fn pointer_with_tooltip(response: Response, tooltip: &str) -> Response {
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if tooltip.is_empty() {
         response
@@ -795,12 +902,10 @@ pub fn pill_button(ui: &mut egui::Ui, palette: &Palette, label: &str, primary: b
         let hovered = response.hovered();
         let radius = rect.height() / 2.0;
         if primary {
-            let fill = if hovered {
-                palette.accent_hover
-            } else {
-                palette.accent
-            };
-            ui.painter().rect_filled(rect, radius, fill);
+            paint_gradient(ui, palette.gradient(), rect, rect, radius);
+            if hovered {
+                ui.painter().rect_filled(rect, radius, hover_sheen(palette));
+            }
         } else {
             let stroke_color = if hovered { palette.text } else { palette.dim };
             ui.painter().rect_stroke(
@@ -996,14 +1101,14 @@ mod tests {
         }
     }
 
-    /// The default accent is Oxidify's blue; green is a choice. Both keep
+    /// The default accent is Oxidify's oxide; green is a choice. Both keep
     /// their text readable on the accent in both themes, and the accent
     /// itself reads as text on every layer in light mode, where the
     /// playing title is drawn in it.
     #[test]
-    fn blue_is_the_default_accent_and_green_stays_readable_too() {
+    fn oxide_is_the_default_accent_and_green_stays_readable_too() {
         use crate::settings::Accent;
-        assert_eq!(Accent::default(), Accent::Blue);
+        assert_eq!(Accent::default(), Accent::Oxide);
         for accent in Accent::ALL {
             for palette in [
                 Palette::dark().with_accent(accent),

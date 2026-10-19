@@ -1789,16 +1789,7 @@ pub fn card(
             } else {
                 (Icon::PlayFilled, "Play")
             };
-            play = theme::circle_button(
-                &mut child,
-                icon,
-                44.0,
-                palette.accent,
-                palette.accent_hover,
-                palette.on_accent,
-                tooltip,
-            )
-            .clicked();
+            play = theme::accent_button(&mut child, &palette, icon, 44.0, tooltip).clicked();
         }
     }
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -2026,9 +2017,8 @@ pub fn thin_slider(
     id: egui::Id,
     value: f32,
     width: f32,
-    accent: Color32,
 ) -> SliderEvent {
-    thin_slider_with_scroll(ui, palette, id, value, width, accent, false)
+    thin_slider_with_scroll(ui, palette, id, value, width, false)
 }
 
 /// A thin slider; when `scroll` is set, the wheel moves it in five-percent steps.
@@ -2038,7 +2028,6 @@ pub fn thin_slider_with_scroll(
     id: egui::Id,
     value: f32,
     width: f32,
-    accent: Color32,
     scroll: bool,
 ) -> SliderEvent {
     let (rect, response) = ui.allocate_exact_size(vec2(width, 16.0), Sense::click_and_drag());
@@ -2089,8 +2078,7 @@ pub fn thin_slider_with_scroll(
             bar.min,
             pos2(bar.left() + bar.width() * shown.clamp(0.0, 1.0), bar.max.y),
         );
-        let fill = if active { accent } else { palette.text };
-        ui.painter().rect_filled(filled, 2.0, fill);
+        theme::paint_gradient(ui, palette.gradient(), filled, bar, 2.0);
         if active {
             ui.painter()
                 .circle_filled(pos2(filled.right(), bar.center().y), 6.0, palette.text);

@@ -980,7 +980,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 &query,
                 &palette,
                 "Accent",
-                "Oxidify's blue, or a green.",
+                "Oxidify's oxide gradient, or a green.",
                 |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;

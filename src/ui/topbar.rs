@@ -25,13 +25,15 @@ const SEARCH_MAX: f32 = 474.0;
 const CLUSTER_GAP: f32 = 16.0;
 const NAV_SIZE: f32 = 32.0;
 const MARK_SIZE: f32 = 32.0;
+const WORDMARK_GAP: f32 = 6.0;
+const WORDMARK_WIDTH: f32 = 74.0;
 /// Where the Home-and-search cluster was drawn, for tests to read back.
 const CLUSTER_RECT_ID: &str = "global-nav-cluster";
 
 /// The width the navigation cluster takes: the mark, back, forward, and
 /// the button that brings a hidden library back.
 pub(crate) fn topbar_nav_width(sidebar_hidden: bool) -> f32 {
-    let mut width = MARK_SIZE + 12.0 + NAV_SIZE + 8.0 + NAV_SIZE;
+    let mut width = MARK_SIZE + WORDMARK_GAP + WORDMARK_WIDTH + 12.0 + NAV_SIZE + 8.0 + NAV_SIZE;
     if sidebar_hidden {
         width += 8.0 + NAV_SIZE;
     }
@@ -183,9 +185,18 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
             .layout(Layout::left_to_right(Align::Center)),
     );
     nav.spacing_mut().item_spacing.x = 8.0;
-    let (mark_rect, mark) = nav.allocate_exact_size(Vec2::splat(MARK_SIZE), Sense::click());
-    if nav.is_rect_visible(mark_rect) {
-        theme::brand_logo(&nav, mark_rect.center(), MARK_SIZE);
+    let lockup = vec2(MARK_SIZE + WORDMARK_GAP + WORDMARK_WIDTH, MARK_SIZE);
+    let (lockup_rect, mark) = nav.allocate_exact_size(lockup, Sense::click());
+    if nav.is_rect_visible(lockup_rect) {
+        let left_center = pos2(lockup_rect.left(), lockup_rect.center().y);
+        theme::brand_logo(&nav, left_center + vec2(MARK_SIZE / 2.0, 0.0), MARK_SIZE);
+        nav.painter().text(
+            left_center + vec2(MARK_SIZE + WORDMARK_GAP, 0.0),
+            egui::Align2::LEFT_CENTER,
+            "Oxidify",
+            theme::bold(20.0),
+            theme::BRAND_WORDMARK,
+        );
     }
     mark.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Oxidify"));
     if mark

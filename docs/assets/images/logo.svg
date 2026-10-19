@@ -1,5 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <rect x="4" y="4" width="120" height="120" rx="28" fill="#91C4FF"/>
-  <path d="M64 22 L100 43 L100 85 L64 106 L28 85 L28 43 Z" fill="none" stroke="#0D3A73" stroke-width="9" stroke-linejoin="round"/>
-  <circle cx="64" cy="64" r="8" fill="#0D3A73"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="14.75 6 148 148" width="128" height="128">
+  <defs>
+    <linearGradient id="oxide" gradientUnits="userSpaceOnUse" x1="20" y1="0" x2="140" y2="0">
+      <stop offset="0" stop-color="#6666FF"/>
+      <stop offset="0.5" stop-color="#B05A8A"/>
+      <stop offset="1" stop-color="#D2572A"/>
+    </linearGradient>
+  </defs>
+  <g stroke="url(#oxide)" stroke-width="12" stroke-linecap="round">
+    <line x1="26" y1="68" x2="26" y2="92"/>
+    <line x1="46" y1="48" x2="46" y2="112"/>
+    <line x1="66" y1="30" x2="66" y2="130"/>
+    <line x1="86" y1="52" x2="86" y2="108"/>
+    <line x1="106" y1="38" x2="106" y2="122"/>
+    <line x1="126" y1="62" x2="126" y2="98"/>
+  </g>
+  <g fill="#D2572A">
+    <rect x="138" y="52" width="7" height="7" transform="rotate(20 141.5 55.5)"/>
+    <rect x="146" y="74" width="5" height="5" transform="rotate(-15 148.5 76.5)"/>
+    <rect x="140" y="100" width="6" height="6" transform="rotate(35 143 103)"/>
+    <circle cx="155" cy="90" r="2.5"/>
+  </g>
 </svg>

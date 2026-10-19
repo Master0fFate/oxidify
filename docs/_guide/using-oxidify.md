@@ -150,7 +150,8 @@ description, so an emptied description is kept and Oxidify says so.
 Click the cover at the top of a playlist, album, artist, or podcast page to
 see it enlarged; click again or press `Esc` to close it.
 
-Settings → Appearance chooses the accent, Oxidify's blue or a green, and
+Settings → Appearance chooses the accent, Oxidify's oxide gradient (the
+blue to purple to orange of its logo) or a green, and
 can show track tables as one-line rows without covers;
 the library's own view control chooses between full rows, compact rows, and
 the grid. Date added is relative for the first month.

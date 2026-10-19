@@ -885,7 +885,7 @@ mod tests {
         app.actions.push(Action::SettingsChanged);
         frame(&ctx, &mut app);
         assert!(app.palette.accent.g() > app.palette.accent.b());
-        app.settings.accent = crate::settings::Accent::Blue;
+        app.settings.accent = crate::settings::Accent::Oxide;
         app.actions.push(Action::SettingsChanged);
         frame(&ctx, &mut app);
         assert!(app.palette.accent.b() > app.palette.accent.g());

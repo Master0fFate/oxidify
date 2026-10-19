@@ -1,3 +1,5 @@
+<img src="docs/assets/images/logo.svg" alt="Oxidify logo" width="96">
+
 # Oxidify
 
 **Your library, native and fast.** A lightweight music player for your
@@ -99,8 +101,8 @@ getting started, everyday use, and how it connects to Spotify.
 - **Album-art colour.** Pages and the player bar can take a tint from the
   cover of what you are looking at or listening to, and the bar fades from
   one song's colour to the next. Turn it off in Settings and the interface
-  stays in its neutral chrome. The accent is Oxidify's blue; Settings →
-  Appearance offers a green instead.
+  stays in its neutral chrome. The accent is Oxidify's oxide, the blue to
+  purple to orange of its logo; Settings → Appearance offers a green instead.
 - **Light and dark**, or follow the system.
 - **Winamp mini player.** `Ctrl+M`, or the button at the right end of the
   player bar, turns the window into a tiny player that

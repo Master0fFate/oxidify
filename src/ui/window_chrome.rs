@@ -1,8 +1,8 @@
 //! Oxidify-owned window chrome for the undecorated Windows window.
 
 use egui::{
-    Color32, CornerRadius, CursorIcon, Frame, Id, Margin, Order, PointerButton, Pos2, Rect,
-    ResizeDirection, Sense, Stroke, ViewportCommand, pos2, vec2,
+    Color32, CornerRadius, CursorIcon, Frame, Id, Margin, Order, PointerButton, Rect,
+    ResizeDirection, Sense, ViewportCommand, pos2, vec2,
 };
 
 use crate::app::App;
@@ -12,8 +12,6 @@ const TITLE_HEIGHT: f32 = 40.0;
 const CONTROL_WIDTH: f32 = 46.0;
 /// The width of every resize hit target, border and corner alike.
 const RESIZE_EDGE: f32 = 5.0;
-const FIELD: Color32 = Color32::from_rgb(0x91, 0xc4, 0xff);
-const INK: Color32 = Color32::from_rgb(0x0d, 0x3a, 0x73);
 
 /// Draws the title bar and installs resize hit targets around the viewport.
 pub fn show(app: &App, ui: &mut egui::Ui) {
@@ -39,7 +37,7 @@ fn title_bar(ui: &mut egui::Ui, palette: &Palette, maximized: bool) {
     let controls_left = rect.right() - CONTROL_WIDTH * 3.0;
     let mark_rect =
         Rect::from_center_size(pos2(rect.left() + 20.0, rect.center().y), vec2(20.0, 20.0));
-    paint_mark(ui.painter(), mark_rect);
+    theme::brand_logo(ui, mark_rect.center(), mark_rect.width());
     ui.painter().text(
         pos2(mark_rect.right() + 9.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -126,20 +124,6 @@ fn chrome_button(
     };
     theme::paint_icon(ui, icon, rect, 15.0, color);
     response.clicked()
-}
-
-fn paint_mark(painter: &egui::Painter, rect: Rect) {
-    painter.rect_filled(rect, CornerRadius::same(5), FIELD);
-    let center = rect.center();
-    let radius = rect.width() * 0.33;
-    let points: Vec<Pos2> = (0..6)
-        .map(|step| {
-            let angle = std::f32::consts::TAU * step as f32 / 6.0 - std::f32::consts::FRAC_PI_2;
-            center + vec2(angle.cos(), angle.sin()) * radius
-        })
-        .collect();
-    painter.add(egui::Shape::closed_line(points, Stroke::new(1.7, INK)));
-    painter.circle_filled(center, rect.width() * 0.055, INK);
 }
 
 fn resize_handles(ctx: &egui::Context) {
@@ -247,6 +231,7 @@ fn cursor_for(direction: ResizeDirection) -> CursorIcon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::Pos2;
 
     /// The direction a point grabs, read straight off the hit targets.
     fn direction_at(point: Pos2, regions: &[(Rect, ResizeDirection)]) -> Option<ResizeDirection> {

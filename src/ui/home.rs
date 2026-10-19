@@ -183,13 +183,11 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
                             ui.new_child(egui::UiBuilder::new().max_rect(button).layout(
                                 egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
                             ));
-                        if theme::circle_button(
+                        if theme::accent_button(
                             &mut child,
+                            &palette,
                             Icon::PlayFilled,
                             40.0,
-                            palette.accent,
-                            palette.accent_hover,
-                            palette.on_accent,
                             "Play",
                         )
                         .clicked()

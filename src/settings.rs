@@ -46,22 +46,23 @@ impl ThemeChoice {
     }
 }
 
-/// The colour that marks what is playing, selected, and saved. Blue is
+/// The colour that marks what is playing, selected, and saved. Oxide is
 /// Oxidify's own; green is offered for those who want it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Accent {
     #[default]
-    Blue,
+    #[serde(rename = "blue")]
+    Oxide,
     Green,
 }
 
 impl Accent {
-    pub const ALL: [Accent; 2] = [Self::Blue, Self::Green];
+    pub const ALL: [Accent; 2] = [Self::Oxide, Self::Green];
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Blue => "Blue",
+            Self::Oxide => "Oxide",
             Self::Green => "Green",
         }
     }
@@ -308,7 +309,7 @@ impl Default for Settings {
             audio_cache: true,
             audio_cache_mb: 1024,
             theme: ThemeChoice::Dark,
-            accent: Accent::Blue,
+            accent: Accent::Oxide,
             accent_from_art: true,
             volume: (u16::MAX as u32 * 70 / 100) as u16,
             sidebar_visible: true,
@@ -501,9 +502,9 @@ mod tests {
     }
 
     #[test]
-    fn older_settings_keep_the_blue_accent_and_green_stays_when_chosen() {
+    fn older_settings_keep_the_oxide_accent_and_green_stays_when_chosen() {
         let settings: Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(settings.accent, super::Accent::Blue);
+        assert_eq!(settings.accent, super::Accent::Oxide);
         assert!(!settings.sidebar_grid);
         let green: Settings =
             serde_json::from_str(r#"{"accent": "green", "sidebar_grid": true}"#).unwrap();

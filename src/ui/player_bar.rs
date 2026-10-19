@@ -395,29 +395,22 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
 
     let disc = slot(widths[2]);
     if loading || app.any_play_pending() {
-        ui.painter()
-            .circle_filled(disc.center(), 18.0, palette.text);
+        let spot = Rect::from_center_size(disc.center(), Vec2::splat(36.0));
+        theme::paint_gradient(ui, palette.gradient(), spot, spot, 18.0);
         let mut cell = centered(ui, disc);
-        theme::spinner(&mut cell, 22.0, palette.window);
+        theme::spinner(&mut cell, 22.0, palette.on_accent);
     } else {
         let icon = if playing {
             Icon::PauseFilled
         } else {
             Icon::PlayFilled
         };
-        let hover = if palette.dark {
-            egui::Color32::WHITE
-        } else {
-            palette.text
-        };
         let mut cell = centered(ui, disc);
-        if theme::circle_button(
+        if theme::accent_button(
             &mut cell,
+            &palette,
             icon,
             36.0,
-            palette.text,
-            hover,
-            palette.window,
             if playing { "Pause" } else { "Play" },
         )
         .clicked()
@@ -505,7 +498,6 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
         egui::Id::new("seek-slider"),
         fraction,
         slider_width,
-        palette.accent,
     ) {
         SliderEvent::Dragging(value) => app.seek_preview = Some(value),
         SliderEvent::Committed(value) => {
@@ -562,7 +554,6 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
             egui::Id::new("volume-slider"),
             shown as f32 / 100.0,
             92.0,
-            palette.accent,
             true,
         ) {
             SliderEvent::Dragging(value) => {

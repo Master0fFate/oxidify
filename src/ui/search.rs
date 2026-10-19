@@ -310,16 +310,7 @@ fn top_result(
                     .max_rect(button)
                     .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
             );
-            if theme::circle_button(
-                &mut child,
-                Icon::PlayFilled,
-                48.0,
-                palette.accent,
-                palette.accent_hover,
-                palette.on_accent,
-                "Play",
-            )
-            .clicked()
+            if theme::accent_button(&mut child, &palette, Icon::PlayFilled, 48.0, "Play").clicked()
             {
                 if uri.starts_with("spotify:track:") {
                     app.actions.push(Action::PlayUris {

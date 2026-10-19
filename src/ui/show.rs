@@ -52,13 +52,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
                             palette.on_accent,
                             "Starting…",
                         );
-                    } else if theme::circle_button(
+                    } else if theme::accent_button(
                         ui,
+                        &palette,
                         Icon::PlayFilled,
                         56.0,
-                        palette.accent,
-                        palette.accent_hover,
-                        palette.on_accent,
                         "Play latest episode",
                     )
                     .clicked()

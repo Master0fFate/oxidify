@@ -179,13 +179,11 @@ pub fn actions_row(
             };
             if app.play_pending(uri) {
                 theme::circle_spinner(ui, 56.0, palette.accent, palette.on_accent, "Starting…");
-            } else if theme::circle_button(
+            } else if theme::accent_button(
                 ui,
+                &palette,
                 icon,
                 56.0,
-                palette.accent,
-                palette.accent_hover,
-                palette.on_accent,
                 if now_playing_here { "Pause" } else { "Play" },
             )
             .clicked()

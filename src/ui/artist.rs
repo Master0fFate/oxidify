@@ -55,16 +55,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 ui.spacing_mut().item_spacing.x = 18.0;
                 if app.play_pending(&artist.uri) {
                     theme::circle_spinner(ui, 56.0, palette.accent, palette.on_accent, "Starting…");
-                } else if theme::circle_button(
-                    ui,
-                    Icon::PlayFilled,
-                    56.0,
-                    palette.accent,
-                    palette.accent_hover,
-                    palette.on_accent,
-                    "Play",
-                )
-                .clicked()
+                } else if theme::accent_button(ui, &palette, Icon::PlayFilled, 56.0, "Play")
+                    .clicked()
                 {
                     app.actions.push(Action::PlayContext {
                         uri: artist.uri.clone(),
