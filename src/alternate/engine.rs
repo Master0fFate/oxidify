@@ -855,6 +855,9 @@ impl Engine {
             if spec.play && now != prev {
                 let _ = self.bump();
                 self.start_resolve();
+            } else if spec.play && now.is_some() && self.session.playback() == Playback::Stopped {
+                let advance = self.session.skip_forward();
+                self.follow(advance);
             } else {
                 self.emit();
                 // The clicked track may already be playing with

@@ -3966,6 +3966,7 @@ impl App {
         } else {
             None
         }) else {
+            window_listed_uris(spec);
             spec.known_tracks = self.known_local_tracks(spec);
             return;
         };
@@ -3983,21 +3984,7 @@ impl App {
             .into_iter()
             .skip(start)
             .take(MAX_QUEUE_TRACKS)
-            .map(|track| {
-                let mut local = local_from_track(track);
-                if let Some(album) = album {
-                    if local.album.is_empty() {
-                        local.album = album.name.clone();
-                    }
-                    if local.art_url.is_none() {
-                        local.art_url = pick_image(&album.images, 640).map(str::to_string);
-                    }
-                    if local.art_small_url.is_none() {
-                        local.art_small_url = pick_image(&album.images, 64).map(str::to_string);
-                    }
-                }
-                local
-            })
+            .map(|track| local_with_album(track, album))
             .collect();
         if complete || window.len() == MAX_QUEUE_TRACKS || start > 0 {
             spec.uris = window.iter().map(|track| track.uri.clone()).collect();
@@ -4050,20 +4037,58 @@ impl App {
         }
         uris.extend(spec.uris.iter().cloned());
         let mut seen = HashSet::new();
-        let mut out = Vec::new();
-        for uri in uris {
-            if !seen.insert(uri.clone()) {
-                continue;
+        uris.retain(|uri| seen.insert(uri.clone()));
+        let mut loaded = self.loaded_local_tracks(&seen);
+        uris.into_iter()
+            .filter_map(|uri| {
+                util::uri_id(&uri)
+                    .and_then(|id| self.track_cache.get(id))
+                    .map(local_from_track)
+                    .or_else(|| loaded.remove(&uri))
+            })
+            .filter(LocalTrack::has_search_metadata)
+            .collect()
+    }
+
+    fn loaded_local_tracks(&self, wanted: &HashSet<String>) -> HashMap<String, LocalTrack> {
+        let mut found = HashMap::new();
+        let mut keep = |track: &Track, album: Option<&Album>| {
+            if found.len() < wanted.len()
+                && wanted.contains(&track.uri)
+                && !found.contains_key(&track.uri)
+            {
+                found.insert(track.uri.clone(), local_with_album(track, album));
             }
-            let Some(track) = util::uri_id(&uri).and_then(|id| self.track_cache.get(id)) else {
-                continue;
-            };
-            let local = local_from_track(track);
-            if local.has_search_metadata() {
-                out.push(local);
+        };
+        for page in self.playlist_pages.values() {
+            for item in &page.items.items {
+                if let Some(PlayableItem::Track(track)) = item.playable() {
+                    keep(track, None);
+                }
             }
         }
-        out
+        for page in self.album_pages.values() {
+            for track in &page.tracks.items {
+                keep(track, page.album.get());
+            }
+        }
+        for saved in &self.library.liked.items {
+            keep(&saved.track, None);
+        }
+        for page in self.artist_pages.values() {
+            for track in page.top_tracks.get().into_iter().flatten() {
+                keep(track, None);
+            }
+        }
+        let searched = self
+            .search
+            .results
+            .get()
+            .and_then(|results| results.tracks.as_ref());
+        for track in searched.into_iter().flat_map(|page| &page.items) {
+            keep(track, None);
+        }
+        found
     }
 
     /// With `shuffle_first`, shuffle is turned on before playback starts,
@@ -6233,6 +6258,43 @@ fn unique_unknown_user_ids(
         unknown.push(id);
     }
     unknown
+}
+
+fn local_with_album(track: &Track, album: Option<&Album>) -> LocalTrack {
+    let mut local = local_from_track(track);
+    if let Some(album) = album {
+        if local.album.is_empty() {
+            local.album = album.name.clone();
+        }
+        if local.art_url.is_none() {
+            local.art_url = pick_image(&album.images, 640).map(str::to_string);
+        }
+        if local.art_small_url.is_none() {
+            local.art_small_url = pick_image(&album.images, 64).map(str::to_string);
+        }
+    }
+    local
+}
+
+fn window_listed_uris(spec: &mut LoadSpec) {
+    let total = spec.uris.len();
+    if total <= MAX_QUEUE_TRACKS {
+        return;
+    }
+    let start = match &spec.offset_uri {
+        Some(uri) => spec.uris.iter().position(|listed| listed == uri),
+        None => spec.offset_index.map(|index| index as usize),
+    }
+    .unwrap_or(0)
+    .min(total - 1);
+    spec.truncated = true;
+    if start >= MAX_QUEUE_TRACKS {
+        spec.uris.drain(..start);
+        spec.uris.truncate(MAX_QUEUE_TRACKS);
+        if spec.offset_uri.is_none() {
+            spec.offset_index = Some(0);
+        }
+    }
 }
 
 fn cap_uris(uris: Vec<String>, index: u32) -> (Vec<String>, u32) {
