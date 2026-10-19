@@ -1,19 +1,22 @@
 //! Oxidify-owned window chrome for the undecorated Windows window.
 
 use egui::{
-    Color32, CornerRadius, CursorIcon, Frame, Id, Margin, Order, PointerButton, Rect,
-    ResizeDirection, Sense, ViewportCommand, pos2, vec2,
+    Color32, CornerRadius, CursorIcon, Id, Order, PointerButton, Rect, ResizeDirection, Sense,
+    ViewportCommand, pos2, vec2,
 };
 
 use crate::app::App;
 use crate::theme::{self, Icon, Palette};
 
-const TITLE_HEIGHT: f32 = 40.0;
+const CAPTION_HEIGHT: f32 = theme::TOP_BAR_HEIGHT;
 const CONTROL_WIDTH: f32 = 46.0;
+const CAPTION_WIDTH: f32 = CONTROL_WIDTH * 3.0;
 /// The width of every resize hit target, border and corner alike.
 const RESIZE_EDGE: f32 = 5.0;
 
-/// Draws the title bar and installs resize hit targets around the viewport.
+/// Draws the caption buttons over the top bar's right end, makes the rest
+/// of that strip drag the window, and installs resize hit targets around
+/// the viewport.
 pub fn show(app: &App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let palette = app.palette;
@@ -21,10 +24,15 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
     let fullscreen = ctx.input(|input| input.viewport().fullscreen.unwrap_or(false));
 
     if !fullscreen {
-        egui::Panel::top("oxidify-window-titlebar")
-            .exact_size(TITLE_HEIGHT)
-            .frame(Frame::new().fill(palette.panel).inner_margin(Margin::ZERO))
-            .show(ui, |ui| title_bar(ui, &palette, maximized));
+        let strip = Rect::from_min_size(
+            ctx.viewport_rect().min,
+            vec2(ctx.viewport_rect().width(), CAPTION_HEIGHT),
+        );
+        drag_strip(ui, strip, maximized);
+        egui::Area::new(Id::new("oxidify-window-caption"))
+            .order(Order::Foreground)
+            .fixed_pos(pos2(strip.right() - CAPTION_WIDTH, strip.top()))
+            .show(&ctx, |ui| caption_buttons(ui, &palette, maximized));
     }
 
     if !maximized && !fullscreen {
@@ -32,27 +40,17 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
     }
 }
 
-fn title_bar(ui: &mut egui::Ui, palette: &Palette, maximized: bool) {
-    let rect = ui.max_rect();
-    let controls_left = rect.right() - CONTROL_WIDTH * 3.0;
-    let mark_rect =
-        Rect::from_center_size(pos2(rect.left() + 20.0, rect.center().y), vec2(20.0, 20.0));
-    theme::brand_logo(ui, mark_rect.center(), mark_rect.width());
-    ui.painter().text(
-        pos2(mark_rect.right() + 9.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        "Oxidify",
-        theme::semibold(13.5),
-        palette.text,
-    );
+pub fn caption_width(ctx: &egui::Context) -> f32 {
+    if ctx.input(|input| input.viewport().fullscreen.unwrap_or(false)) {
+        0.0
+    } else {
+        CAPTION_WIDTH
+    }
+}
 
-    let drag_left = mark_rect.right() + 76.0;
-    let drag_rect = Rect::from_min_max(
-        pos2(drag_left.min(controls_left), rect.top()),
-        pos2(controls_left, rect.bottom()),
-    );
+fn drag_strip(ui: &mut egui::Ui, strip: Rect, maximized: bool) {
     let drag = ui.interact(
-        drag_rect,
+        strip,
         Id::new("oxidify-titlebar-drag"),
         Sense::click_and_drag(),
     );
@@ -62,11 +60,19 @@ fn title_bar(ui: &mut egui::Ui, palette: &Palette, maximized: bool) {
     } else if drag.drag_started_by(PointerButton::Primary) {
         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
     }
+}
 
-    let minimize = control_rect(rect, 0);
-    let maximize = control_rect(rect, 1);
-    let close = control_rect(rect, 2);
-    if chrome_button(ui, minimize, Icon::Minus, palette, "Minimize", false) {
+fn caption_buttons(ui: &mut egui::Ui, palette: &Palette, maximized: bool) {
+    let caption = Rect::from_min_size(ui.max_rect().min, vec2(CAPTION_WIDTH, CAPTION_HEIGHT));
+    ui.allocate_rect(caption, Sense::hover());
+    if chrome_button(
+        ui,
+        control_rect(caption, 0),
+        Icon::Minus,
+        palette,
+        "Minimize",
+        false,
+    ) {
         ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
     }
     let maximize_icon = if maximized {
@@ -75,20 +81,37 @@ fn title_bar(ui: &mut egui::Ui, palette: &Palette, maximized: bool) {
         Icon::Square
     };
     let maximize_label = if maximized { "Restore" } else { "Maximize" };
-    if chrome_button(ui, maximize, maximize_icon, palette, maximize_label, false) {
+    if chrome_button(
+        ui,
+        control_rect(caption, 1),
+        maximize_icon,
+        palette,
+        maximize_label,
+        false,
+    ) {
         ui.ctx()
             .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
     }
-    if chrome_button(ui, close, Icon::X, palette, "Close", true) {
+    if chrome_button(
+        ui,
+        control_rect(caption, 2),
+        Icon::X,
+        palette,
+        "Close",
+        true,
+    ) {
         // This follows the same close-request path as the native button, so
         // close-to-tray can still cancel it in App::tick.
         ui.ctx().send_viewport_cmd(ViewportCommand::Close);
     }
 }
 
-fn control_rect(title: Rect, index: usize) -> Rect {
-    let left = title.right() - CONTROL_WIDTH * (3 - index) as f32;
-    Rect::from_min_size(pos2(left, title.top()), vec2(CONTROL_WIDTH, TITLE_HEIGHT))
+fn control_rect(caption: Rect, index: usize) -> Rect {
+    let left = caption.right() - CONTROL_WIDTH * (3 - index) as f32;
+    Rect::from_min_size(
+        pos2(left, caption.top()),
+        vec2(CONTROL_WIDTH, CAPTION_HEIGHT),
+    )
 }
 
 fn chrome_button(
@@ -132,8 +155,8 @@ fn resize_handles(ctx: &egui::Context) {
     // strip, and the corner that would sit on it is theirs, the way
     // native Windows gives the close button the top-right corner.
     let controls = Rect::from_min_size(
-        pos2(viewport.right() - CONTROL_WIDTH * 3.0, viewport.top()),
-        vec2(CONTROL_WIDTH * 3.0, TITLE_HEIGHT),
+        pos2(viewport.right() - CAPTION_WIDTH, viewport.top()),
+        vec2(CAPTION_WIDTH, CAPTION_HEIGHT),
     );
     for (index, (rect, direction)) in resize_regions(viewport, controls).into_iter().enumerate() {
         // One tiny foreground area per edge keeps the window resizable without
@@ -245,18 +268,18 @@ mod tests {
     fn controls(window: Rect) -> Rect {
         Rect::from_min_size(
             pos2(window.right() - CONTROL_WIDTH * 3.0, window.top()),
-            vec2(CONTROL_WIDTH * 3.0, TITLE_HEIGHT),
+            vec2(CONTROL_WIDTH * 3.0, CAPTION_HEIGHT),
         )
     }
 
     #[test]
     fn titlebar_controls_keep_windows_order_and_size() {
-        let title = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, TITLE_HEIGHT));
+        let title = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, CAPTION_HEIGHT));
         let minimize = control_rect(title, 0);
         let maximize = control_rect(title, 1);
         let close = control_rect(title, 2);
         assert_eq!(minimize.width(), CONTROL_WIDTH);
-        assert_eq!(minimize.height(), TITLE_HEIGHT);
+        assert_eq!(minimize.height(), CAPTION_HEIGHT);
         assert_eq!(maximize.left(), minimize.right());
         assert_eq!(close.left(), maximize.right());
         assert_eq!(close.right(), title.right());

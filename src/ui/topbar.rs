@@ -168,8 +168,9 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     // middle of the window, sliding aside only when the navigation or the
     // account would otherwise be covered.
     let nav_width = topbar_nav_width(sidebar_hidden);
+    let caption = super::caption_width(ui.ctx());
     let right_reserved =
-        topbar_right_reserved(spinner, app.update.is_some(), remote_label.is_some());
+        topbar_right_reserved(spinner, app.update.is_some(), remote_label.is_some()) + caption;
     let room = bar.width() - nav_width - right_reserved - 2.0 * CLUSTER_GAP;
     let search_width = topbar_search_width(room);
     let cluster_width = HOME_SIZE + 8.0 + search_width;
@@ -298,8 +299,10 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     }
 
     // Account and the page's controls, from the right edge inwards.
-    let right_rect =
-        Rect::from_min_max(pos2(cluster_rect.right() + CLUSTER_GAP, bar.top()), bar.max);
+    let right_rect = Rect::from_min_max(
+        pos2(cluster_rect.right() + CLUSTER_GAP, bar.top()),
+        pos2(bar.right() - caption, bar.bottom()),
+    );
     let mut right = ui.new_child(
         UiBuilder::new()
             .max_rect(right_rect)
@@ -694,7 +697,7 @@ mod tests {
         app.open(Page::Home);
         let ctx = egui::Context::default();
         theme::install(&ctx);
-        let width = 1400.0;
+        let width = 1600.0;
         for _ in 0..2 {
             let mut output = ctx.run_ui(
                 egui::RawInput {

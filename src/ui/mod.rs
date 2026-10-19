@@ -32,6 +32,14 @@ pub mod winamp;
 #[cfg(target_os = "windows")]
 mod window_chrome;
 
+#[cfg(target_os = "windows")]
+pub(crate) use window_chrome::caption_width;
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn caption_width(_: &egui::Context) -> f32 {
+    0.0
+}
+
 use egui::{Align2, Color32, CornerRadius, Frame, Margin, Rect, Stroke, vec2};
 
 use crate::api::models::pick_image;

@@ -97,6 +97,7 @@ pub fn fullscreen(app: &mut App, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(super::caption_width(ui.ctx()));
                     if theme::icon_button(
                         ui,
                         Icon::X,
