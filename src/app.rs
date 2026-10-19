@@ -15,6 +15,7 @@ use crate::backend::{
     ApiRequest, ApiResponse, AuthStatus, Backend, Command, Event, LocalPlayback, LyricsRequest,
     PLAYLIST_PAGE_SIZE, RemoteAction, Waker,
 };
+use crate::discord::{DiscordPresence, Presence};
 use crate::media::{MediaCommand, MediaState, MediaTrack};
 use crate::media_controls::MediaService;
 use crate::model::*;
@@ -163,6 +164,7 @@ pub struct App {
     pub backend: Backend,
     media_controls: Option<MediaService>,
     tray: Option<TrayService>,
+    discord: Option<DiscordPresence>,
     pub window_hidden: bool,
     /// The window should close but the process should stay in the tray.
     pub hide_intent: bool,
@@ -456,6 +458,7 @@ impl App {
             backend,
             media_controls,
             tray,
+            discord: None,
             window_hidden: false,
             hide_intent: false,
             wants_show: false,
@@ -1933,6 +1936,21 @@ impl App {
         }
     }
 
+    fn sync_discord(&mut self, now: Option<&NowPlaying>) {
+        if !self.settings.discord_presence {
+            if let Some(discord) = &mut self.discord {
+                discord.show(None);
+            }
+            return;
+        }
+        let presence = now
+            .filter(|now| now.local && now.playing)
+            .map(Presence::from_now_playing);
+        self.discord
+            .get_or_insert_with(DiscordPresence::spawn)
+            .show(presence);
+    }
+
     fn sync_media_controls(&mut self) {
         let now = self.now_playing();
         let playing = now.as_ref().is_some_and(|now| now.playing);
@@ -1971,6 +1989,7 @@ impl App {
         if let Some(tray) = &mut self.tray {
             tray.set_playing(playing);
         }
+        self.sync_discord(now.as_ref());
         if let Some(slot) = &self.control_now_playing {
             let snapshot = self.control_snapshot(now.as_ref());
             let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());

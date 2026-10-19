@@ -71,7 +71,13 @@ no playback request to Spotify.
   checks or request a check immediately. Checks time out after 15 seconds;
   manual failures are reported, and daily failures do not interrupt playback.
   Clicking **Update available** opens that release in the default browser.
-  The app never downloads or installs an update itself. Alternate local audio,
+  The app never downloads or installs an update itself. With Settings →
+  Show on Discord turned on (it is off by default), the app hands the Discord
+  app running on this computer, over its local IPC pipe, the title, artists,
+  album, cover link, Spotify link, and timing of the song playing here, and
+  Discord shows it on your profile. Oxidify itself makes no request to
+  Discord's servers, and nothing is sent while the setting is off, nothing
+  plays here, or Discord is not running. Alternate local audio,
   selected for Free or unconfirmed accounts and available in Settings, uses a
   native YouTube resolver and can also contact the Piped endpoint you chose.
   These searches run concurrently with short timeouts. A strong result cancels

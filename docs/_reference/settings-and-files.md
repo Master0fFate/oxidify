@@ -80,6 +80,7 @@ without resetting preferences. Its main fields are:
 | `winamp_shaded` | `false` | The main window is rolled up to its title bar |
 | `keep_playing_in_background` | `true` | Close to tray |
 | `check_for_updates` | `true` | Ask GitHub once a day for a newer release |
+| `discord_presence` | `false` | Show the song playing on this computer as your Discord status |
 | `web_client_id` | none | Optional personal Spotify app id used alongside shared coverage |
 | `playback_backend` | `spotify` | `spotify` (Connect / librespot) or `alternate` |
 | `piped_api_base` | empty | Optional Piped-compatible YouTube fallback |

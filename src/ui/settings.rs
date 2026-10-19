@@ -846,6 +846,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 },
             );
+            search_row(
+                ui,
+                &query,
+                &palette,
+                "Show on Discord",
+                "Your Discord status shows the song playing on this computer, with its cover.",
+                |ui| {
+                    if widgets::switch(ui, &palette, &mut app.settings.discord_presence).changed() {
+                        changed = true;
+                    }
+                },
+            );
             if app.settings.playback_backend == PlaybackBackend::Spotify
                 && cfg!(target_os = "linux")
             {

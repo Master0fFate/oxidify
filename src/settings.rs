@@ -237,6 +237,7 @@ pub struct Settings {
     pub keep_playing_in_background: bool,
     /// Ask GitHub once a day whether a newer release exists.
     pub check_for_updates: bool,
+    pub discord_presence: bool,
     /// Context URIs pinned to the top of the sidebar, in pin order.
     pub pinned_contexts: Vec<String>,
     /// Local audio engine. Missing from older files; defaults to Spotify Connect.
@@ -329,6 +330,7 @@ impl Default for Settings {
             playback_authorized: false,
             keep_playing_in_background: true,
             check_for_updates: true,
+            discord_presence: false,
             pinned_contexts: Vec::new(),
             playback_backend: PlaybackBackend::Spotify,
             piped_api_base: String::new(),

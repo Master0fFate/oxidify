@@ -154,6 +154,10 @@ getting started, everyday use, and how it connects to Spotify.
   `playerctl` see Oxidify like any other player. On macOS and Windows,
   `oxidify next` and its siblings drive the running app from a terminal,
   a launcher, or a hotkey.
+- **Discord status.** Settings → Show on Discord puts the song playing on
+  this computer on your Discord profile as Listening to Oxidify, with its
+  cover, artists, and a progress bar. It talks only to the Discord app
+  running on the same machine and is off until you turn it on.
 
 ## Install
 
