@@ -394,6 +394,11 @@ pub struct TableRows {
     pub names_revision: u64,
     pub source_len: usize,
     pub rows: std::sync::Arc<Vec<TableItem>>,
+    /// The rows' playing time, summed as they arrive rather than every
+    /// frame.
+    pub total_ms: u64,
+    /// Whether any row carries a real date added, so the column shows.
+    pub has_dates: bool,
 }
 
 #[derive(Default)]
@@ -637,7 +642,9 @@ pub enum RowContext {
     /// A sorted or filtered view of a context: plays exactly the list on
     /// screen, while the context stays what the interface calls playing.
     View {
-        uris: Vec<String>,
+        /// Shared with the table's cached view, so a frame costs no copy
+        /// of the list; a play copies what it needs.
+        uris: std::sync::Arc<[String]>,
         context_uri: String,
         /// Removal is by URI and remains safe when display order changes.
         /// Reordering still requires a Context with actual server positions.

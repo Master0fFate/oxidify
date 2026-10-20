@@ -150,7 +150,7 @@ pub struct Actions<'a> {
     pub play_uri: Option<String>,
     /// A sorted or filtered view: the exact list on screen, which the big
     /// button plays instead of the context's own order.
-    pub view: Option<Vec<String>>,
+    pub view: Option<Arc<[String]>>,
     pub saved: Option<(String, bool)>,
     pub saved_icons: (Icon, Icon),
     pub saved_tooltips: (&'a str, &'a str),
@@ -377,7 +377,7 @@ fn view_context(base: &RowContext, view_uris: Option<&Arc<[String]>>) -> RowCont
                 uri,
                 editable_playlist,
             } => RowContext::View {
-                uris: uris.to_vec(),
+                uris: Arc::clone(uris),
                 context_uri: uri.clone(),
                 editable_playlist: editable_playlist.clone(),
             },
@@ -805,14 +805,21 @@ fn refreshed_rows(
                 rows.names_revision == source.names_revision
                     && source.grown_from == Some((rows.items_revision, rows.source_len))
             });
-            let (start, mut rows) =
-                kept.map_or((0, Arc::default()), |rows| (rows.source_len, rows.rows));
-            Arc::make_mut(&mut rows).extend(build(start));
+            let (start, mut rows, mut total_ms, mut has_dates) = kept
+                .map_or((0, Arc::default(), 0, false), |rows| {
+                    (rows.source_len, rows.rows, rows.total_ms, rows.has_dates)
+                });
+            let added = build(start);
+            total_ms += total_duration(&added);
+            has_dates |= has_added_dates(&added);
+            Arc::make_mut(&mut rows).extend(added);
             TableRows {
                 items_revision: source.revision,
                 names_revision: source.names_revision,
                 source_len: source.len,
                 rows,
+                total_ms,
+                has_dates,
             }
         }
     }
@@ -941,6 +948,7 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 },
             );
             let items = Arc::clone(&rows.rows);
+            let (total_ms, has_dates) = (rows.total_ms, rows.has_dates);
             page.table_rows = Some(rows);
             let count = playlist.track_total().max(items.len() as u32);
             // Spotify's collaborative flag covers secret collaborations; a
@@ -972,7 +980,7 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 format!(
                     "{} songs, {}",
                     util::format_count(count as u64),
-                    util::format_total_ms(total_duration(&items))
+                    util::format_total_ms(total_ms)
                 )
             } else {
                 format!("{} songs", util::format_count(count as u64))
@@ -1014,7 +1022,7 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 sort,
                 page.items.revision,
             );
-            let view_play = table_view.view_uris.as_ref().map(|uris| uris.to_vec());
+            let view_play = table_view.view_uris.clone();
             let playlist_clone = playlist.clone();
             actions_row(
                 app,
@@ -1043,7 +1051,7 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                     },
                     show_album: true,
                     show_cover: true,
-                    show_added: has_added_dates(&items),
+                    show_added: has_dates,
                     show_added_by: made_together,
                     page: Page::Playlist(id.to_string()),
                     loading: page.items.loading,
@@ -1123,7 +1131,7 @@ pub fn album(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 sort,
                 page.tracks.revision,
             );
-            let album_view = table_view.view_uris.as_ref().map(|uris| uris.to_vec());
+            let album_view = table_view.view_uris.clone();
             actions_row(
                 app,
                 ui,
@@ -1278,6 +1286,7 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
         },
     );
     let items = Arc::clone(&rows.rows);
+    let total_ms = rows.total_ms;
     app.liked_rows = Some(rows);
     let total = app.library.liked.total.unwrap_or(items.len() as u32);
     let user = app
@@ -1289,7 +1298,7 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
         format!(
             "{} songs, {}",
             util::format_count(total as u64),
-            util::format_total_ms(total_duration(&items))
+            util::format_total_ms(total_ms)
         )
     } else {
         format!("{} songs", util::format_count(total as u64))
@@ -1327,7 +1336,7 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
         sort,
         app.library.liked.revision,
     );
-    let liked_view = table_view.view_uris.as_ref().map(|uris| uris.to_vec());
+    let liked_view = table_view.view_uris.clone();
     actions_row(
         app,
         ui,
@@ -1520,7 +1529,7 @@ mod tests {
             assert!(matches!(
                 view_context(&base, Some(&uris)),
                 RowContext::View { uris: actual, context_uri, editable_playlist }
-                    if actual == uris.as_ref()
+                    if actual == uris
                         && context_uri == "spotify:playlist:pl1"
                         && editable_playlist == editable
             ));
@@ -1533,6 +1542,59 @@ mod tests {
         assert!(
             matches!(view_context(&loose, Some(&uris)), RowContext::Uris(actual) if actual == uris.as_ref())
         );
+    }
+
+    #[test]
+    fn refreshed_rows_carry_totals_that_match_the_rows_through_growth() {
+        let mut all = make_test_tracks();
+        for (index, (_, date, _)) in all.iter_mut().enumerate() {
+            *date = (index == 3).then(|| "2026-09-30T12:00:00Z".to_string());
+        }
+        let first = refreshed_rows(
+            None,
+            RowSource {
+                revision: 1,
+                names_revision: 0,
+                grown_from: None,
+                len: 2,
+            },
+            |start| all[start..2].to_vec(),
+        );
+        assert_eq!(first.total_ms, total_duration(&first.rows));
+        assert_eq!(first.total_ms, 180_000);
+        assert!(!first.has_dates);
+
+        let grown = refreshed_rows(
+            Some(first),
+            RowSource {
+                revision: 2,
+                names_revision: 0,
+                grown_from: Some((1, 2)),
+                len: 4,
+            },
+            |start| {
+                assert_eq!(start, 2);
+                all[start..].to_vec()
+            },
+        );
+        assert_eq!(grown.rows.len(), 4);
+        assert_eq!(grown.total_ms, total_duration(&grown.rows));
+        assert_eq!(grown.total_ms, 600_000);
+        assert!(grown.has_dates);
+
+        let rebuilt = refreshed_rows(
+            Some(grown),
+            RowSource {
+                revision: 3,
+                names_revision: 0,
+                grown_from: None,
+                len: 1,
+            },
+            |start| all[start..1].to_vec(),
+        );
+        assert_eq!(rebuilt.rows.len(), 1);
+        assert_eq!(rebuilt.total_ms, 60_000);
+        assert!(!rebuilt.has_dates);
     }
 
     #[test]

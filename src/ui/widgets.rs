@@ -1,5 +1,7 @@
 //! Widgets shared by every view: covers, cards, track rows, menus, sliders.
 
+use std::collections::{HashMap, HashSet};
+
 use egui::{
     Align, Color32, CornerRadius, Layout, Rect, Sense, Stroke, Ui, UiBuilder, Vec2, pos2, vec2,
 };
@@ -480,13 +482,22 @@ pub fn picker_rows(app: &App, uri: &str) -> Vec<PickerRow> {
                 .collect()
         })
         .unwrap_or_default();
-    let recent = |uri: &str| {
-        app.recent_contexts
-            .iter()
-            .position(|held| held == uri)
-            .unwrap_or(usize::MAX)
-    };
+    // Each recent uri's rank is looked up once: searching the recents for
+    // every comparison grew with the library times the recents.
+    let recents: HashMap<&str, usize> = app
+        .recent_contexts
+        .iter()
+        .enumerate()
+        .map(|(index, uri)| (uri.as_str(), index))
+        .collect();
+    let recent = |uri: &str| recents.get(uri).copied().unwrap_or(usize::MAX);
     playlists.sort_by_key(|playlist| recent(&playlist.uri));
+    let pinned: HashSet<&str> = app
+        .settings
+        .pinned_contexts
+        .iter()
+        .map(String::as_str)
+        .collect();
     for playlist in playlists {
         rows.push(PickerRow {
             key: playlist.id.clone(),
@@ -494,7 +505,7 @@ pub fn picker_rows(app: &App, uri: &str) -> Vec<PickerRow> {
             subtitle: format!("{} songs", playlist.track_total()),
             image: pick_image(&playlist.images, 64).map(str::to_string),
             liked: false,
-            pinned: app.settings.pinned_contexts.contains(&playlist.uri),
+            pinned: pinned.contains(playlist.uri.as_str()),
             holds: app.playlist_holds(&playlist.id, uri),
         });
     }
@@ -2289,6 +2300,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn picker_rows_follow_the_recents_and_mark_the_pinned() {
+        with_app("picker-order", |app| {
+            app.recent_contexts = vec![
+                "spotify:playlist:pl3".into(),
+                "spotify:playlist:pl0".into(),
+                "spotify:playlist:pl1".into(),
+            ];
+            app.settings.pinned_contexts = vec!["spotify:playlist:pl1".into()];
+            let rows = picker_rows(app, "spotify:track:t0");
+            assert!(rows[0].liked);
+            let keys: Vec<&str> = rows[1..].iter().map(|row| row.key.as_str()).collect();
+            // Recently played first (Spotify's own pl0 is not offered),
+            // then the rest in the library's order.
+            assert_eq!(&keys[..2], ["pl3", "pl1"]);
+            assert_eq!(&keys[2..5], ["pl2", "pl5", "pl6"]);
+            assert!(!keys.contains(&"pl0") && !keys.contains(&"pl4"));
+            let pinned: Vec<&str> = rows
+                .iter()
+                .filter(|row| row.pinned)
+                .map(|row| row.key.as_str())
+                .collect();
+            assert_eq!(pinned, ["pl1"]);
+        });
+    }
+
     fn painted_text(shape: &egui::Shape, text: &mut Vec<(String, Rect)>) {
         match shape {
             egui::Shape::Text(shape) => text.push((
@@ -2360,7 +2397,7 @@ mod tests {
                 let ctx = egui::Context::default();
                 theme::install(&ctx);
                 let context = RowContext::View {
-                    uris: vec![item.uri().to_string()],
+                    uris: std::sync::Arc::from([item.uri().to_string()]),
                     context_uri: "spotify:playlist:pl1".into(),
                     editable_playlist: editable.then(|| ("pl1".into(), None)),
                 };
@@ -2635,11 +2672,11 @@ mod tests {
     fn episode_rows_preserve_the_resume_position_and_track_rows_keep_their_context() {
         with_app("row-play", |app| {
             let context = RowContext::View {
-                uris: vec![
+                uris: std::sync::Arc::from([
                     "spotify:track:before".into(),
                     "spotify:episode:episode".into(),
                     "spotify:track:after".into(),
-                ],
+                ]),
                 context_uri: "spotify:playlist:mixed".into(),
                 editable_playlist: Some(("mixed".into(), None)),
             };

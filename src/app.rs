@@ -3040,9 +3040,10 @@ impl App {
                         .into_iter()
                         .filter(|playlist| {
                             let owner = playlist.owner.id.as_deref().unwrap_or("");
-                            playlist.name.to_lowercase().contains(&needle)
+                            let name = playlist.name.to_lowercase();
+                            name.contains(&needle)
                                 && (owner == "spotify" || playlist.owner_name() == "Spotify")
-                                && seen.insert(playlist.name.to_lowercase())
+                                && seen.insert(name)
                         })
                         .collect();
                     matching.truncate(6);
@@ -4920,7 +4921,7 @@ impl App {
                 if uris.is_empty() {
                     return;
                 }
-                let (uris, index) = cap_uris(uris, index);
+                let (uris, index) = cap_uris(&uris, index);
                 let request = PlayRequest::tracks(uris).starting_at_index(index);
                 self.play_request(request, false);
             }
@@ -4975,7 +4976,7 @@ impl App {
                                 .position(|held| *held == uri)
                                 .map_or(index, |position| position as u32)
                         };
-                        let (uris, index) = cap_uris(uris, index);
+                        let (uris, index) = cap_uris(&uris, index);
                         (
                             PlayRequest::tracks(uris).starting_at_index(index),
                             None,
@@ -4991,7 +4992,7 @@ impl App {
                             index,
                             uri,
                         });
-                        let (uris, index) = cap_uris(uris, index);
+                        let (uris, index) = cap_uris(&uris, index);
                         (
                             PlayRequest::tracks(uris).starting_at_index(index),
                             Some(context_uri),
@@ -5110,9 +5111,10 @@ impl App {
                     .and_then(|page| page.playlist.get())
                     .and_then(|playlist| playlist.snapshot_id.clone());
                 if let Some(page) = self.playlist_pages.get_mut(&playlist_id) {
+                    let removed: HashSet<&str> = uris.iter().map(String::as_str).collect();
                     page.items.retain(|item| {
                         item.playable()
-                            .is_none_or(|playable| !uris.iter().any(|uri| uri == playable.uri()))
+                            .is_none_or(|playable| !removed.contains(playable.uri()))
                     });
                 }
                 self.playlist_busy = true;
@@ -5718,7 +5720,7 @@ impl App {
             .iter()
             .any(|(playlist_id, _)| *playlist_id == id);
         editable.then(|| RowContext::View {
-            uris: vec![uri.to_string()],
+            uris: std::sync::Arc::from([uri.to_string()]),
             context_uri: context_uri.clone(),
             editable_playlist: Some((id, None)),
         })
@@ -5728,9 +5730,10 @@ impl App {
         let Some(page) = self.playlist_pages.get(playlist_id) else {
             return false;
         };
+        let wanted: HashSet<&str> = uris.iter().map(String::as_str).collect();
         page.items.items.iter().any(|item| {
             item.playable()
-                .is_some_and(|playable| uris.iter().any(|uri| uri == playable.uri()))
+                .is_some_and(|playable| wanted.contains(playable.uri()))
         })
     }
 
@@ -6316,10 +6319,10 @@ fn window_listed_uris(spec: &mut LoadSpec) {
     }
 }
 
-fn cap_uris(uris: Vec<String>, index: u32) -> (Vec<String>, u32) {
+fn cap_uris(uris: &[String], index: u32) -> (Vec<String>, u32) {
     const MAX: usize = 500;
     if uris.len() <= MAX {
-        return (uris, index);
+        return (uris.to_vec(), index);
     }
     let start = (index as usize).min(uris.len() - 1);
     let end = (start + MAX).min(uris.len());
@@ -8141,7 +8144,7 @@ mod tests {
         );
         assert_eq!(request.offset_uri.as_deref(), Some(episode));
         assert_eq!(request.position_ms, 42_000);
-        let uris = vec![
+        let uris: Vec<String> = vec![
             "spotify:track:first".into(),
             episode.into(),
             "spotify:track:last".into(),
@@ -8149,7 +8152,7 @@ mod tests {
         app.apply(
             Action::PlayFromRow {
                 context: RowContext::View {
-                    uris: uris.clone(),
+                    uris: uris.clone().into(),
                     context_uri: "spotify:playlist:list".into(),
                     editable_playlist: None,
                 },

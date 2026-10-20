@@ -725,8 +725,7 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                 let playing = context_playing
                     && !entry.uri.is_empty()
                     && playing_context.as_deref() == Some(entry.uri.as_str());
-                let pinned =
-                    !entry.uri.is_empty() && app.settings.pinned_contexts.contains(&entry.uri);
+                let pinned = slots[index].pin.is_some();
                 let (rect, response) = ui.allocate_exact_size(
                     vec2(ui.available_width(), row_height),
                     Sense::click_and_drag(),
@@ -1185,8 +1184,7 @@ fn grid_tiles(
                     Icon::Volume2
                         .image(palette.accent, 14.0)
                         .paint_at(ui, Rect::from_center_size(badge, Vec2::splat(14.0)));
-                } else if !entry.uri.is_empty() && app.settings.pinned_contexts.contains(&entry.uri)
-                {
+                } else if slot.pin.is_some() {
                     let badge = pos2(cover_rect.right() - 11.0, cover_rect.top() + 11.0);
                     ui.painter().circle_filled(badge, 9.0, palette.panel);
                     Icon::Pin
@@ -1303,10 +1301,10 @@ fn full_playlist_order(app: &App) -> Vec<String> {
         return Vec::new();
     };
     let mut ordered: Vec<_> = playlists.iter().enumerate().collect();
+    let pins = rank_of(&app.settings.pinned_contexts);
     if app.settings.sidebar_order.is_empty() {
         let recents = rank_of(&app.recent_contexts);
         let recent = |uri: &str| recents.get(uri).copied().unwrap_or(usize::MAX);
-        let pins = rank_of(&app.settings.pinned_contexts);
         let pinned = |uri: &str| pins.get(uri).copied();
         ordered.sort_by_cached_key(|(index, playlist)| match pinned(&playlist.uri) {
             Some(rank) => (0, rank, 0),
@@ -1324,7 +1322,7 @@ fn full_playlist_order(app: &App) -> Vec<String> {
         .into_iter()
         .map(|(_, playlist)| playlist.uri.clone())
         // Pins live in their own list; the saved order holds the rest.
-        .filter(|uri| !app.settings.pinned_contexts.contains(uri))
+        .filter(|uri| !pins.contains_key(uri.as_str()))
         .collect()
 }
 

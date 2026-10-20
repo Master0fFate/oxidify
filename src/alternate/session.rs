@@ -120,8 +120,12 @@ impl Session {
 
     pub fn append(&mut self, tracks: Vec<LocalTrack>) -> usize {
         let before = self.tracks.len();
+        // Known uris are gathered once: checking each arrival against the
+        // whole list made a long playlist's load grow with its square.
+        let mut known: HashSet<String> =
+            self.tracks.iter().map(|track| track.uri.clone()).collect();
         for track in tracks {
-            if self.tracks.iter().any(|known| known.uri == track.uri) {
+            if !known.insert(track.uri.clone()) {
                 continue;
             }
             self.order.push(self.tracks.len());
@@ -646,6 +650,23 @@ mod tests {
         session.set_shuffle(false);
         assert_eq!(session.current().unwrap().title, "c");
         assert_eq!(session.order, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn append_skips_tracks_already_held_and_keeps_the_rest() {
+        let mut session = session_with(&["a", "b"], 0);
+        let added = session.append(vec![
+            track("spotify:track:1", "b again"),
+            track("spotify:track:9", "c"),
+            track("spotify:track:9", "c again"),
+        ]);
+        assert_eq!(added, 1);
+        let uris: Vec<&str> = session.tracks.iter().map(|t| t.uri.as_str()).collect();
+        assert_eq!(
+            uris,
+            ["spotify:track:0", "spotify:track:1", "spotify:track:9"]
+        );
+        assert_eq!(session.order.len(), 3);
     }
 
     #[test]

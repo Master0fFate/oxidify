@@ -306,4 +306,33 @@ fn main() {
     println!("  median {median:7.3} ms");
     println!("  p95    {p95:7.3} ms");
     println!("  max    {max:7.3} ms");
+
+    // A sorted view plays the list on screen, so every frame carries the
+    // view's uris with it.
+    app.table_sorts.insert(
+        oxidify::model::Page::Playlist(BENCH_PLAYLIST.into()),
+        oxidify::model::TableSort {
+            column: oxidify::model::SortColumn::Title,
+            ascending: true,
+        },
+    );
+    let mut sorted_frames = Vec::with_capacity(FRAMES);
+    for _ in 0..WARMUP {
+        let mut output = ctx.run_ui(input.clone(), |ui| frame(&mut app, ui));
+        output.textures_delta.clear();
+        at += Duration::from_millis(16);
+    }
+    for _ in 0..FRAMES {
+        let started = Instant::now();
+        let mut output = ctx.run_ui(input.clone(), |ui| frame(&mut app, ui));
+        output.textures_delta.clear();
+        sorted_frames.push(started.elapsed());
+        at += Duration::from_millis(16);
+    }
+    let (mean, median, p95, max) = stats(&sorted_frames);
+    println!("same playlist page sorted by title:");
+    println!("  mean   {mean:7.3} ms");
+    println!("  median {median:7.3} ms");
+    println!("  p95    {p95:7.3} ms");
+    println!("  max    {max:7.3} ms");
 }
