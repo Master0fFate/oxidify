@@ -1447,6 +1447,7 @@ impl Worker {
             self.engine_notify(),
             None,
             self.dirs.bin_dir(),
+            Arc::clone(&self.engine_config.eq),
         ) {
             Ok(handle) => {
                 let source = self.alternate_config.source_summary();

@@ -73,7 +73,7 @@ impl EqSettings {
     pub fn curve(&self) -> Curve {
         Curve {
             preamp_db: self.preamp_db,
-            filters: chain(&self.bands_db),
+            filters: chain(&self.bands_db, f64::from(SAMPLE_RATE)),
         }
     }
 
@@ -127,7 +127,7 @@ fn band_widths() -> [f64; 10] {
 /// band's centre. Neighbouring peaks add up, so the gain each filter is
 /// given is not the slider's own: the interaction is solved for, on the
 /// digital filters themselves, and refined until the centres agree.
-fn chain(bands_db: &[f32; 10]) -> Vec<Biquad> {
+fn chain(bands_db: &[f32; 10], rate: f64) -> Vec<Biquad> {
     let widths = band_widths();
     let target: [f64; 10] = bands_db.map(f64::from);
     if target.iter().all(|gain| gain.abs() <= f64::from(FLAT)) {
@@ -136,14 +136,14 @@ fn chain(bands_db: &[f32; 10]) -> Vec<Biquad> {
     // How much each band moves every centre, per decibel it is given.
     let mut unit = [[0.0; 10]; 10];
     for (j, (hz, width)) in BANDS.iter().zip(widths).enumerate() {
-        let filter = Biquad::peaking(f64::from(*hz), width, 1.0);
+        let filter = Biquad::peaking(f64::from(*hz), width, 1.0, rate);
         for (i, centre) in BANDS.iter().enumerate() {
             unit[i][j] = filter.gain_db_at(f64::from(*centre));
         }
     }
     let mut gains = target;
     for _ in 0..6 {
-        let filters: Vec<(usize, Biquad)> = filters_for(&gains, &widths);
+        let filters: Vec<(usize, Biquad)> = filters_for(&gains, &widths, rate);
         let mut residual = [0.0; 10];
         for (i, centre) in BANDS.iter().enumerate() {
             let played: f64 = filters
@@ -160,21 +160,23 @@ fn chain(bands_db: &[f32; 10]) -> Vec<Biquad> {
             *gain = (*gain - step).clamp(-SOLVED_LIMIT, SOLVED_LIMIT);
         }
     }
-    filters_for(&gains, &widths)
+    filters_for(&gains, &widths, rate)
         .into_iter()
         .map(|(_, filter)| filter)
         .collect()
 }
 
 /// The bands worth running, with the filter for each.
-fn filters_for(gains: &[f64; 10], widths: &[f64; 10]) -> Vec<(usize, Biquad)> {
+fn filters_for(gains: &[f64; 10], widths: &[f64; 10], rate: f64) -> Vec<(usize, Biquad)> {
     BANDS
         .iter()
         .zip(widths)
         .zip(gains)
         .enumerate()
         .filter(|(_, (_, gain))| gain.abs() > f64::from(FLAT))
-        .map(|(index, ((hz, width), gain))| (index, Biquad::peaking(f64::from(*hz), *width, *gain)))
+        .map(|(index, ((hz, width), gain))| {
+            (index, Biquad::peaking(f64::from(*hz), *width, *gain, rate))
+        })
         .collect()
 }
 
@@ -314,6 +316,8 @@ pub fn shared() -> SharedEq {
 /// A second-order section in direct form I, one per band and channel.
 #[derive(Clone, Copy, Debug, Default)]
 struct Biquad {
+    /// The sample rate the coefficients were made for.
+    rate: f64,
     b0: f64,
     b1: f64,
     b2: f64,
@@ -331,13 +335,14 @@ impl Biquad {
     /// taken the cookbook's digital way, with its `w0 / sin(w0)` term: near
     /// the top of the band the plain analog Q would have come out three
     /// times too narrow, which is what rippled the treble.
-    fn peaking(hz: f64, width: f64, gain_db: f64) -> Self {
+    fn peaking(hz: f64, width: f64, gain_db: f64, rate: f64) -> Self {
         let a = 10f64.powf(gain_db / 40.0);
-        let w0 = std::f64::consts::TAU * hz / f64::from(SAMPLE_RATE);
+        let w0 = std::f64::consts::TAU * hz / rate;
         let (sin, cos) = w0.sin_cos();
         let alpha = sin * ((std::f64::consts::LN_2 / 2.0) * width * w0 / sin).sinh();
         let a0 = 1.0 + alpha / a;
         Self {
+            rate,
             b0: (1.0 + alpha * a) / a0,
             b1: (-2.0 * cos) / a0,
             b2: (1.0 - alpha * a) / a0,
@@ -351,7 +356,7 @@ impl Biquad {
     /// function on the unit circle: what is played, including the bend
     /// the bilinear transform puts near the top of the band.
     fn gain_db_at(&self, hz: f64) -> f64 {
-        let w = std::f64::consts::TAU * hz / f64::from(SAMPLE_RATE);
+        let w = std::f64::consts::TAU * hz / self.rate;
         let (sin1, cos1) = w.sin_cos();
         let (sin2, cos2) = (2.0 * w).sin_cos();
         let numerator = (self.b0 + self.b1 * cos1 + self.b2 * cos2).powi(2)
@@ -381,15 +386,23 @@ pub struct Processor {
     /// One chain per channel; a band at flat is left out of the chain.
     chains: Vec<Vec<Biquad>>,
     gain: f64,
+    rate: f64,
 }
 
 impl Processor {
     pub fn new(shared: SharedEq) -> Self {
+        Self::for_format(shared, SAMPLE_RATE, NUM_CHANNELS as usize)
+    }
+
+    /// For audio that is not Spotify's stereo 44.1 kHz, such as a file
+    /// decoded for alternate playback.
+    pub fn for_format(shared: SharedEq, sample_rate: u32, channels: usize) -> Self {
         let mut processor = Self {
             shared,
             applied: EqSettings::default(),
-            chains: vec![Vec::new(); NUM_CHANNELS as usize],
+            chains: vec![Vec::new(); channels.max(1)],
             gain: 1.0,
+            rate: f64::from(sample_rate.max(1)),
         };
         processor.rebuild();
         processor
@@ -398,7 +411,7 @@ impl Processor {
     fn rebuild(&mut self) {
         let settings = self.applied;
         self.gain = 10f64.powf(f64::from(settings.preamp_db) / 20.0);
-        self.chains = vec![chain(&settings.bands_db); NUM_CHANNELS as usize];
+        self.chains = vec![chain(&settings.bands_db, self.rate); self.chains.len()];
     }
 
     pub fn reset(&mut self) {
@@ -422,8 +435,13 @@ impl Processor {
             self.rebuild();
         }
         let shaping = self.applied.on && !(self.chains[0].is_empty() && self.gain == 1.0);
-        let gains = self.applied.channel_gains();
-        let placing = self.applied.mono || gains != [1.0, 1.0];
+        // Balance and mono are about a stereo pair; other layouts keep theirs.
+        let gains = if self.chains.len() == 2 {
+            self.applied.channel_gains()
+        } else {
+            [1.0, 1.0]
+        };
+        let placing = self.chains.len() == 2 && (self.applied.mono || gains != [1.0, 1.0]);
         if !shaping && !placing {
             return;
         }
@@ -487,6 +505,25 @@ mod tests {
         let after = rms(&far[4096..]);
         let gain_db = 20.0 * (after / before).log10();
         assert!(gain_db.abs() < 1.0, "60 Hz moved {gain_db:.1} dB");
+    }
+
+    #[test]
+    fn a_band_lands_on_its_frequency_at_other_rates_and_layouts() {
+        let rate = 48_000u32;
+        let shared = shared();
+        shared.lock().unwrap().on = true;
+        shared.lock().unwrap().bands_db[4] = 12.0; // 1 kHz
+        let mut processor = Processor::for_format(shared, rate, 1);
+        let mut at_band: Vec<f64> = (0..8192)
+            .map(|i| {
+                let t = f64::from(i) / f64::from(rate);
+                0.25 * (std::f64::consts::TAU * 1000.0 * t).sin()
+            })
+            .collect();
+        let before = rms(&at_band[4096..]);
+        processor.process(&mut at_band);
+        let gain_db = 20.0 * (rms(&at_band[4096..]) / before).log10();
+        assert!((gain_db - 12.0).abs() < 1.0, "1 kHz gained {gain_db:.1} dB");
     }
 
     #[test]

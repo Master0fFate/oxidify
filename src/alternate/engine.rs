@@ -171,13 +171,14 @@ pub fn spawn(
     notify: Notify,
     output: Option<Box<dyn AudioOutput + Send>>,
     ytdlp_dir: PathBuf,
+    eq: crate::eq::SharedEq,
 ) -> Result<AlternateHandle, String> {
     config.validate()?;
     let lookup: Arc<dyn MediaLookup> =
         Arc::new(Resolver::from_config(&config, &ytdlp_dir, http.clone())?);
     let output = match output {
         Some(output) => output,
-        None => Box::new(RodioOutput::open().map_err(|error| error.to_string())?),
+        None => Box::new(RodioOutput::open(eq).map_err(|error| error.to_string())?),
     };
     Ok(spawn_inner(config, api, http, notify, output, lookup))
 }

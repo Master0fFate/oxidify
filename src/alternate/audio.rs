@@ -11,6 +11,96 @@ use super::decode::{DecodeHandle, DecodeStatus, PcmSource};
 
 const PCM_STALL: Duration = Duration::from_millis(750);
 
+/// Whole frames run through the equalizer at a time.
+const EQ_BLOCK: usize = 256;
+
+/// A source with the equalizer run over it. The format is read from the
+/// source as it plays, since a decoded stream only knows its own once its
+/// headers have been read.
+struct Equalized<S: Source<Item = f32>> {
+    inner: S,
+    eq: crate::eq::SharedEq,
+    processor: Option<crate::eq::Processor>,
+    format: (u16, u32),
+    block: Vec<f64>,
+    ready: std::collections::VecDeque<f32>,
+}
+
+impl<S: Source<Item = f32>> Equalized<S> {
+    fn new(inner: S, eq: crate::eq::SharedEq) -> Self {
+        Self {
+            inner,
+            eq,
+            processor: None,
+            format: (0, 0),
+            block: Vec::new(),
+            ready: std::collections::VecDeque::new(),
+        }
+    }
+
+    fn refill(&mut self) {
+        let format = (self.inner.channels(), self.inner.sample_rate());
+        if self.processor.is_none() || self.format != format {
+            self.format = format;
+            self.processor = Some(crate::eq::Processor::for_format(
+                Arc::clone(&self.eq),
+                format.1,
+                usize::from(format.0),
+            ));
+        }
+        let want = EQ_BLOCK * usize::from(format.0);
+        self.block.clear();
+        while self.block.len() < want {
+            match self.inner.next() {
+                Some(sample) => self.block.push(f64::from(sample)),
+                None => break,
+            }
+        }
+        if let Some(processor) = &mut self.processor {
+            processor.process(&mut self.block);
+        }
+        self.ready
+            .extend(self.block.iter().map(|sample| *sample as f32));
+    }
+}
+
+impl<S: Source<Item = f32>> Iterator for Equalized<S> {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        if self.ready.is_empty() {
+            self.refill();
+        }
+        self.ready.pop_front()
+    }
+}
+
+impl<S: Source<Item = f32>> Source for Equalized<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> u16 {
+        self.inner.channels()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+
+    fn try_seek(&mut self, pos: Duration) -> std::result::Result<(), rodio::source::SeekError> {
+        self.ready.clear();
+        if let Some(processor) = &mut self.processor {
+            processor.reset();
+        }
+        self.inner.try_seek(pos)
+    }
+}
+
 pub struct PlayInfo {
     pub duration_ms: Option<u32>,
 }
@@ -118,10 +208,11 @@ pub struct DirectRodioOutput {
     decode: Option<DecodeHandle>,
     lost: Arc<AtomicBool>,
     volume: f32,
+    eq: crate::eq::SharedEq,
 }
 
 impl DirectRodioOutput {
-    pub fn open() -> Result<Self> {
+    pub fn open(eq: crate::eq::SharedEq) -> Result<Self> {
         let lost = Arc::new(AtomicBool::new(false));
         let (stream, sink) = Self::open_pair(Arc::clone(&lost))?;
         Ok(Self {
@@ -130,6 +221,7 @@ impl DirectRodioOutput {
             decode: None,
             lost,
             volume: 1.0,
+            eq,
         })
     }
 
@@ -161,7 +253,8 @@ impl AudioOutput for DirectRodioOutput {
         let duration_ms = decoder
             .total_duration()
             .map(|duration| duration.as_millis() as u32);
-        self.sink.append(decoder);
+        self.sink
+            .append(Equalized::new(decoder, Arc::clone(&self.eq)));
         if start_ms > 0 {
             let _ = self
                 .sink
@@ -177,7 +270,8 @@ impl AudioOutput for DirectRodioOutput {
             old.stop();
         }
         self.decode = Some(decode);
-        self.sink.append(source);
+        self.sink
+            .append(Equalized::new(source, Arc::clone(&self.eq)));
         self.sink.play();
         Ok(PlayInfo { duration_ms: None })
     }
@@ -319,12 +413,12 @@ enum MacCommand {
 
 #[cfg(target_os = "macos")]
 impl RodioOutput {
-    pub fn open() -> Result<Self> {
+    pub fn open(eq: crate::eq::SharedEq) -> Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let join = std::thread::Builder::new()
             .name("oxidify-coreaudio".into())
-            .spawn(move || match DirectRodioOutput::open() {
+            .spawn(move || match DirectRodioOutput::open(eq) {
                 Ok(mut output) => {
                     let _ = ready_tx.send(Ok(()));
                     while let Ok(command) = rx.recv() {
