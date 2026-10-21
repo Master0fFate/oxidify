@@ -114,8 +114,8 @@ getting started, everyday use, and how it connects to Spotify.
 - **Equalizer.** Winamp's ten bands and presets for local Spotify playback,
   in Settings and in the skin. AUTO on the skin lays the bands flat. The bands
   compensate for their overlap so their combined response meets the sliders;
-  the graph uses the same digital filters as playback. Alternate audio does
-  not yet use the equalizer.
+  the graph uses the same digital filters as playback. Alternate audio
+  goes through the same equalizer.
 - **Liked Songs in two presses.** The plus beside a song adds it to Liked
   Songs. Once it is there, the check opens the Add to playlist sheet:
   Liked Songs and the playlists you can edit, the ones already holding the

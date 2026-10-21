@@ -261,7 +261,7 @@ speaker across the room plays what Spotify sends it). The preamp only
 turns down, and AUTO, which loaded a preset per song, stays off. The same
 equalizer is in Settings with its curve drawn from the same digital filters
 used for local Spotify playback. The bands compensate for their overlap;
-alternate local audio does not yet use this equalizer. The X and both logos
+alternate local audio goes through this equalizer too. The X and both logos
 of the main window bring back the big window; its shade button, or a
 double-click on the title bar, rolls it up to a bar with the time, a small
 transport, and a seek bar, as Winamp's shade mode did. Skins that are not
