@@ -1074,6 +1074,9 @@ fn rates(app: &App, view: &mut View, now: Option<&NowPlaying>) {
     let Some(now) = now.filter(|now| !stopped(Some(now))) else {
         return;
     };
+    if now.local && app.alternate_local() {
+        return;
+    }
     if now.local {
         view.text(&format!("{:>3}", app.settings.bitrate), layout::KBPS);
     }
