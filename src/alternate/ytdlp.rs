@@ -26,14 +26,21 @@ const AUDIO_FORMAT: &str = "140/139/bestaudio[ext=m4a]/bestaudio[acodec*=mp4a]/b
 pub struct YtDlp {
     binary: PathBuf,
     cache_dir: PathBuf,
+    scratch_dir: PathBuf,
     cookies: PathBuf,
 }
 
 impl YtDlp {
-    pub fn new(binary: PathBuf, cache_dir: PathBuf, cookies: PathBuf) -> Self {
+    pub fn new(
+        binary: PathBuf,
+        cache_dir: PathBuf,
+        scratch_dir: PathBuf,
+        cookies: PathBuf,
+    ) -> Self {
         Self {
             binary,
             cache_dir,
+            scratch_dir,
             cookies,
         }
     }
@@ -89,6 +96,9 @@ impl YtDlp {
             .flatten();
         let mut command = Command::new(&self.binary);
         command
+            .env("TMP", &self.scratch_dir)
+            .env("TEMP", &self.scratch_dir)
+            .env("TMPDIR", &self.scratch_dir)
             .args([
                 "--ignore-config",
                 "--no-update",

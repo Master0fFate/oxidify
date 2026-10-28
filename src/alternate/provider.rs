@@ -152,9 +152,13 @@ impl Resolver {
                     bundle::log_choice(&resolved);
                     let cookies = dirs.youtube_cookies_file();
                     cookies::sweep_runs(&cookies);
+                    let scratch = ytdlp_dir.join("ytdlp-tmp");
+                    let _ = std::fs::remove_dir_all(&scratch);
+                    let _ = std::fs::create_dir_all(&scratch);
                     Some(YtDlp::new(
                         resolved.path,
                         ytdlp_dir.join("ytdlp-cache"),
+                        scratch,
                         cookies,
                     ))
                 }
