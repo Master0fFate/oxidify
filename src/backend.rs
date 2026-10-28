@@ -2664,8 +2664,17 @@ async fn spotify_lyrics(
 }
 
 async fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
-    let text = tokio::fs::read_to_string(path).await.ok()?;
-    serde_json::from_str(&text).ok()
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::open(path).await.ok()?;
+    let mut bytes = Vec::new();
+    file.take((playlist_cache::MAX_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    if bytes.len() > playlist_cache::MAX_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// Writes through a temporary file, so a write cut short leaves the
@@ -2674,10 +2683,14 @@ async fn write_atomically(path: std::path::PathBuf, text: String) {
     if let Some(parent) = path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    let temporary = path.with_extension("json.tmp");
-    if tokio::fs::write(&temporary, text).await.is_ok() {
-        let _ = tokio::fs::rename(temporary, path).await;
+    if text.len() > playlist_cache::MAX_BYTES {
+        return;
     }
+    let temporary = path.with_extension(format!("{}.tmp", rand::random::<u64>()));
+    if tokio::fs::write(&temporary, text).await.is_ok() {
+        let _ = tokio::fs::rename(&temporary, path).await;
+    }
+    let _ = tokio::fs::remove_file(temporary).await;
 }
 
 fn resume_spec(state: &LocalState) -> Option<LoadSpec> {
