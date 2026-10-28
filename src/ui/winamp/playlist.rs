@@ -472,15 +472,17 @@ fn fit(text: &mut super::PixelText, label: &str, width: f32) -> String {
         return label.to_string();
     }
     let chars: Vec<char> = label.chars().collect();
-    let mut keep = chars.len();
-    while keep > 0 {
-        keep -= 1;
-        let candidate: String = chars[..keep].iter().collect::<String>() + "\u{2026}";
+    let (mut low, mut high) = (0, chars.len());
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        let candidate: String = chars[..mid].iter().collect::<String>() + "\u{2026}";
         if text.width(&candidate) <= width {
-            return candidate;
+            low = mid;
+        } else {
+            high = mid - 1;
         }
     }
-    "\u{2026}".to_string()
+    chars[..low].iter().collect::<String>() + "\u{2026}"
 }
 
 /// The handle in the right-hand tiles, dragged to scroll.
