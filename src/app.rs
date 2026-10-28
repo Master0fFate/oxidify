@@ -57,7 +57,7 @@ const PLAYBACK_HOLD: Duration = Duration::from_secs(6);
 /// A second look after a command, so the button settles quickly rather than
 /// waiting for the ordinary poll.
 const REMOTE_RECHECK: Duration = Duration::from_millis(1200);
-const CONTAINS_BATCH: usize = 50;
+const CONTAINS_BATCH: usize = 40;
 
 pub struct RemoteSnapshot {
     pub state: PlaybackState,
