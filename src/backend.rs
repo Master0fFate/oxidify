@@ -987,9 +987,8 @@ impl Worker {
                     user,
                 } => self.on_web_verified(source, *token, *user),
                 Command::PlaybackAuthorized { access_token } => {
-                    if self.playback_mode != PlaybackBackend::Spotify {
-                        self.cancel_signin = None;
-                    } else {
+                    self.cancel_signin = None;
+                    if self.playback_mode == PlaybackBackend::Spotify {
                         self.connect_engine(Credentials::with_access_token(access_token));
                     }
                 }
@@ -1660,7 +1659,6 @@ impl Worker {
             )));
             return;
         }
-        self.cancel_signin = None;
         // Reauthorizing can replace an engine that is still running, too.
         // Retire it before cloning the configuration for its replacement.
         self.stop_spotify_only();

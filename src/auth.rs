@@ -189,8 +189,8 @@ pub async fn wait_for_code(
     loop {
         let (mut stream, _) = tokio::select! {
             accepted = listener.accept() => accepted.context("redirect listener failed")?,
-            _ = cancel.changed() => {
-                if *cancel.borrow() { bail!("sign-in cancelled"); }
+            changed = cancel.changed() => {
+                if changed.is_err() || *cancel.borrow() { bail!("sign-in cancelled"); }
                 continue;
             }
             _ = &mut deadline => bail!("sign-in timed out; try again"),
