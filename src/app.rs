@@ -1913,6 +1913,16 @@ impl App {
         }
     }
 
+    fn playing_after_queued_actions(&self) -> bool {
+        let playing = self.now_playing().is_some_and(|now| now.playing);
+        let toggles = self
+            .actions
+            .iter()
+            .filter(|action| matches!(action, Action::TogglePlay))
+            .count();
+        playing != (toggles % 2 == 1)
+    }
+
     fn handle_control_commands(&mut self) {
         let Some(queue) = &self.control_commands else {
             return;
@@ -1920,7 +1930,7 @@ impl App {
         let commands: Vec<ControlCommand> =
             std::mem::take(&mut *queue.lock().unwrap_or_else(|p| p.into_inner()));
         for command in commands {
-            let playing = self.now_playing().is_some_and(|now| now.playing);
+            let playing = self.playing_after_queued_actions();
             let action = match command {
                 ControlCommand::Show => Some(Action::ShowWindow),
                 ControlCommand::Quit => Some(Action::Quit),
@@ -1966,7 +1976,7 @@ impl App {
             return;
         };
         for command in commands {
-            let playing = self.now_playing().is_some_and(|now| now.playing);
+            let playing = self.playing_after_queued_actions();
             let action = match command {
                 MediaCommand::Play => (!playing).then_some(Action::TogglePlay),
                 MediaCommand::Pause | MediaCommand::Stop => playing.then_some(Action::TogglePlay),
