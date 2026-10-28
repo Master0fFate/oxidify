@@ -711,6 +711,9 @@ fn apply_event(state: &mut LocalState, event: PlayerEvent, replay_pending: &mut 
             // A failed load never reaches Playing, so the spinner is
             // turned off here.
             let mut changed = set(&mut state.loading, false);
+            if state.playback == Playback::Loading {
+                changed |= set(&mut state.playback, Playback::Stopped);
+            }
             changed |= set(
                 &mut state.error,
                 Some(format!(
