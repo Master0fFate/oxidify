@@ -84,7 +84,7 @@ impl Session {
             return;
         }
         let current = offset.min(self.tracks.len() - 1);
-        self.rebuild_order(current);
+        self.rebuild_order(current, &[]);
         self.position_ms = position_ms;
         self.position_at = None;
         self.playback = if play {
@@ -100,10 +100,17 @@ impl Session {
             return;
         }
         let current_uri = self.current().map(|track| track.uri.clone());
-        let extras: Vec<LocalTrack> = self
-            .manual
-            .iter()
-            .filter_map(|index| self.tracks.get(*index).cloned())
+        let queued_uris: Vec<String> = self
+            .queued()
+            .into_iter()
+            .filter_map(|index| self.tracks.get(index))
+            .map(|track| track.uri.clone())
+            .collect();
+        let mut manual: Vec<usize> = self.manual.iter().copied().collect();
+        manual.sort_unstable();
+        let extras: Vec<LocalTrack> = manual
+            .into_iter()
+            .filter_map(|index| self.tracks.get(index).cloned())
             .filter(|track| !tracks.iter().any(|known| known.uri == track.uri))
             .collect();
         let extra_count = extras.len();
@@ -115,7 +122,15 @@ impl Session {
         self.tracks = tracks;
         let n = self.tracks.len();
         self.manual = ((n - extra_count)..n).collect();
-        self.rebuild_order(current);
+        let mut queued = Vec::new();
+        for uri in queued_uris {
+            if let Some(index) = ((n - extra_count)..n).find(|index| {
+                *index != current && !queued.contains(index) && self.tracks[*index].uri == uri
+            }) {
+                queued.push(index);
+            }
+        }
+        self.rebuild_order(current, &queued);
     }
 
     pub fn append(&mut self, tracks: Vec<LocalTrack>) -> usize {
@@ -261,9 +276,10 @@ impl Session {
             return;
         }
         let current = self.current_index();
+        let queued = self.queued();
         self.shuffle = enabled;
         if let Some(current) = current {
-            self.rebuild_order(current);
+            self.rebuild_order(current, &queued);
         }
     }
 
@@ -532,7 +548,16 @@ impl Session {
         }
     }
 
-    fn rebuild_order(&mut self, current: usize) {
+    fn queued(&self) -> Vec<usize> {
+        self.order
+            .iter()
+            .skip(self.index_in_order + 1)
+            .copied()
+            .filter(|index| self.manual.contains(index))
+            .collect()
+    }
+
+    fn rebuild_order(&mut self, current: usize, queued: &[usize]) {
         let n = self.tracks.len();
         if n == 0 {
             self.order.clear();
@@ -540,18 +565,30 @@ impl Session {
             return;
         }
         let current = current.min(n - 1);
+        let queued: Vec<usize> = queued
+            .iter()
+            .copied()
+            .filter(|&index| index != current && index < n)
+            .collect();
+        let mut rest: Vec<usize> = (0..n)
+            .filter(|index| *index != current && !queued.contains(index))
+            .collect();
+        let mut order = Vec::with_capacity(n);
         if self.shuffle {
-            let mut rest: Vec<usize> = (0..n).filter(|&index| index != current).collect();
             fisher_yates(&mut rest);
-            let mut order = Vec::with_capacity(n);
             order.push(current);
+            order.extend(queued);
             order.extend(rest);
-            self.order = order;
             self.index_in_order = 0;
         } else {
-            self.order = (0..n).collect();
-            self.index_in_order = current;
+            let after = rest.split_off(rest.partition_point(|&index| index < current));
+            self.index_in_order = rest.len();
+            order.extend(rest);
+            order.push(current);
+            order.extend(queued);
+            order.extend(after);
         }
+        self.order = order;
     }
 
     #[cfg(test)]
