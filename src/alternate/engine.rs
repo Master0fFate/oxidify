@@ -869,7 +869,10 @@ impl Engine {
                 }
                 let paused = overlapping && std::mem::take(&mut self.overlap_paused);
                 if overlapping {
-                    let _ = self.session.select_uri(&uri, self.overlap_forward);
+                    if !self.session.select_uri(&uri, self.overlap_forward) {
+                        self.session.seek(0);
+                        self.session.set_loading();
+                    }
                     self.overlap_uri = None;
                 }
                 self.play_ready(
