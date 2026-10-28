@@ -73,7 +73,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .jump
         .ranked
         .as_ref()
-        .map(|(_, ranked)| ranked.clone())
+        .map(|(_, ranked)| ranked[..ranked.len().min(SHOWN)].to_vec())
         .unwrap_or_default();
     let shown = ranked.len().min(SHOWN);
     if shown == 0 {
@@ -112,6 +112,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     let selected = app.jump.selected;
     let list_height = (ROW_HEIGHT * shown as f32).min(ROW_HEIGHT * 8.5);
+    let entries = app.jump.entries.take();
     egui::ScrollArea::vertical()
         .id_salt("jump-results")
         .max_height(list_height)
@@ -121,13 +122,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui.spacing_mut().item_spacing.y = 0.0;
             let width = ui.available_width();
             for (row, &index) in ranked.iter().take(shown).enumerate() {
-                let Some(entry) = app
-                    .jump
-                    .entries
-                    .as_ref()
-                    .and_then(|entries| entries.get(index))
-                    .cloned()
-                else {
+                let Some(entry) = entries.as_ref().and_then(|entries| entries.get(index)) else {
                     continue;
                 };
                 let (rect, response) =
@@ -211,6 +206,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
         });
+    app.jump.entries = entries;
     ui.add_space(8.0);
     hint_row(ui, &palette);
 
