@@ -72,10 +72,35 @@ pub fn normalize_query(query: &TrackQuery) -> NormalizedQuery {
 }
 
 pub fn normalize_text(input: &str) -> String {
-    let lowered = input.to_lowercase();
-    let mut stripped = String::with_capacity(lowered.len());
+    normalize_keeping(input, None)
+}
+
+fn normalize_keeping(input: &str, keep: Option<&HashSet<&str>>) -> String {
+    let nothing = HashSet::new();
+    let lowered = strip_featuring(&input.to_lowercase());
+    let mut kept = Vec::new();
+    let mut plain = Vec::new();
+    for (segment, decoration) in segments(&lowered) {
+        let text = strip_punctuation(&segment);
+        kept.push(if decoration || keep.is_some() {
+            strip_noise(&text, keep.unwrap_or(&nothing))
+        } else {
+            text.clone()
+        });
+        plain.push(text);
+    }
+    let text = collapse_spaces(&kept.join(" "));
+    if text.is_empty() {
+        collapse_spaces(&plain.join(" "))
+    } else {
+        text
+    }
+}
+
+fn strip_punctuation(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
     let mut prev_space = true;
-    for ch in lowered.chars() {
+    for ch in text.chars() {
         if ch.is_alphanumeric() {
             stripped.push(ch);
             prev_space = false;
@@ -86,11 +111,7 @@ pub fn normalize_text(input: &str) -> String {
             prev_space = true;
         }
     }
-    let mut text = strip_featuring(stripped.trim());
-    for phrase in NOISE_PHRASES {
-        text = strip_phrase(&text, phrase);
-    }
-    collapse_spaces(&text)
+    stripped.trim().to_string()
 }
 
 pub fn rank_candidates(
@@ -127,7 +148,8 @@ pub fn rank_candidates(
 }
 
 fn score_candidate(query: &TrackQuery, normalized: &NormalizedQuery, candidate: &Candidate) -> f32 {
-    let cand_title = normalize_text(&candidate.title);
+    let keep: HashSet<&str> = normalized.title.split_whitespace().collect();
+    let cand_title = normalize_keeping(&candidate.title, Some(&keep));
     let cand_uploader = normalize_text(&candidate.uploader);
     let title_score = token_jaccard(&normalized.title, &cand_title);
     let artist_score = artist_match(normalized, &cand_title, &cand_uploader);
@@ -237,21 +259,111 @@ fn tokens(text: &str) -> HashSet<String> {
 }
 
 fn strip_featuring(text: &str) -> String {
-    let markers = [" feat ", " ft ", " featuring "];
-    let mut cut = text.len();
-    for marker in markers {
-        if let Some(index) = text.find(marker) {
-            cut = cut.min(index);
-        }
+    let mut text = text.to_string();
+    while let Some((start, end)) = featuring_span(&text) {
+        text.replace_range(start..end, " ");
     }
-    text[..cut].trim().to_string()
+    text
 }
 
-fn strip_phrase(text: &str, phrase: &str) -> String {
-    if phrase.is_empty() {
-        return text.to_string();
+fn featuring_span(text: &str) -> Option<(usize, usize)> {
+    let start = text.char_indices().find_map(|(index, _)| {
+        let boundary = text[..index]
+            .chars()
+            .next_back()
+            .is_none_or(|ch| !ch.is_alphanumeric());
+        let rest = &text[index..];
+        let marked = ["featuring", "feat", "ft"].iter().any(|marker| {
+            rest.strip_prefix(marker)
+                .and_then(|after| after.chars().next())
+                .is_some_and(|ch| ch == '.' || ch.is_whitespace())
+        });
+        (boundary && index > 0 && marked).then_some(index)
+    })?;
+    let before = text[..start].trim_end();
+    if let Some(open) = before.strip_suffix(['(', '[', '{']) {
+        let open_at = open.len();
+        let end = text[start..]
+            .find([')', ']', '}'])
+            .map_or(text.len(), |offset| start + offset + 1);
+        return Some((open_at, end));
     }
-    collapse_spaces(&text.replace(phrase, " "))
+    let rest = &text[start..];
+    let end = [
+        rest.find(['(', '[', '{', ')', ']', '}', '|']),
+        rest.find(" - "),
+        rest.find(" – "),
+        rest.find(" — "),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .map_or(text.len(), |offset| start + offset);
+    Some((start, end))
+}
+
+fn segments(text: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    let mut dashed = false;
+    let chars: Vec<char> = text.chars().collect();
+    for (index, &ch) in chars.iter().enumerate() {
+        let spaced = index > 0
+            && chars[index - 1].is_whitespace()
+            && chars
+                .get(index + 1)
+                .is_some_and(|next| next.is_whitespace());
+        match ch {
+            '(' | '[' | '{' => {
+                if depth == 0 {
+                    out.push((std::mem::take(&mut current), dashed));
+                }
+                depth += 1;
+            }
+            ')' | ']' | '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    out.push((std::mem::take(&mut current), true));
+                }
+            }
+            '|' if depth == 0 => {
+                out.push((std::mem::take(&mut current), dashed));
+                dashed = true;
+            }
+            '-' | '–' | '—' if depth == 0 && spaced => {
+                out.push((std::mem::take(&mut current), dashed));
+                dashed = true;
+            }
+            _ => current.push(ch),
+        }
+    }
+    out.push((current, dashed || depth > 0));
+    out
+}
+
+fn strip_noise(text: &str, keep: &HashSet<&str>) -> String {
+    let mut words: Vec<&str> = text.split_whitespace().collect();
+    let mut stripped = false;
+    for phrase in NOISE_PHRASES {
+        let phrase: Vec<&str> = phrase.split_whitespace().collect();
+        if phrase.iter().all(|word| keep.contains(word)) {
+            continue;
+        }
+        let mut index = 0;
+        while index + phrase.len() <= words.len() {
+            if words[index..index + phrase.len()] == phrase[..] {
+                words.drain(index..index + phrase.len());
+                stripped = true;
+            } else {
+                index += 1;
+            }
+        }
+    }
+    if stripped {
+        words.retain(|word| keep.contains(word) || !word.chars().all(|ch| ch.is_ascii_digit()));
+    }
+    words.join(" ")
 }
 
 fn collapse_spaces(text: &str) -> String {
