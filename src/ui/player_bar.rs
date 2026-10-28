@@ -35,7 +35,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let rect = ui.max_rect();
             let now = app.now_playing();
             let width = rect.width();
-            let side = (width * 0.3).clamp(200.0, 420.0);
+            let side = (width * 0.3)
+                .clamp(200.0, 420.0)
+                .min(((width - 200.0) / 2.0).max(0.0));
             let cy = rect.center().y;
             let left = Rect::from_min_max(rect.min, pos2(rect.left() + side, rect.bottom()));
             let center = Rect::from_min_max(
@@ -521,6 +523,8 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
 fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
     let palette = app.palette;
     ui.spacing_mut().item_spacing.x = 6.0;
+    let button = 18.0 + theme::ICON_BUTTON_PAD;
+    let slider_width = (ui.available_width() - 6.0 * (button + 6.0) - 12.0).min(92.0);
     // From the right edge in, the order the official client keeps: the
     // mini player, volume, the device, the queue, lyrics, Now Playing.
     if theme::icon_button(
@@ -548,14 +552,19 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
         app.volume_preview = None;
     }
     let controls = ui.add_enabled_ui(adjustable, |ui| {
-        match thin_slider_with_scroll(
-            ui,
-            &palette,
-            egui::Id::new("volume-slider"),
-            shown as f32 / 100.0,
-            92.0,
-            true,
-        ) {
+        let slider = if slider_width >= 40.0 {
+            thin_slider_with_scroll(
+                ui,
+                &palette,
+                egui::Id::new("volume-slider"),
+                shown as f32 / 100.0,
+                slider_width,
+                true,
+            )
+        } else {
+            SliderEvent::None
+        };
+        match slider {
             SliderEvent::Dragging(value) => {
                 app.volume_preview = Some(value);
                 // Local volume is cheap to apply continuously; remote goes on release.
@@ -623,51 +632,54 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
         app.actions.push(Action::ToggleDevicesPopup);
     }
     let queue_open = app.show_queue_panel || matches!(app.page(), Page::Queue);
-    if theme::icon_button(
-        ui,
-        Icon::ListVideo,
-        18.0,
-        if queue_open {
-            palette.accent
-        } else {
-            palette.secondary
-        },
-        palette.text,
-        "Queue",
-    )
-    .clicked()
+    if ui.available_width() >= button
+        && theme::icon_button(
+            ui,
+            Icon::ListVideo,
+            18.0,
+            if queue_open {
+                palette.accent
+            } else {
+                palette.secondary
+            },
+            palette.text,
+            "Queue",
+        )
+        .clicked()
     {
         app.actions.push(Action::ToggleQueuePanel);
     }
-    if theme::icon_button(
-        ui,
-        Icon::Mic,
-        18.0,
-        if app.show_lyrics_panel {
-            palette.accent
-        } else {
-            palette.secondary
-        },
-        palette.text,
-        "Lyrics",
-    )
-    .clicked()
+    if ui.available_width() >= button
+        && theme::icon_button(
+            ui,
+            Icon::Mic,
+            18.0,
+            if app.show_lyrics_panel {
+                palette.accent
+            } else {
+                palette.secondary
+            },
+            palette.text,
+            "Lyrics",
+        )
+        .clicked()
     {
         app.actions.push(Action::ToggleLyricsPanel);
     }
-    if theme::icon_button(
-        ui,
-        Icon::SquarePlay,
-        18.0,
-        if app.show_now_playing_panel {
-            palette.accent
-        } else {
-            palette.secondary
-        },
-        palette.text,
-        "Now Playing view",
-    )
-    .clicked()
+    if ui.available_width() >= button
+        && theme::icon_button(
+            ui,
+            Icon::SquarePlay,
+            18.0,
+            if app.show_now_playing_panel {
+                palette.accent
+            } else {
+                palette.secondary
+            },
+            palette.text,
+            "Now Playing view",
+        )
+        .clicked()
     {
         app.actions.push(Action::ToggleNowPlayingPanel);
     }
