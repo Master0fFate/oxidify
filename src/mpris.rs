@@ -263,7 +263,7 @@ fn loop_status(mode: RepeatMode) -> LoopStatus {
 
 fn metadata(track: Option<&MediaTrack>) -> Metadata {
     let Some(track) = track else {
-        return Metadata::new();
+        return Metadata::builder().trackid(TrackId::NO_TRACK).build();
     };
     let mut builder = Metadata::builder()
         .title(track.title.clone())
@@ -285,26 +285,22 @@ fn metadata(track: Option<&MediaTrack>) -> Metadata {
 }
 
 fn object_path_for(uri: &str) -> Option<TrackId> {
-    let id: String = uri
-        .rsplit(':')
-        .next()
-        .unwrap_or("track")
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect();
-    let id = if id.is_empty() {
-        "track".to_string()
-    } else {
-        id
-    };
-    let kind = crate::util::uri_kind(uri).unwrap_or("track");
-    TrackId::try_from(format!("{TRACK_OBJECT_PATH_PREFIX}{kind}_{id}")).ok()
+    let id: String = uri.bytes().map(|byte| format!("{byte:02x}")).collect();
+    TrackId::try_from(format!("{TRACK_OBJECT_PATH_PREFIX}{id}")).ok()
 }
 
 fn uri_from_object_path(path: &str) -> Option<String> {
-    let rest = path.strip_prefix(TRACK_OBJECT_PATH_PREFIX)?;
-    let (kind, id) = rest.split_once('_')?;
-    Some(format!("spotify:{kind}:{id}"))
+    let id = path.strip_prefix(TRACK_OBJECT_PATH_PREFIX)?;
+    let bytes = (0..id.len())
+        .step_by(2)
+        .map(|at| {
+            let pair = id.get(at..at + 2)?;
+            pair.bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+                .then(|| u8::from_str_radix(pair, 16).ok())?
+        })
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
 }
 
 #[cfg(test)]
