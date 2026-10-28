@@ -192,8 +192,17 @@ impl WinampState {
     /// Reads a skin from the folder on another thread.
     pub fn load(&mut self, name: String, folder: &Path, ctx: &egui::Context) {
         let path = folder.join(&name);
+        let mut parts = Path::new(&name).components();
+        let inside = matches!(
+            (parts.next(), parts.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        );
         self.spawn(ctx, move || Loaded {
-            result: Skin::load(&path),
+            result: if inside {
+                Skin::load(&path)
+            } else {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound).into())
+            },
             name,
             installed: false,
         });
