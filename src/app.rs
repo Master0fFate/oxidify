@@ -4235,8 +4235,14 @@ impl App {
                 .items
                 .items
                 .iter()
-                .filter_map(|item| item.playable())
+                .filter(|row| !row.is_local)
+                .filter_map(|row| row.playable())
+                .filter(|item| {
+                    !matches!(item, PlayableItem::Track(track)
+                        if track.is_local || track.is_playable == Some(false))
+                })
                 .map(|item| item.uri())
+                .filter(|uri| !uri.is_empty())
                 .collect()
         } else if let Some(id) = context_uri.strip_prefix("spotify:album:") {
             self.album_pages
@@ -4244,6 +4250,7 @@ impl App {
                 .tracks
                 .items
                 .iter()
+                .filter(|track| !track.is_local && track.is_playable != Some(false))
                 .map(|track| track.uri.as_str())
                 .collect()
         } else if context_uri.ends_with(":collection") {
@@ -4251,6 +4258,7 @@ impl App {
                 .liked
                 .items
                 .iter()
+                .filter(|item| !item.track.is_local && item.track.is_playable != Some(false))
                 .map(|item| item.track.uri.as_str())
                 .collect()
         } else {
