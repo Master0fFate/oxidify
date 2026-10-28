@@ -382,7 +382,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
         } else {
             palette.text
         },
-        "Shuffle",
+        if shuffle { "Shuffle off" } else { "Shuffle on" },
     )
     .clicked()
     {
