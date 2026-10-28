@@ -926,8 +926,13 @@ async fn stream_from_zero(
         if length as usize > MAX_BYTES {
             return Err(permanent("Matched audio is too large to play."));
         }
-        if buffer.content_length().is_none() {
-            buffer.set_content_length(length).map_err(permanent)?;
+        match buffer.content_length() {
+            None => buffer.set_content_length(length).map_err(permanent)?,
+            Some(known) if known != length => {
+                buffer.fail("Couldn't read matched audio.");
+                return Err(permanent("Couldn't read matched audio."));
+            }
+            Some(_) => {}
         }
     }
     let mut offset = 0u64;
