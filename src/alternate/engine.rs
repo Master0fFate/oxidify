@@ -96,6 +96,7 @@ struct PendingPlay {
     label: String,
     start_ms: u32,
     reattach: bool,
+    paused: bool,
 }
 
 struct CachedMatch {
@@ -235,6 +236,7 @@ struct Engine {
     active_duration: Option<DurationProbe>,
     overlap_uri: Option<String>,
     overlap_forward: bool,
+    overlap_paused: bool,
     prefetch: Option<Prefetched>,
     /// The next track's resolve while it runs, before its `Ready` lands.
     prefetch_inflight: Option<String>,
@@ -284,6 +286,7 @@ async fn run(
         active_duration: None,
         overlap_uri: None,
         overlap_forward: false,
+        overlap_paused: false,
         prefetch: None,
         prefetch_inflight: None,
         unplayable: HashMap::new(),
@@ -420,6 +423,7 @@ impl Engine {
         self.active_hint = None;
         self.active_duration = None;
         self.overlap_uri = None;
+        self.overlap_paused = false;
         if let Some(prefetch) = self.prefetch.take() {
             prefetch.buffer.cancel();
         }
@@ -454,6 +458,9 @@ impl Engine {
                         Playback::Paused => self.output.pause(),
                         Playback::Playing => self.output.resume(),
                         _ => {}
+                    }
+                    if self.overlap_uri.is_some() {
+                        self.overlap_paused = self.session.playback() == Playback::Paused;
                     }
                     self.emit();
                 }
@@ -539,7 +546,7 @@ impl Engine {
                     && let Some(prefetch) = self.prefetch.take()
                 {
                     if current.as_deref() == Some(prefetch.uri.as_str()) {
-                        self.play_ready(prefetch);
+                        self.play_ready(prefetch, false);
                         return;
                     }
                     prefetch.buffer.cancel();
@@ -555,6 +562,7 @@ impl Engine {
                 }
                 if self.overlap_uri.is_some() && self.overlap_uri == current {
                     self.overlap_uri = None;
+                    self.overlap_paused = false;
                     self.session.set_loading();
                     self.emit();
                     return;
@@ -625,6 +633,7 @@ impl Engine {
             && self.is_current(&track.uri)
             && let Some(target) = self.overlap_uri.take()
         {
+            self.overlap_paused = false;
             self.abort_job(&target);
             self.note_job_done(&target);
             self.emit();
@@ -651,7 +660,7 @@ impl Engine {
             if reached {
                 self.bump_jobs();
                 let _ = self.session.select_uri(&prefetch.uri, forward);
-                self.play_ready(prefetch);
+                self.play_ready(prefetch, false);
                 return;
             }
             prefetch.buffer.cancel();
@@ -817,17 +826,21 @@ impl Engine {
                     });
                     return;
                 }
+                let paused = overlapping && std::mem::take(&mut self.overlap_paused);
                 if overlapping {
                     let _ = self.session.select_uri(&uri, self.overlap_forward);
                     self.overlap_uri = None;
                 }
-                self.play_ready(Prefetched {
-                    uri,
-                    buffer,
-                    hint,
-                    label,
-                    video_id,
-                });
+                self.play_ready(
+                    Prefetched {
+                        uri,
+                        buffer,
+                        hint,
+                        label,
+                        video_id,
+                    },
+                    paused,
+                );
             }
             Job::TransportFailed { token, uri, error } => {
                 self.matches.remove(&uri);
@@ -966,7 +979,7 @@ impl Engine {
         self.config.gapless && self.next_playable().is_some_and(|track| track.uri == uri)
     }
 
-    fn play_ready(&mut self, ready: Prefetched) {
+    fn play_ready(&mut self, ready: Prefetched, paused: bool) {
         self.cache_match(ready.uri, ready.video_id);
         self.outgoing = self.active_buffer.replace(ready.buffer.clone());
         self.active_hint = Some(ready.hint.clone());
@@ -979,6 +992,7 @@ impl Engine {
                     label: ready.label,
                     start_ms,
                     reattach: false,
+                    paused,
                 });
                 self.try_start_pending();
             }
@@ -1136,6 +1150,10 @@ impl Engine {
                     previous.cancel();
                 }
                 self.session.set_playing(Some(pending.label));
+                if pending.paused {
+                    self.output.pause();
+                    self.session.set_paused();
+                }
                 self.active_duration = Some(probe);
                 if let Some(ms) = info.duration_ms {
                     self.session.set_current_duration(ms);
@@ -1216,6 +1234,7 @@ impl Engine {
             self.overlap_uri = Some(track.uri.clone());
             self.start_resolve_track(track, false);
         } else {
+            self.overlap_paused = false;
             if self.session.playback() == Playback::Playing {
                 self.output.stop();
             }
@@ -1337,6 +1356,7 @@ impl Engine {
             label: String::new(),
             start_ms: pos,
             reattach: true,
+            paused: false,
         });
         self.try_start_pending();
         Ok(())
