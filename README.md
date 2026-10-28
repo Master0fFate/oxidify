@@ -376,6 +376,11 @@ has it.
 
 A verb exits non-zero when Oxidify is not running.
 
+On Windows the release build is a windowed program, so `cmd` and
+PowerShell print its answer without waiting for it: the prompt can come
+back first, and the exit code is not reported. A script that needs to wait
+can pipe the output, as in `oxidify now-playing | more`.
+
 Launchers such as Raycast or Alfred can use these commands to control
 playback. The Stream Deck plugin speaks the same channel, which is why
 the verbs cover more than a media key can ask for.

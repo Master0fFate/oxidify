@@ -141,6 +141,7 @@ enum Repeat {
 /// single-instance loopback socket, which Linux does not have.
 #[cfg(not(target_os = "linux"))]
 fn run_control(control: Control) -> i32 {
+    attach_console();
     let raw = matches!(
         control,
         Control::NowPlaying { raw: true } | Control::Devices { raw: true }
@@ -207,6 +208,17 @@ fn run_control(control: Control) -> i32 {
     }
 }
 
+#[cfg(windows)]
+fn attach_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_console() {}
+
 #[cfg(target_os = "linux")]
 fn run_control(_control: Control) -> i32 {
     eprintln!(
@@ -268,7 +280,10 @@ fn format_devices(snapshot: &str) -> String {
 }
 
 fn main() -> eframe::Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().unwrap_or_else(|error| {
+        attach_console();
+        error.exit()
+    });
     // A control launch is a client, not a second app: talk to the running
     // instance and exit before touching the log file it is writing to.
     if let Some(control) = cli.control {
