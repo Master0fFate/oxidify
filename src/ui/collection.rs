@@ -627,12 +627,26 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
         widgets::error_row(ui, app, error, Some(table.page.clone()));
     }
     if table.items.is_empty() && !table.loading && table.error.is_none() {
+        let body = match &table.context {
+            _ if table.page == Page::LikedSongs => "Songs you like will show up here.",
+            RowContext::Context {
+                editable_playlist: Some(_),
+                ..
+            } => "Songs you add will show up here.",
+            _ => "There are no songs here.",
+        };
+        widgets::empty_state(ui, &palette, Icon::Music, "Nothing here yet", body);
+    } else if entry.visible.is_empty()
+        && !needle.is_empty()
+        && !table.can_load_more
+        && !table.loading
+    {
         widgets::empty_state(
             ui,
             &palette,
-            Icon::Music,
-            "Nothing here yet",
-            "Songs you add will show up here.",
+            Icon::Search,
+            "No matches",
+            "Try a different filter.",
         );
     } else if entry.visible.is_empty()
         && !needle.is_empty()
