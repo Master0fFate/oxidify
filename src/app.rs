@@ -256,11 +256,12 @@ pub struct App {
     pub plays: Vec<crate::history::PlayRecord>,
     history_loaded: bool,
     pub stats_period: crate::history::Period,
-    /// The summary shown, for the period and the number of plays it was
-    /// built from.
+    /// The summary shown, for the period, the number of plays and the
+    /// local day it was built from.
     stats_cache: Option<(
         crate::history::Period,
         usize,
+        jiff::civil::Date,
         std::sync::Arc<crate::history::Summary>,
     )>,
     /// The song being timed towards a counted play.
@@ -2397,18 +2398,25 @@ impl App {
     }
 
     /// The listening summary for the chosen period, rebuilt only when the
-    /// period or the plays change.
+    /// period, the plays or the day change.
     pub fn stats_summary(&mut self) -> std::sync::Arc<crate::history::Summary> {
         let period = self.stats_period;
-        if let Some((held, count, summary)) = &self.stats_cache
+        let today = jiff::Zoned::now().date();
+        if let Some((held, count, day, summary)) = &self.stats_cache
             && *held == period
             && *count == self.plays.len()
+            && *day == today
         {
             return std::sync::Arc::clone(summary);
         }
         let summary =
             std::sync::Arc::new(crate::history::summarize(&self.plays, period, unix_now()));
-        self.stats_cache = Some((period, self.plays.len(), std::sync::Arc::clone(&summary)));
+        self.stats_cache = Some((
+            period,
+            self.plays.len(),
+            today,
+            std::sync::Arc::clone(&summary),
+        ));
         summary
     }
 
