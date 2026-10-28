@@ -427,18 +427,20 @@ pub fn clean_title(title: &str) -> String {
 
 /// Everything from a standalone "feat", "ft", or "featuring" on.
 fn strip_featuring(text: &str) -> String {
-    let lower = text.to_lowercase();
     let mut cut = None;
     for marker in ["featuring", "feat", "ft"] {
         let mut from = 0;
-        while let Some(found) = lower[from..].find(marker) {
+        while let Some(found) = text.as_bytes()[from..]
+            .windows(marker.len())
+            .position(|window| window.eq_ignore_ascii_case(marker.as_bytes()))
+        {
             let start = from + found;
             let end = start + marker.len();
-            let before = lower[..start].trim_end_matches(['-', '(']).trim_end();
+            let before = text[..start].trim_end_matches(['-', '(']).trim_end();
             let preceded = before.len() < start && !before.is_empty();
-            let followed = lower[end..]
+            let followed = text[end..]
                 .strip_prefix('.')
-                .unwrap_or(&lower[end..])
+                .unwrap_or(&text[end..])
                 .starts_with(' ');
             if preceded && followed {
                 let at = before.len();
