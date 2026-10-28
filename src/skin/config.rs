@@ -230,8 +230,8 @@ impl PlaylistStyle {
 /// A `#RRGGBB` colour. Winamp accepted the hash missing and extra digits
 /// after the six, so both are taken here.
 pub fn hex(value: &str) -> Option<Rgb> {
-    let digits = value.trim().trim_start_matches('#');
-    if digits.len() < 6 || !digits.is_char_boundary(6) {
+    let digits = value.trim().trim_start_matches('#').get(..6)?;
+    if !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     let channel = |at: usize| u8::from_str_radix(&digits[at..at + 2], 16).ok();
