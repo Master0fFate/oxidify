@@ -378,12 +378,14 @@ impl Engine {
         self.load_token = self.load_token.wrapping_add(1);
     }
 
-    /// Aborts every job but the one resolving `keep`, whose token stays
-    /// accepted through `adopted` after the generation moves on.
+    /// Aborts every job but the playing track's and the one resolving
+    /// `keep`, whose token stays accepted through `adopted` after the
+    /// generation moves on.
     fn abort_jobs_except(&mut self, keep: &str) {
+        let playing = self.playing_uri();
         let mut kept = Vec::new();
         for job in self.jobs.drain(..) {
-            if job.uri.as_deref() == Some(keep) {
+            if job.uri.as_deref() == Some(keep) || (job.uri.is_some() && job.uri == playing) {
                 kept.push(job);
             } else {
                 job.handle.abort();
@@ -445,9 +447,32 @@ impl Engine {
     }
 
     fn bump_jobs(&mut self) -> u64 {
-        self.abort_jobs();
+        let playing = self.playing_uri();
+        let mut kept = Vec::new();
+        for job in self.jobs.drain(..) {
+            if job.uri.is_some() && job.uri == playing {
+                kept.push(job);
+            } else {
+                job.handle.abort();
+            }
+        }
+        self.jobs = kept;
+        self.adopted = None;
+        self.prefetch_inflight = None;
+        self.autoplay_for = None;
         self.play_generation = self.play_generation.wrapping_add(1);
         self.play_generation
+    }
+
+    fn playing_uri(&self) -> Option<String> {
+        if matches!(
+            self.session.playback(),
+            Playback::Playing | Playback::Paused
+        ) {
+            self.session.current().map(|track| track.uri.clone())
+        } else {
+            None
+        }
     }
 
     fn handle_command(&mut self, command: PlayerCommand) {
