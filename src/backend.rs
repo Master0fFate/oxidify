@@ -514,6 +514,7 @@ pub enum Command {
         items: Vec<PlaylistItem>,
     },
     ClearLibraryCache,
+    ClearArtCache,
     /// Read the playlist list as last seen from disk.
     LoadLibraryCache,
     /// Remember the playlist list on disk.
@@ -580,6 +581,7 @@ pub enum Event {
         items: Vec<PlaylistItem>,
     },
     LibraryCacheCleared(Result<u64, String>),
+    ArtCacheCleared(Result<u64, String>),
     YoutubeCookies(Result<Option<usize>, String>),
     /// The playlist list as last cached.
     LibraryCache {
@@ -797,7 +799,12 @@ impl Backend {
     }
 
     pub fn send(&self, command: Command) {
-        if self.offline && !matches!(command, Command::Accent { .. } | Command::Shutdown) {
+        if self.offline
+            && !matches!(
+                command,
+                Command::Accent { .. } | Command::ClearArtCache | Command::Shutdown
+            )
+        {
             return;
         }
         let _ = self.commands.send(command);
@@ -1029,6 +1036,7 @@ impl Worker {
                     items,
                 } => self.store_playlist_cache(id, snapshot, items),
                 Command::ClearLibraryCache => self.clear_library_cache(),
+                Command::ClearArtCache => self.clear_art_cache(),
                 Command::LoadLibraryCache => self.load_library_cache(),
                 Command::StoreLibraryCache(playlists) => {
                     self.store_library_cache("playlists.json", &playlists)
@@ -1928,6 +1936,17 @@ impl Worker {
             let _ = events.send(Event::LibraryCacheCleared(
                 result.map_err(|error| error.to_string()),
             ));
+            waker.wake();
+        });
+    }
+
+    fn clear_art_cache(&self) {
+        let art = self.art.clone();
+        let events = self.events.clone();
+        let waker = self.waker.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = art.clear_disk_cache().map_err(|error| error.to_string());
+            let _ = events.send(Event::ArtCacheCleared(result));
             waker.wake();
         });
     }

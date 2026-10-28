@@ -1199,7 +1199,7 @@ impl App {
 
     // ---- frame ---------------------------------------------------------------
 
-    fn handle_events(&mut self) {
+    fn handle_events(&mut self, ctx: &egui::Context) {
         for event in self.backend.poll() {
             if self.offline {
                 continue;
@@ -1266,6 +1266,16 @@ impl App {
                         self.toast("Removed the YouTube cookies");
                     }
                     Err(error) => self.toast_error(error),
+                },
+                Event::ArtCacheCleared(result) => match result {
+                    Ok(bytes) => {
+                        ctx.forget_all_images();
+                        self.toast(format!(
+                            "Cleared {:.1} MB of artwork",
+                            bytes as f64 / 1_048_576.0
+                        ));
+                    }
+                    Err(error) => self.toast_error(format!("Couldn't clear artwork: {error}")),
                 },
                 Event::LibraryCacheCleared(result) => match result {
                     Ok(bytes) => self.toast(format!(
@@ -5473,16 +5483,7 @@ impl App {
                 }
             }
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
-            Action::ClearArtCache => match self.backend.art().clear_disk_cache() {
-                Ok(bytes) => {
-                    ctx.forget_all_images();
-                    self.toast(format!(
-                        "Cleared {:.1} MB of artwork",
-                        bytes as f64 / 1_048_576.0
-                    ));
-                }
-                Err(error) => self.toast_error(format!("Couldn't clear artwork: {error}")),
-            },
+            Action::ClearArtCache => self.backend.send(Command::ClearArtCache),
             Action::SaveProxyPassword => write_proxy_password(&self.dirs, &self.proxy_password),
             Action::ImportYoutubeCookies(path) => {
                 self.backend.send(Command::ImportYoutubeCookies(path));
@@ -5806,7 +5807,7 @@ impl App {
 impl App {
     pub fn pump(&mut self, ctx: &egui::Context) {
         self.handle_control_commands();
-        self.handle_events();
+        self.handle_events(ctx);
         self.handle_media_commands();
         self.handle_tray();
         self.tick(ctx);

@@ -82,8 +82,10 @@ impl ArtLoader {
         for entry in std::fs::read_dir(&self.inner.cache_dir)? {
             let entry = entry?;
             if entry.file_type()?.is_file() {
-                removed += entry.metadata().map(|m| m.len()).unwrap_or(0);
-                let _ = std::fs::remove_file(entry.path());
+                let length = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                if std::fs::remove_file(entry.path()).is_ok() {
+                    removed += length;
+                }
             }
         }
         Ok(removed)
