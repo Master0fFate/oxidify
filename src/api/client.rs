@@ -252,7 +252,9 @@ impl WebTokens {
                     Some(&refresh_token),
                 ) {
                     Ok(updated) => {
-                        let _ = updated.save(&self.path);
+                        if let Err(error) = updated.save(&self.path) {
+                            log::warn!("unable to save the refreshed Spotify sign-in: {error}");
+                        }
                         *guard = updated;
                     }
                     Err(error) => {
