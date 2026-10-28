@@ -583,7 +583,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             (crate::backend::LocalPlayback::Unavailable, PlaybackBackend::Alternate)
             | (crate::backend::LocalPlayback::Ready { .. }, PlaybackBackend::Alternate) => (
                 "Not applied",
-                "Apply playback settings to start native alternate audio. Piped and yt-dlp are optional fallbacks."
+                "Apply playback settings to start alternate local audio."
                     .to_string(),
                 None,
             ),
