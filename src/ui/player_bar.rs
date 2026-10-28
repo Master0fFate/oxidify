@@ -334,8 +334,8 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
     let enabled = now.is_some_and(|now| now.can_control) || app.is_connected();
     let playing = now.is_some_and(|now| now.playing);
     let loading = now.is_some_and(|now| now.loading);
-    let shuffle = now.is_some_and(|now| now.shuffle);
-    let repeat = now.map(|now| now.repeat).unwrap_or_default();
+    let shuffle = app.playing_context_shuffle();
+    let repeat = now.map_or(app.wanted_repeat(), |now| now.repeat);
     let dim = if enabled {
         palette.secondary
     } else {

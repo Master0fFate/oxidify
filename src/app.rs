@@ -925,6 +925,10 @@ impl App {
         self.shuffle_wanted
     }
 
+    pub fn wanted_repeat(&self) -> RepeatMode {
+        self.repeat_wanted
+    }
+
     /// The playing thing as a playable item, for menus that act on it:
     /// the cached full track when known, a minimal one otherwise.
     pub fn now_playing_item(&self) -> Option<PlayableItem> {
@@ -5161,12 +5165,13 @@ impl App {
                 }
             }
             Action::ToggleShuffle => {
-                let shuffle = self.now_playing().is_some_and(|now| now.shuffle);
-                self.set_shuffle(!shuffle);
+                self.set_shuffle(!self.shuffle_wanted);
             }
             Action::SetShuffle(shuffle) => self.set_shuffle(shuffle),
             Action::CycleRepeat => {
-                let mode = self.now_playing().map(|now| now.repeat).unwrap_or_default();
+                let mode = self
+                    .now_playing()
+                    .map_or(self.repeat_wanted, |now| now.repeat);
                 self.set_repeat(mode.next());
             }
             Action::SetRepeat(mode) => self.set_repeat(mode),
