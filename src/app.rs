@@ -2901,7 +2901,7 @@ impl App {
                             self.selected_device = None;
                         }
                     }
-                    Err(error) if error.is_premium_required() => {
+                    Err(error) if error.is_premium_required() && !self.is_confirmed_premium() => {
                         self.apply_free_alternate_mode();
                     }
                     Err(error) => self.toast_error(format!("Couldn't list devices: {error}")),
@@ -2999,7 +2999,7 @@ impl App {
                             self.on_now_playing_changed();
                         }
                     }
-                    Err(error) if error.is_premium_required() => {
+                    Err(error) if error.is_premium_required() && !self.is_confirmed_premium() => {
                         self.apply_free_alternate_mode();
                     }
                     Err(error) => log::debug!("playback state unavailable: {error}"),
@@ -3008,6 +3008,7 @@ impl App {
             ApiResponse::Queue(result) => {
                 if let Err(error) = &result
                     && error.is_premium_required()
+                    && !self.is_confirmed_premium()
                 {
                     self.apply_free_alternate_mode();
                     self.queue = Loadable::Loaded(queue_from_local(&self.local, &self.track_cache));
@@ -3791,7 +3792,7 @@ impl App {
                         self.remote_command_at = Some(Instant::now());
                         self.poll_remote_soon();
                     }
-                    Err(error) if error.is_premium_required() => {
+                    Err(error) if error.is_premium_required() && !self.is_confirmed_premium() => {
                         let retry_volume = if action == RemoteAction::Volume {
                             self.pending_remote_volume.map(|(percent, _)| percent)
                         } else {
@@ -3827,7 +3828,7 @@ impl App {
                     self.poll_remote_soon();
                     self.refresh_devices();
                 }
-                Err(error) if error.is_premium_required() => {
+                Err(error) if error.is_premium_required() && !self.is_confirmed_premium() => {
                     self.apply_free_alternate_mode();
                 }
                 Err(error) => self.toast_error(format!("Couldn't switch device: {error}")),
@@ -3837,7 +3838,7 @@ impl App {
                     self.toast(format!("Added {label} to queue"));
                     self.refresh_queue(true);
                 }
-                Err(error) if error.is_premium_required() => {
+                Err(error) if error.is_premium_required() && !self.is_confirmed_premium() => {
                     self.apply_free_alternate_mode();
                 }
                 Err(error) => self.toast_error(format!("Couldn't add to queue: {error}")),
