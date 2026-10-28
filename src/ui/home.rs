@@ -88,15 +88,33 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
         liked: true,
     }];
     if let Some(playlists) = app.library.playlists.get() {
-        let rank = |uri: &str| {
-            app.recent_contexts
-                .iter()
-                .position(|held| held == uri)
-                .unwrap_or(usize::MAX)
-        };
-        let mut ordered: Vec<_> = playlists.iter().enumerate().collect();
-        ordered.sort_by_key(|(index, playlist)| (rank(&playlist.uri), *index));
-        for (_, playlist) in ordered.into_iter().take(7) {
+        let ranks: std::collections::HashMap<&str, usize> = app
+            .recent_contexts
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(rank, uri)| (uri.as_str(), rank))
+            .collect();
+        let mut ordered: Vec<(usize, usize)> = playlists
+            .iter()
+            .enumerate()
+            .map(|(index, playlist)| {
+                (
+                    ranks
+                        .get(playlist.uri.as_str())
+                        .copied()
+                        .unwrap_or(usize::MAX),
+                    index,
+                )
+            })
+            .collect();
+        if ordered.len() > 7 {
+            ordered.select_nth_unstable(6);
+            ordered.truncate(7);
+        }
+        ordered.sort_unstable();
+        for (_, index) in ordered {
+            let playlist = &playlists[index];
             tiles.push(Tile {
                 image: pick_image(&playlist.images, 64).map(str::to_string),
                 name: playlist.name.clone(),
