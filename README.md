@@ -271,10 +271,13 @@ only when its version is strictly newer than the pin. Spotify tokens are never
 sent to those tools, and the result is not Spotify audio.
 If YouTube makes yt-dlp confirm it is not a bot, Settings → YouTube cookies
 takes a `cookies.txt` (Netscape format) exported from a browser signed in to
-YouTube: paste its path or drop the file on the window. Only its youtube.com
-cookies are kept, owner-only, in the credentials directory, and each yt-dlp
-run gets a private copy that is deleted when it exits; Spotify, native search
-and Piped never see them. You are responsible
+YouTube: paste its path or drop the file on the Settings page. Only its
+youtube.com cookies are kept, owner-only, in the credentials directory. Each
+yt-dlp run gets its own copy in an owner-only scratch folder, deleted when the
+run ends, and anything a cut-short run leaves there is cleared the next time
+alternate playback starts. Spotify, native search and Piped never see them.
+YouTube rotates the cookies of an open browser session, so an export from a
+private window that you then close tends to keep working longer. You are responsible
 for the endpoint and any binary you run, and for their terms of use. Nothing
 here is approved or authorized by Spotify or by YouTube, and Oxidify makes no
 claim that it is.

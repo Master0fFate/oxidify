@@ -17,6 +17,7 @@ Oxidify follows each platform's conventions. On Linux:
 | Playback credential | `~/.local/state/oxidify/credentials/` | Yes, you approve playback again |
 | Proxy password | `~/.local/state/oxidify/credentials/proxy-password` | Yes, you type it again |
 | YouTube cookies for yt-dlp (optional, youtube.com entries only) | `~/.local/state/oxidify/credentials/youtube-cookies.txt` | Yes, you add them again |
+| Per-run copies of those cookies (owner-only, emptied when alternate playback starts) | `~/.local/state/oxidify/credentials/youtube-cookies-scratch/` | Always |
 | Last session | `~/.local/state/oxidify/session.json` | Yes |
 | Audio cache | `~/.cache/oxidify/audio/` | Always |
 | Artwork cache (trimmed to 256 MiB at each start, oldest first) | `~/.cache/oxidify/art/` | Always |

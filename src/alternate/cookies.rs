@@ -5,15 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const MAX_BYTES: u64 = 1024 * 1024;
 const HEADER: &str = "# Netscape HTTP Cookie File\n";
 const HTTP_ONLY: &str = "#HttpOnly_";
-const RUN_PREFIX: &str = "youtube-cookies-run-";
+const SCRATCH_DIR: &str = "youtube-cookies-scratch";
 
 pub fn import(source: &Path, target: &Path) -> Result<usize, String> {
     let text = read_bounded(source)?;
     let (cookies, count) = youtube_cookies(&text)?;
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| keep_error(&error))?;
-    }
-    let temporary = target.with_extension("tmp");
+    let temporary = scratch_file(target, "import").map_err(|error| keep_error(&error))?;
     crate::auth::write_private(&temporary, cookies.as_bytes())
         .and_then(|()| std::fs::rename(&temporary, target))
         .map_err(|error| {
@@ -42,6 +39,16 @@ fn keep_error(error: &std::io::Error) -> String {
 }
 
 fn read_bounded(source: &Path) -> Result<String, String> {
+    let metadata = std::fs::metadata(source).map_err(|error| match error.kind() {
+        ErrorKind::NotFound => "No file at that path.".to_string(),
+        _ => format!("Couldn't read that file: {error}"),
+    })?;
+    if metadata.is_dir() {
+        return Err("That is a folder, not a cookies.txt.".into());
+    }
+    if metadata.len() > MAX_BYTES {
+        return Err("That file is too large for a cookies.txt.".into());
+    }
     let mut text = String::new();
     std::fs::File::open(source)
         .and_then(|file| file.take(MAX_BYTES + 1).read_to_string(&mut text))
@@ -109,11 +116,28 @@ fn is_youtube(domain: &str) -> bool {
             && host[host.len() - SUFFIX.len()..].eq_ignore_ascii_case(SUFFIX)
 }
 
+fn scratch_file(stored: &Path, kind: &str) -> std::io::Result<PathBuf> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = stored.with_file_name(SCRATCH_DIR);
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&dir)?;
+    Ok(dir.join(format!(
+        "{}-{}-{kind}.txt",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )))
+}
+
 pub(super) struct RunCookies(PathBuf);
 
 impl RunCookies {
     pub(super) fn copy(stored: &Path) -> Option<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         let bytes = match std::fs::read(stored) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == ErrorKind::NotFound => return None,
@@ -122,11 +146,13 @@ impl RunCookies {
                 return None;
             }
         };
-        let path = stored.with_file_name(format!(
-            "{RUN_PREFIX}{}-{}.txt",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let path = match scratch_file(stored, "run") {
+            Ok(path) => path,
+            Err(error) => {
+                log::warn!("couldn't hand the YouTube cookies to yt-dlp: {error}");
+                return None;
+            }
+        };
         match crate::auth::write_private(&path, &bytes) {
             Ok(()) => Some(Self(path)),
             Err(error) => {
@@ -148,16 +174,16 @@ impl Drop for RunCookies {
     }
 }
 
-pub(super) fn sweep_runs(stored: &Path) {
-    let Some(entries) = stored.parent().and_then(|dir| std::fs::read_dir(dir).ok()) else {
+pub(super) fn sweep_scratch(stored: &Path) {
+    let Ok(entries) = std::fs::read_dir(stored.with_file_name(SCRATCH_DIR)) else {
         return;
     };
-    let own = format!("{RUN_PREFIX}{}-", std::process::id());
+    let own = format!("{}-", std::process::id());
     for entry in entries.flatten() {
         if entry
             .file_name()
             .to_str()
-            .is_some_and(|name| name.starts_with(RUN_PREFIX) && !name.starts_with(&own))
+            .is_none_or(|name| !name.starts_with(&own))
         {
             let _ = std::fs::remove_file(entry.path());
         }

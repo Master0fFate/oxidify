@@ -93,7 +93,9 @@ no playback request to Spotify.
   searches when the others find no match. Spotify tokens are never sent to an
   alternate provider. yt-dlp is never downloaded at runtime. YouTube cookies
   added in Settings stay in the credentials directory; each yt-dlp run gets
-  a private copy, deleted when it exits, and no other request carries them.
+  its own copy in an owner-only scratch folder, deleted when the run ends or,
+  if the run is cut short, when alternate playback next starts. No other
+  request carries them.
 
 ## Refreshing a page
 
