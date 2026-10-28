@@ -42,6 +42,7 @@ const REMOTE_COMMAND_WINDOW: Duration = Duration::from_secs(10);
 const REMOTE_FRESH: Duration = Duration::from_secs(60);
 const DEVICES_FRESH: Duration = Duration::from_secs(12);
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
+const PLAY_CLOCK_SLACK: Duration = Duration::from_secs(2);
 const TOAST_LIFETIME: Duration = Duration::from_millis(3200);
 const OPTIMISTIC_HOLD: Duration = Duration::from_millis(2500);
 
@@ -78,6 +79,8 @@ struct PlayClock {
     uri: String,
     recorded: bool,
     last_position_ms: u32,
+    played: Duration,
+    last_seen: Option<Instant>,
 }
 
 /// The playing item as the interface sees it, whichever device plays it.
@@ -2389,9 +2392,9 @@ impl App {
         summary
     }
 
-    /// Times the playing song towards a counted play: thirty seconds in,
-    /// or half of a shorter song, once per run through it. A song started
-    /// over counts again.
+    /// Times the playing song towards a counted play: thirty seconds of
+    /// playing, or half of a shorter song, once per run through it. A song
+    /// started over counts again.
     fn note_play(&mut self) {
         let Some(now) = self.now_playing() else {
             self.play_clock = None;
@@ -2411,13 +2414,28 @@ impl App {
                 uri: now.uri.clone(),
                 recorded: false,
                 last_position_ms: now.position_ms,
+                played: Duration::ZERO,
+                last_seen: None,
             }),
         };
         if clock.recorded && now.position_ms < 5_000 && clock.last_position_ms > counts_at {
             clock.recorded = false;
+            clock.played = Duration::ZERO;
         }
+        let advanced = Duration::from_millis(u64::from(
+            now.position_ms.saturating_sub(clock.last_position_ms),
+        ));
         clock.last_position_ms = now.position_ms;
-        if clock.recorded || now.position_ms < counts_at {
+        let seen = Instant::now();
+        if now.playing {
+            if let Some(last) = clock.last_seen {
+                clock.played += seen.duration_since(last).min(advanced + PLAY_CLOCK_SLACK);
+            }
+            clock.last_seen = Some(seen);
+        } else {
+            clock.last_seen = None;
+        }
+        if clock.recorded || clock.played < Duration::from_millis(u64::from(counts_at)) {
             return;
         }
         clock.recorded = true;
