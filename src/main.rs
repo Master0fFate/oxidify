@@ -153,7 +153,7 @@ fn run_control(control: Control) -> i32 {
         Control::Next => "next".to_owned(),
         Control::Previous => "previous".to_owned(),
         Control::Seek { seconds } => format!("seek-by {}", seconds.saturating_mul(1000)),
-        Control::SeekTo { seconds } => format!("seek-to {}", u64::from(seconds) * 1000),
+        Control::SeekTo { seconds } => format!("seek-to {}", seconds.saturating_mul(1000)),
         Control::Volume { percent } => format!("volume-set {percent}"),
         Control::VolumeUp { percent } => format!("volume-by {percent}"),
         Control::VolumeDown { percent } => format!("volume-by -{percent}"),
