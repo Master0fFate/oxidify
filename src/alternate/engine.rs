@@ -243,6 +243,8 @@ struct Engine {
     miss_skips: u32,
     seeded_play: bool,
     hydrating: bool,
+    load_token: u64,
+    hydrate_job: Option<JoinHandle<()>>,
     truncated: bool,
     autoplay_for: Option<String>,
     device_retry_at: Option<Instant>,
@@ -289,6 +291,8 @@ async fn run(
         miss_skips: 0,
         seeded_play: false,
         hydrating: false,
+        load_token: 0,
+        hydrate_job: None,
         truncated: false,
         autoplay_for: None,
         device_retry_at: None,
@@ -337,6 +341,7 @@ async fn run(
         }
     }
     engine.abort_jobs();
+    engine.cancel_hydrate();
     engine.output.stop();
 }
 
@@ -358,8 +363,16 @@ impl Engine {
         }
         self.adopted = None;
         self.prefetch_inflight = None;
-        self.hydrating = false;
         self.autoplay_for = None;
+    }
+
+    fn cancel_hydrate(&mut self) {
+        if let Some(job) = self.hydrate_job.take() {
+            job.abort();
+        }
+        self.hydrating = false;
+        self.seeded_play = false;
+        self.load_token = self.load_token.wrapping_add(1);
     }
 
     /// Aborts every job but the one resolving `keep`, whose token stays
@@ -375,7 +388,6 @@ impl Engine {
         }
         self.jobs = kept;
         self.adopted = Some((self.play_generation, keep.to_string()));
-        self.hydrating = false;
         self.autoplay_for = None;
     }
 
@@ -404,7 +416,6 @@ impl Engine {
     }
 
     fn bump(&mut self) -> u64 {
-        self.seeded_play = false;
         self.abort_jobs();
         self.active_hint = None;
         self.active_duration = None;
@@ -492,6 +503,7 @@ impl Engine {
             PlayerCommand::Activate => self.emit(),
             PlayerCommand::Stop => {
                 self.bump();
+                self.cancel_hydrate();
                 self.session.stop();
                 self.output.stop();
                 self.emit();
@@ -552,7 +564,9 @@ impl Engine {
     }
 
     fn start_hydrate(&mut self, spec: LoadSpec) {
-        let token = self.bump();
+        self.bump();
+        self.cancel_hydrate();
+        let token = self.load_token;
         self.unplayable.clear();
         self.truncated = spec.truncated;
         let seed = seed_queue(&spec);
@@ -586,7 +600,7 @@ impl Engine {
                 result: result.map_err(|error| error.to_string()),
             }));
         });
-        self.spawn_job(None, job);
+        self.hydrate_job = Some(job);
     }
 
     fn skip_keep_audio(&mut self, forward: bool) {
@@ -709,7 +723,7 @@ impl Engine {
                 spec,
                 result,
             } => {
-                if token != self.play_generation {
+                if token != self.load_token {
                     return;
                 }
                 self.on_hydrated(spec, result);
@@ -839,6 +853,7 @@ impl Engine {
 
     fn on_hydrated(&mut self, spec: LoadSpec, result: Result<Vec<LocalTrack>, String>) {
         self.hydrating = false;
+        self.hydrate_job = None;
         let tracks = match result {
             Ok(tracks) => tracks,
             Err(error) if self.seeded_play => {
@@ -1307,6 +1322,7 @@ impl Engine {
     #[cfg(test)]
     fn test_load(&mut self, tracks: Vec<LocalTrack>, play: bool, seeded: bool) {
         self.bump();
+        self.cancel_hydrate();
         self.unplayable.clear();
         self.miss_skips = 0;
         self.session.load(tracks, 0, play, Some(false), 0);
