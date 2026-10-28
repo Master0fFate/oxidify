@@ -1393,16 +1393,17 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
         Some(&mut filter),
     );
     ui.data_mut(|data| data.insert_temp(filter_id, filter.clone()));
-    let uris: Vec<String> = items
-        .iter()
-        .map(|(item, _, _)| item.uri().to_string())
-        .collect();
     let context = match collection_uri {
         Some(uri) if app.library.liked.is_complete() => RowContext::Context {
             uri,
             editable_playlist: None,
         },
-        _ => RowContext::Uris(uris),
+        _ => RowContext::Uris(
+            items
+                .iter()
+                .map(|(item, _, _)| item.uri().to_string())
+                .collect(),
+        ),
     };
     let loading = app.library.liked.loading;
     let error = app.library.liked.error.clone();
