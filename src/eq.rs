@@ -22,6 +22,7 @@ const FLAT: f32 = 0.05;
 /// How far the solved gains may go past the sliders while making the
 /// combined response meet them; a guard, not a target.
 const SOLVED_LIMIT: f64 = 36.0;
+const TOP_OF_RATE: f64 = 0.45;
 
 /// What the listener set: the switch, the preamp, and the bands, and
 /// the two things Winamp's main window did to the sound as well, the
@@ -136,9 +137,15 @@ fn chain(bands_db: &[f32; 10], rate: f64) -> Vec<Biquad> {
     // How much each band moves every centre, per decibel it is given.
     let mut unit = [[0.0; 10]; 10];
     for (j, (hz, width)) in BANDS.iter().zip(widths).enumerate() {
+        if !playable(*hz, rate) {
+            unit[j][j] = 1.0;
+            continue;
+        }
         let filter = Biquad::peaking(f64::from(*hz), width, 1.0, rate);
         for (i, centre) in BANDS.iter().enumerate() {
-            unit[i][j] = filter.gain_db_at(f64::from(*centre));
+            if playable(*centre, rate) {
+                unit[i][j] = filter.gain_db_at(f64::from(*centre));
+            }
         }
     }
     let mut gains = target;
@@ -146,6 +153,9 @@ fn chain(bands_db: &[f32; 10], rate: f64) -> Vec<Biquad> {
         let filters: Vec<(usize, Biquad)> = filters_for(&gains, &widths, rate);
         let mut residual = [0.0; 10];
         for (i, centre) in BANDS.iter().enumerate() {
+            if !playable(*centre, rate) {
+                continue;
+            }
             let played: f64 = filters
                 .iter()
                 .map(|(_, filter)| filter.gain_db_at(f64::from(*centre)))
@@ -173,11 +183,15 @@ fn filters_for(gains: &[f64; 10], widths: &[f64; 10], rate: f64) -> Vec<(usize, 
         .zip(widths)
         .zip(gains)
         .enumerate()
-        .filter(|(_, (_, gain))| gain.abs() > f64::from(FLAT))
+        .filter(|(_, ((hz, _), gain))| gain.abs() > f64::from(FLAT) && playable(**hz, rate))
         .map(|(index, ((hz, width), gain))| {
             (index, Biquad::peaking(f64::from(*hz), *width, *gain, rate))
         })
         .collect()
+}
+
+fn playable(hz: f32, rate: f64) -> bool {
+    f64::from(hz) < TOP_OF_RATE * rate
 }
 
 /// Gaussian elimination with partial pivoting, for the ten-by-ten
