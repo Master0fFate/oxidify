@@ -143,11 +143,30 @@ pub fn parse_content_range(raw: &str) -> Result<ContentRange, String> {
 
 struct PrefixBuf {
     data: Vec<u8>,
+    ready: bool,
+    tail_scanned: bool,
 }
 
 impl PrefixBuf {
     fn new() -> Self {
-        Self { data: Vec::new() }
+        Self {
+            data: Vec::new(),
+            ready: false,
+            tail_scanned: false,
+        }
+    }
+
+    fn check_ready(&mut self, buffer: &SharedAudio) -> bool {
+        if !self.ready {
+            let tail = if self.tail_scanned {
+                Vec::new()
+            } else {
+                tail_bytes(buffer, &self.data)
+            };
+            self.tail_scanned |= !tail.is_empty();
+            self.ready = probe::playback_ready_sparse(&self.data, &tail, false);
+        }
+        self.ready
     }
 
     fn note(&mut self, offset: u64, chunk: &[u8]) {
@@ -368,7 +387,7 @@ async fn fetch_inner(
                             if ctx.buffer.is_cancelled() {
                                 return Err(FetchErr::Cancelled);
                             }
-                            maybe_ready(ctx.buffer, &prefix.data, false, on_ready);
+                            maybe_ready(ctx.buffer, &mut prefix, on_ready);
                             return range_followup(&mut ctx, prefix, on_ready).await;
                         }
                         continue;
@@ -388,7 +407,7 @@ async fn fetch_inner(
                     ctx.buffer.fail("Couldn't read matched audio.");
                     return Err(permanent("Couldn't read matched audio."));
                 }
-                maybe_ready(ctx.buffer, &prefix.data, false, on_ready);
+                maybe_ready(ctx.buffer, &mut prefix, on_ready);
                 if ctx.buffer.filled_bytes() >= total {
                     ctx.buffer.close();
                     return finish_complete_body(&prefix.data, ctx.buffer.len(), true, on_ready)
@@ -601,8 +620,7 @@ async fn range_followup(
         if !ctx.buffer.is_open() {
             return Ok(());
         }
-        let tail = tail_bytes(ctx.buffer, &prefix.data);
-        maybe_ready_with_tail(&prefix.data, false, on_ready, &tail);
+        maybe_ready(ctx.buffer, &mut prefix, on_ready);
         let Some(total) = ctx.buffer.content_length() else {
             return Err(permanent("Couldn't fetch matched audio."));
         };
@@ -611,8 +629,7 @@ async fn range_followup(
             return finish_complete_body(&prefix.data, ctx.buffer.len(), true, on_ready)
                 .map_err(permanent);
         }
-        let ready = probe::playback_ready_sparse(&prefix.data, &tail, false);
-        let Some(work) = next_work(ctx.buffer, &prefix.data, total, did_tail, ready) else {
+        let Some(work) = next_work(ctx.buffer, &prefix.data, total, did_tail, prefix.ready) else {
             tokio::select! {
                 _ = ctx.buffer.notified() => {}
                 _ = tokio::time::sleep(Duration::from_millis(25)) => {}
@@ -745,12 +762,8 @@ fn tail_bytes(buffer: &SharedAudio, prefix: &[u8]) -> Vec<u8> {
     buffer.copy_filled(start, end).unwrap_or_default()
 }
 
-fn maybe_ready(buffer: &SharedAudio, prefix: &[u8], complete: bool, on_ready: &mut impl FnMut()) {
-    maybe_ready_with_tail(prefix, complete, on_ready, &tail_bytes(buffer, prefix));
-}
-
-fn maybe_ready_with_tail(prefix: &[u8], complete: bool, on_ready: &mut impl FnMut(), tail: &[u8]) {
-    if probe::playback_ready_sparse(prefix, tail, complete) {
+fn maybe_ready(buffer: &SharedAudio, prefix: &mut PrefixBuf, on_ready: &mut impl FnMut()) {
+    if prefix.check_ready(buffer) {
         on_ready();
     }
 }
@@ -948,9 +961,8 @@ async fn stream_from_zero(
         }
         buffer.write_at(offset, &chunk).map_err(permanent)?;
         offset = offset.saturating_add(chunk.len() as u64);
-        match prefix.as_ref() {
-            Some(prefix) => maybe_ready(buffer, &prefix.data, false, on_ready),
-            None => maybe_ready(buffer, &[], false, on_ready),
+        if let Some(prefix) = prefix.as_mut() {
+            maybe_ready(buffer, prefix, on_ready);
         }
         if buffer.is_cancelled() {
             return Err(FetchErr::Cancelled);
@@ -998,9 +1010,8 @@ async fn stream_range(
         }
         buffer.write_at(offset, chunk).map_err(permanent)?;
         offset = offset.saturating_add(chunk.len() as u64);
-        match prefix.as_ref() {
-            Some(prefix) => maybe_ready(buffer, &prefix.data, false, on_ready),
-            None => maybe_ready(buffer, &[], false, on_ready),
+        if let Some(prefix) = prefix.as_mut() {
+            maybe_ready(buffer, prefix, on_ready);
         }
         if buffer.is_cancelled() {
             return Err(FetchErr::Cancelled);
