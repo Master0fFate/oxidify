@@ -301,13 +301,13 @@ pub fn strip_html(text: &str) -> String {
             _ => {}
         }
     }
-    out.replace("&amp;", "&")
-        .replace("&quot;", "\"")
+    out.replace("&quot;", "\"")
         .replace("&#x27;", "'")
         .replace("&#39;", "'")
         .replace("&#x2F;", "/")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 #[cfg(test)]
