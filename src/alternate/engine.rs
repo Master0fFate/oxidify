@@ -95,6 +95,7 @@ struct PendingPlay {
     decode: Option<DecodeHandle>,
     label: String,
     start_ms: u32,
+    reattach: bool,
 }
 
 struct CachedMatch {
@@ -932,6 +933,7 @@ impl Engine {
                     decode: Some(decode),
                     label: ready.label,
                     start_ms,
+                    reattach: false,
                 });
                 self.try_start_pending();
             }
@@ -1072,6 +1074,17 @@ impl Engine {
         }
         let probe = pcm.duration_probe();
         match self.output.play_pcm(pcm, decode) {
+            Ok(_) if pending.reattach => {
+                self.active_duration = Some(probe);
+                match self.session.playback() {
+                    Playback::Paused => self.output.pause(),
+                    Playback::Playing => {
+                        self.session.resume_clock();
+                        self.emit();
+                    }
+                    _ => {}
+                }
+            }
             Ok(info) => {
                 self.miss_skips = 0;
                 if let Some(previous) = self.outgoing.take() {
@@ -1193,6 +1206,10 @@ impl Engine {
         self.adopt_media_duration();
         match self.output.status() {
             OutputStatus::DeviceLost => self.handle_device_lost(),
+            _ if self
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.reattach) => {}
             OutputStatus::Buffering if self.session.playback() == Playback::Playing => {
                 self.freeze_output_clock();
             }
@@ -1267,21 +1284,16 @@ impl Engine {
             .clone()
             .ok_or_else(|| "Couldn't start audio.".to_string())?;
         let pos = self.session.position_now();
-        let paused = self.session.playback() == Playback::Paused;
         let (pcm, decode) = spawn_decoder(buffer, hint, pos)
             .map_err(|error| format!("Couldn't decode audio: {error}"))?;
-        let probe = pcm.duration_probe();
-        self.output
-            .play_pcm(pcm, decode)
-            .map_err(|error| format!("Couldn't start audio: {error}"))?;
-        self.active_duration = Some(probe);
-        if paused {
-            self.output.pause();
-        }
-        if self.session.playback() == Playback::Playing {
-            self.session.resume_clock();
-            self.emit();
-        }
+        self.pending = Some(PendingPlay {
+            pcm: Some(pcm),
+            decode: Some(decode),
+            label: String::new(),
+            start_ms: pos,
+            reattach: true,
+        });
+        self.try_start_pending();
         Ok(())
     }
 
