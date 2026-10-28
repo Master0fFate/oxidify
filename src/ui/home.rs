@@ -300,7 +300,7 @@ fn made_for_you(app: &mut App, ui: &mut egui::Ui) {
 
 fn recently_played(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let history = match app.home.recently_played.clone() {
+    let history = match &app.home.recently_played {
         Loadable::Loaded(history) => history,
         Loadable::Loading | Loadable::NotLoaded => {
             widgets::shelf(ui, &palette, "recent", "Recently played", |ui| {
@@ -309,6 +309,7 @@ fn recently_played(app: &mut App, ui: &mut egui::Ui) {
             return;
         }
         Loadable::Failed(message) => {
+            let message = message.clone();
             widgets::shelf(ui, &palette, "recent", "Recently played", |ui| {
                 widgets::error_row(ui, app, &message, Some(Page::Home));
             });
@@ -317,7 +318,7 @@ fn recently_played(app: &mut App, ui: &mut egui::Ui) {
     };
     let mut seen = std::collections::HashSet::new();
     let tracks: Vec<_> = history
-        .into_iter()
+        .iter()
         .filter(|entry| {
             entry
                 .track
@@ -326,6 +327,7 @@ fn recently_played(app: &mut App, ui: &mut egui::Ui) {
                 .is_some_and(|id| seen.insert(id.clone()))
         })
         .take(16)
+        .cloned()
         .collect();
     if tracks.is_empty() {
         return;
@@ -419,10 +421,10 @@ fn your_podcasts(app: &mut App, ui: &mut egui::Ui, load: bool) {
     }
     let loading = shows.loading && shows.items.is_empty();
     let error = shows.error.clone();
-    let shows: Vec<_> = shows.items.iter().map(|saved| saved.show.clone()).collect();
-    if shows.is_empty() && !load {
+    if shows.items.is_empty() && !load {
         return;
     }
+    let shows = std::mem::take(&mut app.library.shows.items);
     if shows.is_empty() && !loading && error.is_none() {
         if app.library.shows.loaded_once {
             widgets::empty_state(
@@ -433,6 +435,7 @@ fn your_podcasts(app: &mut App, ui: &mut egui::Ui, load: bool) {
                 "Podcasts you follow will appear here.",
             );
         }
+        app.library.shows.items = shows;
         return;
     }
     let mut show_all = false;
@@ -449,7 +452,7 @@ fn your_podcasts(app: &mut App, ui: &mut egui::Ui, load: bool) {
             if let Some(error) = &error {
                 widgets::error_row(ui, app, error, Some(Page::Podcasts));
             }
-            for show in &shows {
+            for show in shows.iter().map(|saved| &saved.show) {
                 let card = widgets::card(
                     ui,
                     app,
@@ -466,6 +469,7 @@ fn your_podcasts(app: &mut App, ui: &mut egui::Ui, load: bool) {
             }
         },
     );
+    app.library.shows.items = shows;
     if show_all {
         app.actions.push(Action::Open(Page::Podcasts));
     }
