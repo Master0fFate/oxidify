@@ -412,6 +412,7 @@ pub struct TableRows {
     pub names_revision: u64,
     pub source_len: usize,
     pub rows: std::sync::Arc<Vec<TableItem>>,
+    pub positions: std::sync::Arc<Vec<usize>>,
     /// The rows' playing time, summed as they arrive rather than every
     /// frame.
     pub total_ms: u64,

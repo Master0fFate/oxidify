@@ -331,6 +331,7 @@ fn next_in_queue(app: &mut App, ui: &mut egui::Ui, now: &NowPlaying) {
                     show_added_by: false,
                     compact: true,
                     shift: 0.0,
+                    moves: None,
                 },
             );
         });

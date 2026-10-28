@@ -324,7 +324,7 @@ pub fn item_menu(
     app: &mut App,
     item: &PlayableItem,
     context: Option<&RowContext>,
-    index: Option<usize>,
+    moves: Option<RowMove>,
 ) {
     let palette = app.palette;
     ui.set_min_width(220.0);
@@ -365,19 +365,23 @@ pub fn item_menu(
         _ => None,
     };
     if let Some((playlist_id, can_move)) = editable {
-        if can_move && let Some(index) = index {
-            if index > 0 && menu_item(ui, &palette, Some(Icon::ChevronUp), "Move up") {
+        if can_move && let Some(moves) = moves {
+            if let Some(to) = moves.up
+                && menu_item(ui, &palette, Some(Icon::ChevronUp), "Move up")
+            {
                 app.actions.push(Action::MoveInPlaylist {
                     playlist_id: playlist_id.clone(),
-                    from: index as u32,
-                    to: index as u32 - 1,
+                    from: moves.from,
+                    to,
                 });
             }
-            if menu_item(ui, &palette, Some(Icon::ChevronDown), "Move down") {
+            if let Some(to) = moves.down
+                && menu_item(ui, &palette, Some(Icon::ChevronDown), "Move down")
+            {
                 app.actions.push(Action::MoveInPlaylist {
                     playlist_id: playlist_id.clone(),
-                    from: index as u32,
-                    to: index as u32 + 2,
+                    from: moves.from,
+                    to,
                 });
             }
         }
@@ -957,6 +961,14 @@ pub struct TrackRow<'a> {
     /// Vertical offset while rows part around the slot a dragged row
     /// would land in; 0.0 everywhere else.
     pub shift: f32,
+    pub moves: Option<RowMove>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowMove {
+    pub from: u32,
+    pub up: Option<u32>,
+    pub down: Option<u32>,
 }
 
 /// Column widths of the track table, computed from the available width.
@@ -1349,7 +1361,7 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
         egui::Popup::menu(&more)
             .id(menu_id)
             .frame(menu_frame(&palette))
-            .show(|ui| item_menu(ui, app, row.item, Some(row.context), Some(row.index)));
+            .show(|ui| item_menu(ui, app, row.item, Some(row.context), row.moves));
     }
 
     // Row interactions.
@@ -1374,7 +1386,7 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
     }
     egui::Popup::context_menu(&response)
         .frame(menu_frame(&palette))
-        .show(|ui| item_menu(ui, app, row.item, Some(row.context), Some(row.index)));
+        .show(|ui| item_menu(ui, app, row.item, Some(row.context), row.moves));
 }
 
 /// The chip that rides the pointer while a song is being dragged.
@@ -2360,12 +2372,32 @@ mod tests {
                 if nested {
                     root = ui
                         .menu_button("Track menu", |ui| {
-                            item_menu(ui, app, item, context, Some(2));
+                            item_menu(
+                                ui,
+                                app,
+                                item,
+                                context,
+                                Some(RowMove {
+                                    from: 2,
+                                    up: Some(1),
+                                    down: Some(4),
+                                }),
+                            );
                         })
                         .response
                         .rect;
                 } else {
-                    item_menu(ui, app, item, context, Some(2));
+                    item_menu(
+                        ui,
+                        app,
+                        item,
+                        context,
+                        Some(RowMove {
+                            from: 2,
+                            up: Some(1),
+                            down: Some(4),
+                        }),
+                    );
                 }
             },
         );
@@ -2701,6 +2733,7 @@ mod tests {
                 show_added_by: false,
                 compact: false,
                 shift: 0.0,
+                moves: None,
             };
             play_from_row(app, &row(&episode));
             assert!(

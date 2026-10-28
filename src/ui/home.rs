@@ -569,6 +569,7 @@ fn track_list(
                 show_added_by: false,
                 compact: app.settings.compact_tracks,
                 shift: 0.0,
+                moves: None,
             },
         );
     }

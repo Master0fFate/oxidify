@@ -305,6 +305,7 @@ pub use crate::model::TableItem;
 /// A track table with virtualised rows and paging.
 pub struct Table<'a> {
     pub items: &'a [TableItem],
+    pub positions: Option<&'a [usize]>,
     pub context: RowContext,
     pub show_album: bool,
     pub show_cover: bool,
@@ -481,6 +482,18 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
     let list_top = ui.cursor().top();
     let clip = ui.clip_rect();
     let visible_len = entry.visible.len();
+    let position = |index: usize| table.positions.map_or(index, |positions| positions[index]);
+    let slot_position = |slot: usize| {
+        if slot < table.items.len() {
+            position(slot)
+        } else {
+            table
+                .items
+                .len()
+                .checked_sub(1)
+                .map_or(0, |last| position(last) + 1)
+        }
+    };
     let pointer_slot = |ctx: &egui::Context| {
         let pos = ctx.pointer_latest_pos().filter(|pos| clip.contains(*pos))?;
         let row = (pos.y - list_top) / row_height;
@@ -526,7 +539,7 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
                 index: if entry.view_uris.is_some() {
                     row
                 } else {
-                    index
+                    position(index)
                 },
                 number: Some(if sorted { row + 1 } else { index + 1 }),
                 item,
@@ -542,6 +555,11 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
                 show_added_by: table.show_added_by,
                 compact,
                 shift,
+                moves: move_playlist.as_ref().map(|_| widgets::RowMove {
+                    from: position(index) as u32,
+                    up: index.checked_sub(1).map(|above| position(above) as u32),
+                    down: (index + 1 < table.items.len()).then(|| position(index + 1) as u32 + 1),
+                }),
             },
         );
     });
@@ -564,15 +582,20 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
                 .clone()
                 .filter(|(origin, _)| move_playlist.as_ref().is_some_and(|id| id == origin))
             {
-                let to = slot as u32;
-                // The slot is Spotify's insert_before, exactly what the
-                // action's handler sends; a row dropped back on its own
-                // edges moves nothing.
-                if to != from && to != from + 1 {
+                let from_slot = table.positions.map_or(Some(from as usize), |positions| {
+                    positions.binary_search(&(from as usize)).ok()
+                });
+                // The slot's position is Spotify's insert_before, exactly
+                // what the action's handler sends; a row dropped back on
+                // its own edges moves nothing.
+                if let Some(from_slot) = from_slot
+                    && slot != from_slot
+                    && slot != from_slot + 1
+                {
                     app.actions.push(Action::MoveInPlaylist {
                         playlist_id,
                         from,
-                        to,
+                        to: slot_position(slot) as u32,
                     });
                 }
             } else if let Some((playlist_id, _)) = insert_playlist.clone() {
@@ -585,7 +608,7 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
                     playlist_id,
                     playlist_name,
                     uris: vec![track.uri.clone()],
-                    position: Some(slot as u32),
+                    position: Some(slot_position(slot) as u32),
                     confirmed: false,
                 });
             }
@@ -791,7 +814,7 @@ struct RowSource {
 fn refreshed_rows(
     held: Option<TableRows>,
     source: RowSource,
-    build: impl FnOnce(usize) -> Vec<TableItem>,
+    build: impl FnOnce(usize) -> Vec<(usize, TableItem)>,
 ) -> TableRows {
     match held {
         Some(rows)
@@ -805,19 +828,28 @@ fn refreshed_rows(
                 rows.names_revision == source.names_revision
                     && source.grown_from == Some((rows.items_revision, rows.source_len))
             });
-            let (start, mut rows, mut total_ms, mut has_dates) = kept
-                .map_or((0, Arc::default(), 0, false), |rows| {
-                    (rows.source_len, rows.rows, rows.total_ms, rows.has_dates)
+            let (start, mut rows, mut positions, mut total_ms, mut has_dates) =
+                kept.map_or((0, Arc::default(), Arc::default(), 0, false), |rows| {
+                    (
+                        rows.source_len,
+                        rows.rows,
+                        rows.positions,
+                        rows.total_ms,
+                        rows.has_dates,
+                    )
                 });
-            let added = build(start);
+            let (added_positions, added): (Vec<usize>, Vec<TableItem>) =
+                build(start).into_iter().unzip();
             total_ms += total_duration(&added);
             has_dates |= has_added_dates(&added);
             Arc::make_mut(&mut rows).extend(added);
+            Arc::make_mut(&mut positions).extend(added_positions);
             TableRows {
                 items_revision: source.revision,
                 names_revision: source.names_revision,
                 source_len: source.len,
                 rows,
+                positions,
                 total_ms,
                 has_dates,
             }
@@ -831,10 +863,11 @@ fn items_of(
     owner_id: Option<&str>,
     owner_name: &str,
     names: &std::collections::HashMap<String, Option<String>>,
-) -> Vec<TableItem> {
+) -> Vec<(usize, TableItem)> {
     list.items[start..]
         .iter()
-        .filter_map(|item| {
+        .enumerate()
+        .filter_map(|(offset, item)| {
             let playable = item.playable().cloned()?;
             let adder = item
                 .added_by
@@ -850,7 +883,7 @@ fn items_of(
                             .unwrap_or_else(|| id.to_string())
                     }
                 });
-            Some((playable, item.added_at.clone(), adder))
+            Some((start + offset, (playable, item.added_at.clone(), adder)))
         })
         .collect()
 }
@@ -892,6 +925,7 @@ pub fn top_songs(app: &mut App, ui: &mut egui::Ui) {
         ui,
         Table {
             items: &items,
+            positions: None,
             context: RowContext::Uris(uris),
             show_album: true,
             show_cover: true,
@@ -948,6 +982,7 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 },
             );
             let items = Arc::clone(&rows.rows);
+            let positions = Arc::clone(&rows.positions);
             let (total_ms, has_dates) = (rows.total_ms, rows.has_dates);
             page.table_rows = Some(rows);
             let count = playlist.track_total().max(items.len() as u32);
@@ -1045,6 +1080,7 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 ui,
                 Table {
                     items: &items,
+                    positions: Some(&positions),
                     context: RowContext::Context {
                         uri: playlist.uri.clone(),
                         editable_playlist: editable,
@@ -1151,6 +1187,7 @@ pub fn album(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 ui,
                 Table {
                     items: &items,
+                    positions: None,
                     context: RowContext::Context {
                         uri: album.uri.clone(),
                         editable_playlist: None,
@@ -1275,11 +1312,15 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
         |start| {
             liked.items[start..]
                 .iter()
-                .map(|saved| {
+                .enumerate()
+                .map(|(offset, saved)| {
                     (
-                        PlayableItem::Track(saved.track.clone()),
-                        saved.added_at.clone(),
-                        None,
+                        start + offset,
+                        (
+                            PlayableItem::Track(saved.track.clone()),
+                            saved.added_at.clone(),
+                            None,
+                        ),
                     )
                 })
                 .collect()
@@ -1372,6 +1413,7 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
         ui,
         Table {
             items: &items,
+            positions: None,
             context,
             show_album: true,
             show_cover: true,
@@ -1558,7 +1600,14 @@ mod tests {
                 grown_from: None,
                 len: 2,
             },
-            |start| all[start..2].to_vec(),
+            |start| {
+                all[start..2]
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(offset, item)| (start + offset, item))
+                    .collect()
+            },
         );
         assert_eq!(first.total_ms, total_duration(&first.rows));
         assert_eq!(first.total_ms, 180_000);
@@ -1574,7 +1623,12 @@ mod tests {
             },
             |start| {
                 assert_eq!(start, 2);
-                all[start..].to_vec()
+                all[start..]
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(offset, item)| (start + offset, item))
+                    .collect()
             },
         );
         assert_eq!(grown.rows.len(), 4);
@@ -1590,7 +1644,14 @@ mod tests {
                 grown_from: None,
                 len: 1,
             },
-            |start| all[start..1].to_vec(),
+            |start| {
+                all[start..1]
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(offset, item)| (start + offset, item))
+                    .collect()
+            },
         );
         assert_eq!(rebuilt.rows.len(), 1);
         assert_eq!(rebuilt.total_ms, 60_000);
@@ -1706,6 +1767,7 @@ mod tests {
                             ui,
                             Table {
                                 items: &items,
+                                positions: None,
                                 context: RowContext::Uris(
                                     items
                                         .iter()
