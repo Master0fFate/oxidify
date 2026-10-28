@@ -42,7 +42,7 @@ pub(super) fn show(app: &mut App, view: &mut View, now: Option<&NowPlaying>, foc
     let height = app
         .settings
         .playlist_height
-        .max(layout::PLAYLIST_MIN_HEIGHT);
+        .clamp(layout::PLAYLIST_MIN_HEIGHT, layout::PLAYLIST_MAX_HEIGHT);
     frame(view, height, focused);
 
     let title = view.interact(
