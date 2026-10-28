@@ -2971,11 +2971,20 @@ impl App {
                         if let Some(remote) = &self.remote
                             && let Some(device) = &remote.state.device
                             && device.id.is_some()
-                            && let Some(known) =
-                                self.devices.iter_mut().find(|known| known.id == device.id)
                         {
-                            known.is_active = true;
-                            known.volume_percent = device.volume_percent;
+                            for known in &mut self.devices {
+                                let active = known.id == device.id;
+                                let volume = if active {
+                                    device.volume_percent
+                                } else {
+                                    known.volume_percent
+                                };
+                                if known.is_active != active || known.volume_percent != volume {
+                                    known.is_active = active;
+                                    known.volume_percent = volume;
+                                    self.control_devices_stale = true;
+                                }
+                            }
                         }
                         if let Some((wanted, _)) = self.optimistic_playing
                             && !self.local.is_active()
