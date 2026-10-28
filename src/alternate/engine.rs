@@ -466,7 +466,7 @@ impl Engine {
             },
             PlayerCommand::Next => self.skip_keep_audio(true),
             PlayerCommand::Previous => {
-                if self.session.position_now() > 3_000 {
+                if self.overlap_uri.is_none() && self.session.position_now() > 3_000 {
                     self.session.seek(0);
                     let _ = self.output.seek(0);
                     self.emit();
@@ -604,23 +604,33 @@ impl Engine {
     }
 
     fn skip_keep_audio(&mut self, forward: bool) {
-        let next = if forward {
-            self.session.peek_next().cloned()
-        } else {
-            self.session.peek_previous().cloned()
+        let next = match &self.overlap_uri {
+            Some(target) => match self
+                .session
+                .peek_beyond(target, self.overlap_forward, forward)
+            {
+                Some(track) => Some(track.clone()),
+                None => return,
+            },
+            None if forward => self.session.peek_next().cloned(),
+            None => self.session.peek_previous().cloned(),
         };
+        if let Some(track) = &next
+            && self.is_current(&track.uri)
+            && let Some(target) = self.overlap_uri.take()
+        {
+            self.abort_job(&target);
+            self.note_job_done(&target);
+            self.emit();
+            return;
+        }
         let Some(track) = next else {
             let advance = if forward {
                 self.session.skip_forward()
             } else {
                 self.session.previous()
             };
-            if advance == Advance::SeekZero {
-                if let Some(uri) = self.overlap_uri.take() {
-                    self.abort_job(&uri);
-                    self.note_job_done(&uri);
-                }
-            } else {
+            if advance != Advance::SeekZero {
                 self.bump();
             }
             self.follow(advance);

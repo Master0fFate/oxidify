@@ -370,6 +370,40 @@ impl Session {
     }
 
     pub fn select_uri(&mut self, uri: &str, forward: bool) -> bool {
+        let Some(index) = self.find_uri(uri, forward) else {
+            return false;
+        };
+        self.index_in_order = index;
+        self.begin_current();
+        true
+    }
+
+    pub fn peek_beyond(
+        &self,
+        uri: &str,
+        found_forward: bool,
+        forward: bool,
+    ) -> Option<&LocalTrack> {
+        let at = self.find_uri(uri, found_forward)?;
+        let position = if forward {
+            if at + 1 < self.order.len() {
+                at + 1
+            } else if self.repeat == RepeatMode::Context {
+                0
+            } else {
+                return None;
+            }
+        } else if at > 0 {
+            at - 1
+        } else if self.repeat == RepeatMode::Context {
+            self.order.len() - 1
+        } else {
+            return None;
+        };
+        self.tracks.get(*self.order.get(position)?)
+    }
+
+    fn find_uri(&self, uri: &str, forward: bool) -> Option<usize> {
         let current = self.index_in_order;
         let len = self.order.len();
         let is_uri = |position: &usize| {
@@ -378,20 +412,14 @@ impl Session {
                 .and_then(|&track_index| self.tracks.get(track_index))
                 .is_some_and(|track| track.uri == uri)
         };
-        let found = if forward {
+        if forward {
             (current + 1..len).chain(0..current).find(is_uri)
         } else {
             (0..current)
                 .rev()
                 .chain((current + 1..len).rev())
                 .find(is_uri)
-        };
-        let Some(index) = found else {
-            return false;
-        };
-        self.index_in_order = index;
-        self.begin_current();
-        true
+        }
     }
 
     pub fn peek_previous(&self) -> Option<&LocalTrack> {
