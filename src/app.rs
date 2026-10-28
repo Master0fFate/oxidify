@@ -5671,7 +5671,8 @@ impl App {
             }
             Action::OpenSkinsFolder => {
                 let folder = self.dirs.skins_dir();
-                let opened = std::fs::create_dir_all(&folder).and_then(|()| open::that(&folder));
+                let opened =
+                    std::fs::create_dir_all(&folder).and_then(|()| open::that_detached(&folder));
                 if let Err(error) = opened {
                     self.toast_error(format!("Couldn't open {}: {error}", folder.display()));
                 }
