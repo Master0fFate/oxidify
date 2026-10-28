@@ -55,7 +55,7 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
                         }
                         if theme::icon_button(
                             ui,
-                            Icon::Shrink,
+                            Icon::Expand,
                             18.0,
                             palette.secondary,
                             palette.text,
