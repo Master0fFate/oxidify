@@ -3443,6 +3443,9 @@ impl App {
                     self.saved
                         .insert(format!("spotify:playlist:{id}"), !followed);
                     self.toast_error(format!("Couldn't update the playlist: {error}"));
+                    if !followed {
+                        self.load_playlists();
+                    }
                 }
             },
             ApiResponse::SavedTracks { offset, result } => {
