@@ -366,15 +366,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     "Proxy address",
                     "Host name or IP of the proxy, without scheme or port.",
                     |ui| {
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut app.settings.proxy_host)
-                                .hint_text(
-                                    egui::RichText::new("proxy.example.com").color(palette.dim),
+                        let response = Frame::new()
+                            .fill(palette.surface)
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(Margin::symmetric(10, 6))
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut app.settings.proxy_host)
+                                        .hint_text(
+                                            egui::RichText::new("proxy.example.com")
+                                                .color(palette.dim),
+                                        )
+                                        .font(theme::regular(14.0))
+                                        .frame(egui::Frame::NONE)
+                                        .desired_width(200.0),
                                 )
-                                .font(theme::regular(14.0))
-                                .frame(egui::Frame::NONE)
-                                .desired_width(200.0),
-                        );
+                            })
+                            .inner;
                         if response.changed() {
                             changed = true;
                         }
@@ -387,13 +395,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     "Proxy port",
                     "The port the proxy listens on.",
                     |ui| {
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut app.settings.proxy_port)
-                                .hint_text(egui::RichText::new("3128").color(palette.dim))
-                                .font(theme::regular(14.0))
-                                .frame(egui::Frame::NONE)
-                                .desired_width(80.0),
-                        );
+                        let response = Frame::new()
+                            .fill(palette.surface)
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(Margin::symmetric(10, 6))
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut app.settings.proxy_port)
+                                        .hint_text(egui::RichText::new("3128").color(palette.dim))
+                                        .font(theme::regular(14.0))
+                                        .frame(egui::Frame::NONE)
+                                        .desired_width(80.0),
+                                )
+                            })
+                            .inner;
                         if response.changed() {
                             changed = true;
                         }
@@ -406,13 +421,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     "Proxy sign-in",
                     "Optional user, used by the Web API. Streaming connects to the proxy without it.",
                     |ui| {
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut app.settings.proxy_username)
-                                .hint_text(egui::RichText::new("User").color(palette.dim))
-                                .font(theme::regular(14.0))
-                                .frame(egui::Frame::NONE)
-                                .desired_width(200.0),
-                        );
+                        let response = Frame::new()
+                            .fill(palette.surface)
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(Margin::symmetric(10, 6))
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut app.settings.proxy_username)
+                                        .hint_text(egui::RichText::new("User").color(palette.dim))
+                                        .font(theme::regular(14.0))
+                                        .frame(egui::Frame::NONE)
+                                        .desired_width(200.0),
+                                )
+                            })
+                            .inner;
                         if response.changed() {
                             changed = true;
                         }
@@ -425,14 +447,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     "Proxy password",
                     "Optional. Kept alone in the credentials directory, never in the settings file.",
                     |ui| {
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut app.proxy_password)
-                                .password(true)
-                                .hint_text(egui::RichText::new("Password").color(palette.dim))
-                                .font(theme::regular(14.0))
-                                .frame(egui::Frame::NONE)
-                                .desired_width(200.0),
-                        );
+                        let response = Frame::new()
+                            .fill(palette.surface)
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(Margin::symmetric(10, 6))
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut app.proxy_password)
+                                        .password(true)
+                                        .hint_text(
+                                            egui::RichText::new("Password").color(palette.dim),
+                                        )
+                                        .font(theme::regular(14.0))
+                                        .frame(egui::Frame::NONE)
+                                        .desired_width(200.0),
+                                )
+                            })
+                            .inner;
                         if response.lost_focus() {
                             app.actions.push(Action::SaveProxyPassword);
                         }
