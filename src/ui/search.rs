@@ -26,7 +26,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         Loadable::Loaded(results) => results,
         other => {
             match &other {
-                Loadable::Failed(error) => widgets::error_row(ui, app, error, None),
+                Loadable::Failed(error) => widgets::error_row(ui, app, error, Some(Page::Search)),
                 _ => widgets::skeleton_rows(ui, &palette, 6),
             }
             app.search.results = other;
