@@ -426,7 +426,8 @@ pub struct Library {
     /// published from it.
     pub playlist_fetch: PagedList<Playlist>,
     pub playlists_generation: u64,
-    /// `playlists` came from disk and the live list is still on its way.
+    /// `playlists` came from disk or an earlier fetch and the live list is
+    /// still on its way.
     pub playlists_cached: bool,
     pub liked: PagedList<SavedTrack>,
     /// `liked` came from disk and the live first page has yet to confirm it.

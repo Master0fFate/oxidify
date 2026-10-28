@@ -2165,6 +2165,8 @@ impl App {
         }
         if self.library.playlists.get().is_none() {
             self.library.playlists = Loadable::Loading;
+        } else {
+            self.library.playlists_cached = true;
         }
         self.library.playlist_fetch.reset();
         self.library.playlists_generation += 1;
@@ -3163,8 +3165,9 @@ impl App {
                     self.library.playlist_fetch.absorb(offset, page);
                     self.fill_ahead(Page::Home, false);
                     let complete = self.library.playlist_fetch.is_complete();
-                    // A list from disk stays up until the live one is whole;
-                    // without one, the rows show as they come.
+                    // A list from disk or an earlier fetch stays up until the
+                    // live one is whole; without one, the rows show as they
+                    // come.
                     if complete || !self.library.playlists_cached {
                         self.library.playlists =
                             Loadable::Loaded(self.library.playlist_fetch.items.clone());
