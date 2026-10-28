@@ -553,6 +553,12 @@ impl Engine {
                     self.emit();
                     return;
                 }
+                if self.overlap_uri.is_some() && self.overlap_uri == current {
+                    self.overlap_uri = None;
+                    self.session.set_loading();
+                    self.emit();
+                    return;
+                }
                 self.start_resolve();
             }
             Advance::CancelLoad => {
