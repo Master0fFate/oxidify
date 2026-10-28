@@ -159,6 +159,12 @@ const NOW_REPLY: &str = "oxidify:now ";
 #[cfg(not(target_os = "linux"))]
 const DEVICES_REPLY: &str = "oxidify:devices ";
 
+#[cfg(not(target_os = "linux"))]
+const READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(not(target_os = "linux"))]
+const MAX_CLIENTS: usize = 16;
+
 /// What the running instance said back.
 #[cfg(not(target_os = "linux"))]
 pub enum Reply {
@@ -258,8 +264,52 @@ fn serve(
     devices: &std::sync::Mutex<String>,
     waker: &crate::backend::Waker,
 ) {
-    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+
+    let active = AtomicUsize::new(0);
+    let mut accept_failing = false;
+    std::thread::scope(|scope| {
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(stream) => stream,
+                Err(error) => {
+                    if !accept_failing {
+                        log::warn!("cannot accept control clients: {error}");
+                        accept_failing = true;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+            };
+            accept_failing = false;
+            if active.fetch_add(1, Ordering::SeqCst) >= MAX_CLIENTS {
+                active.fetch_sub(1, Ordering::SeqCst);
+                continue;
+            }
+            let active = &active;
+            let spawned = std::thread::Builder::new()
+                .name("oxidify-control".to_owned())
+                .spawn_scoped(scope, move || {
+                    answer(&mut stream, commands, now_playing, devices, waker);
+                    active.fetch_sub(1, Ordering::SeqCst);
+                });
+            if spawned.is_err() {
+                active.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn answer(
+    stream: &mut std::net::TcpStream,
+    commands: &std::sync::Mutex<Vec<ControlCommand>>,
+    now_playing: &std::sync::Mutex<String>,
+    devices: &std::sync::Mutex<String>,
+    waker: &crate::backend::Waker,
+) {
+    use std::io::Write;
 
     let queue = |command| {
         commands
@@ -269,37 +319,34 @@ fn serve(
         waker.wake();
     };
 
-    for mut stream in listener.incoming().flatten() {
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-        let Some(line) = read_line(&mut stream) else {
-            continue;
-        };
-        match parse(&line) {
-            Some(Request::Command(command)) => {
-                let _ = stream.write_all(format!("{OK_REPLY}\n").as_bytes());
-                queue(command);
-            }
-            Some(Request::NowPlaying) => {
-                let snapshot = now_playing
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .clone();
-                let _ = stream.write_all(format!("{NOW_REPLY}{snapshot}\n").as_bytes());
-            }
-            Some(Request::Devices) => {
-                let snapshot = devices.lock().unwrap_or_else(|p| p.into_inner()).clone();
-                let _ = stream.write_all(format!("{DEVICES_REPLY}{snapshot}\n").as_bytes());
-                // The app only refreshes the list while its own picker is
-                // open, so a client asking is reason enough to look again.
-                // The answer above is whatever was known a moment ago; the
-                // next read has the fresh one.
-                // ponytail: one read behind on a cold list. Push updates
-                // only if a client ever needs it sooner than that.
-                queue(ControlCommand::RefreshDevices);
-            }
-            // Not our client; say nothing and hang up.
-            None => {}
+    let Some(line) = read_line(stream) else {
+        return;
+    };
+    match parse(&line) {
+        Some(Request::Command(command)) => {
+            let _ = stream.write_all(format!("{OK_REPLY}\n").as_bytes());
+            queue(command);
         }
+        Some(Request::NowPlaying) => {
+            let snapshot = now_playing
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            let _ = stream.write_all(format!("{NOW_REPLY}{snapshot}\n").as_bytes());
+        }
+        Some(Request::Devices) => {
+            let snapshot = devices.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let _ = stream.write_all(format!("{DEVICES_REPLY}{snapshot}\n").as_bytes());
+            // The app only refreshes the list while its own picker is
+            // open, so a client asking is reason enough to look again.
+            // The answer above is whatever was known a moment ago; the
+            // next read has the fresh one.
+            // ponytail: one read behind on a cold list. Push updates
+            // only if a client ever needs it sooner than that.
+            queue(ControlCommand::RefreshDevices);
+        }
+        // Not our client; say nothing and hang up.
+        None => {}
     }
 }
 
@@ -387,12 +434,18 @@ fn device_id(text: &str) -> Option<String> {
 #[cfg(not(target_os = "linux"))]
 fn read_line(stream: &mut std::net::TcpStream) -> Option<String> {
     use std::io::Read;
+    let deadline = std::time::Instant::now() + READ_DEADLINE;
     let mut buffer = [0u8; 256];
     let mut filled = 0;
     loop {
         if filled == buffer.len() {
             return None;
         }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        stream.set_read_timeout(Some(remaining)).ok()?;
         match stream.read(&mut buffer[filled..]) {
             Ok(0) => break,
             Ok(read) => {
