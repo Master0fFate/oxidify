@@ -1433,6 +1433,8 @@ impl App {
                 }
                 if crate::backend::connect_error_is_entitlement(message) {
                     self.apply_free_alternate_mode();
+                } else if message.to_lowercase().contains("playback") {
+                    self.toast_error(message.clone());
                 } else {
                     self.toast_error(format!("Local playback: {message}"));
                 }
