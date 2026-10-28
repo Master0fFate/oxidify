@@ -4026,10 +4026,13 @@ impl App {
 
     /// Remembers `uri` as the most recently played context, for the sidebar's order.
     fn note_recent_context(&mut self, uri: &str) {
-        self.session_dirty = true;
         if !uri.contains(":playlist:") && !uri.contains(":album:") && !uri.contains(":collection") {
             return;
         }
+        if self.recent_contexts.first().map(String::as_str) == Some(uri) {
+            return;
+        }
+        self.session_dirty = true;
         self.recent_contexts.retain(|held| held != uri);
         self.recent_contexts.insert(0, uri.to_string());
         self.recent_contexts.truncate(60);
