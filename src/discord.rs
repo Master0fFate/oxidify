@@ -12,6 +12,8 @@ const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const RETRY: Duration = Duration::from_secs(15);
 const SEND_SPACING: Duration = Duration::from_secs(1);
 const FIELD_LIMIT: usize = 128;
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+const FRAME_LIMIT: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Presence {
@@ -181,7 +183,54 @@ fn open(index: u8) -> io::Result<Box<dyn Pipe>> {
         .read(true)
         .write(true)
         .open(format!(r"\\.\pipe\discord-ipc-{index}"))?;
-    Ok(Box::new(pipe))
+    Ok(Box::new(NamedPipe(pipe)))
+}
+
+#[cfg(windows)]
+struct NamedPipe(std::fs::File);
+
+#[cfg(windows)]
+impl Read for NamedPipe {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+        let deadline = std::time::Instant::now() + READ_TIMEOUT;
+        loop {
+            let mut available = 0u32;
+            let peeked = unsafe {
+                PeekNamedPipe(
+                    self.0.as_raw_handle(),
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut available,
+                    std::ptr::null_mut(),
+                )
+            };
+            if peeked == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if available > 0 {
+                let wanted = buf.len().min(available as usize);
+                return self.0.read(&mut buf[..wanted]);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Write for NamedPipe {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
 }
 
 #[cfg(unix)]
@@ -196,6 +245,8 @@ fn open(index: u8) -> io::Result<Box<dyn Pipe>> {
     let name = format!("discord-ipc-{index}");
     for folder in ["", "app/com.discordapp.Discord", "snap.discord"] {
         if let Ok(stream) = std::os::unix::net::UnixStream::connect(base.join(folder).join(&name)) {
+            stream.set_read_timeout(Some(READ_TIMEOUT))?;
+            stream.set_write_timeout(Some(READ_TIMEOUT))?;
             return Ok(Box::new(stream));
         }
     }
@@ -252,7 +303,14 @@ fn reply(pipe: &mut dyn Pipe) -> io::Result<Value> {
         pipe.read_exact(&mut header)?;
         let [o0, o1, o2, o3, l0, l1, l2, l3] = header;
         let op = u32::from_le_bytes([o0, o1, o2, o3]);
-        let mut body = vec![0u8; u32::from_le_bytes([l0, l1, l2, l3]) as usize];
+        let len = u32::from_le_bytes([l0, l1, l2, l3]) as usize;
+        if len > FRAME_LIMIT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Discord sent a {len}-byte frame"),
+            ));
+        }
+        let mut body = vec![0u8; len];
         pipe.read_exact(&mut body)?;
         let payload: Value = serde_json::from_slice(&body)?;
         match op {
