@@ -537,10 +537,18 @@ fn list(app: &mut App, ui: &mut egui::Ui, collapsed: bool) {
                     // are looked up once each: searching the recents for
                     // every comparison made a large library slow to scroll.
                     let recent = rank_of(&app.recent_contexts);
-                    let rank = |uri: &str| recent.get(uri).copied().unwrap_or(usize::MAX);
-                    let mut ordered: Vec<_> = playlists.iter().enumerate().collect();
-                    ordered.sort_by_cached_key(|(index, playlist)| (rank(&playlist.uri), *index));
-                    for (index, playlist) in ordered {
+                    let mut ranked: Vec<(usize, usize)> = Vec::new();
+                    let mut ordered: Vec<usize> = Vec::with_capacity(playlists.len());
+                    for (index, playlist) in playlists.iter().enumerate() {
+                        match recent.get(playlist.uri.as_str()) {
+                            Some(&rank) => ranked.push((rank, index)),
+                            None => ordered.push(index),
+                        }
+                    }
+                    ranked.sort_unstable();
+                    ordered.splice(0..0, ranked.into_iter().map(|(_, index)| index));
+                    for index in ordered {
+                        let playlist = &playlists[index];
                         if !needle.is_empty() && !playlist.name.to_lowercase().contains(&needle) {
                             continue;
                         }
