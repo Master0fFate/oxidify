@@ -2132,6 +2132,10 @@ impl Worker {
             if cache_account.is_some() && api.account() != cache_account {
                 return;
             }
+            let generations = [
+                api.generation(ApiSource::Shared),
+                api.generation(ApiSource::Personal),
+            ];
             let (response, expired) = handle(&api, request).await;
             if cache_account.is_some() && api.account() != cache_account {
                 return;
@@ -2151,8 +2155,15 @@ impl Worker {
                     cache_writes.store(epoch, &root, &account, page).await;
                 });
             }
-            if let Some(api_source) = expired {
-                api.clear(api_source);
+            if let Some(api_source) = expired
+                && api.clear_if_current(
+                    api_source,
+                    match api_source {
+                        ApiSource::Shared => generations[0],
+                        ApiSource::Personal => generations[1],
+                    },
+                )
+            {
                 if api_source == ApiSource::Personal {
                     let _ = events.send(Event::WebApp { client_id: None });
                 } else {

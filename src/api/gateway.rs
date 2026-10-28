@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use super::ApiSource;
@@ -132,6 +133,7 @@ fn classify_playlist(account: &AccountId, playlist: &Playlist) -> PlaylistAccess
 struct Session {
     state: RwLock<SessionState>,
     client: Arc<ApiClient>,
+    generation: AtomicU64,
 }
 
 impl Session {
@@ -145,6 +147,7 @@ impl Session {
                 profile.artist_albums_limit,
                 profile.source,
             )),
+            generation: AtomicU64::new(0),
         }
     }
 
@@ -214,6 +217,7 @@ impl ApiGateway {
 
     pub fn begin_verification(&self, source: ApiSource, provider: TokenProvider) {
         let session = self.session(source);
+        session.generation.fetch_add(1, Ordering::SeqCst);
         session.client.set_token_provider(Some(provider));
         session.set_state(SessionState::Authorizing);
     }
@@ -224,8 +228,21 @@ impl ApiGateway {
 
     pub fn clear(&self, source: ApiSource) {
         let session = self.session(source);
+        session.generation.fetch_add(1, Ordering::SeqCst);
         session.client.set_token_provider(None);
         session.set_state(SessionState::Unavailable);
+    }
+
+    pub fn generation(&self, source: ApiSource) -> u64 {
+        self.session(source).generation.load(Ordering::SeqCst)
+    }
+
+    pub fn clear_if_current(&self, source: ApiSource, generation: u64) -> bool {
+        if self.generation(source) != generation {
+            return false;
+        }
+        self.clear(source);
+        true
     }
 
     pub fn clear_all(&self) {
