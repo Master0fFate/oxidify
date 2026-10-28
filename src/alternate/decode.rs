@@ -516,7 +516,9 @@ fn decode_loop(
         // the bar and its seeks follow this length once it is known.
         state.note_duration(decoder.total_duration());
         state.set_format(channels, rate);
-        if start_ms > 0 {
+        let duration_ms = state.duration_ms.load(Ordering::SeqCst);
+        let past_end = start_ms > 0 && duration_ms > 0 && start_ms >= duration_ms;
+        if start_ms > 0 && !past_end {
             let seeked = seekable
                 && native_seek_allowed(&hint)
                 && decoder
@@ -556,14 +558,19 @@ fn decode_loop(
                 }
             }
         }
-        match pump_samples(
-            &mut decoder,
-            &pcm_tx,
-            &cmd_rx,
-            &state,
-            &buffer,
-            reader_epoch,
-        ) {
+        let pumped = if past_end {
+            Pump::Ended { samples: 0 }
+        } else {
+            pump_samples(
+                &mut decoder,
+                &pcm_tx,
+                &cmd_rx,
+                &state,
+                &buffer,
+                reader_epoch,
+            )
+        };
+        match pumped {
             Pump::Stop => {
                 state.cancel();
                 return;
