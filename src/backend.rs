@@ -1569,7 +1569,7 @@ impl Worker {
             .retain(|attempt| now.duration_since(*attempt) < Duration::from_secs(600));
         if self.reconnects.len() >= 6 {
             self.emit(Event::Playback(LocalPlayback::Failed(
-                "Local playback keeps dropping. Re-enable it from Settings.".into(),
+                "Local playback keeps dropping. Press Try again in Settings.".into(),
             )));
             return;
         }
