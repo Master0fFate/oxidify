@@ -66,6 +66,27 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         widgets::loading_row(ui, &palette);
     }
+    let shown_empty = match app.search.filter {
+        SearchFilter::All => false,
+        SearchFilter::Songs => results.tracks.as_ref().is_none_or(|p| p.items.is_empty()),
+        SearchFilter::Artists => results.artists.as_ref().is_none_or(|p| p.items.is_empty()),
+        SearchFilter::Albums => results.albums.as_ref().is_none_or(|p| p.items.is_empty()),
+        SearchFilter::Playlists => results
+            .playlists
+            .as_ref()
+            .is_none_or(|p| p.items.is_empty()),
+        SearchFilter::Podcasts => results.shows.as_ref().is_none_or(|p| p.items.is_empty()),
+        SearchFilter::Episodes => results.episodes.as_ref().is_none_or(|p| p.items.is_empty()),
+    };
+    if shown_empty && !waiting {
+        widgets::empty_state(
+            ui,
+            &palette,
+            Icon::Search,
+            &format!("No {}", app.search.filter.label().to_lowercase()),
+            "Try another filter, or fewer words.",
+        );
+    }
     app.search.results = Loadable::Loaded(results);
 }
 
