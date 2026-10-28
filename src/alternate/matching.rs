@@ -148,7 +148,16 @@ pub fn rank_candidates(
 }
 
 fn score_candidate(query: &TrackQuery, normalized: &NormalizedQuery, candidate: &Candidate) -> f32 {
-    let keep: HashSet<&str> = normalized.title.split_whitespace().collect();
+    let keep: HashSet<&str> = normalized
+        .title
+        .split_whitespace()
+        .chain(
+            normalized
+                .artists
+                .iter()
+                .flat_map(|artist| artist.split_whitespace()),
+        )
+        .collect();
     let cand_title = normalize_keeping(&candidate.title, Some(&keep));
     let cand_uploader = normalize_text(&candidate.uploader);
     let title_score = token_jaccard(&normalized.title, &cand_title);
