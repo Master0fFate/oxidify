@@ -51,7 +51,14 @@ impl Bitmap {
     /// Decodes a BMP or PNG, whatever the file was called: skins mislabel
     /// them. Anything unreadable is `None`, as Winamp silently skipped it.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        let image = image::load_from_memory(bytes).ok()?.into_rgba8();
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_BITMAP_SIDE);
+        limits.max_image_height = Some(MAX_BITMAP_SIDE);
+        reader.limits(limits);
+        let image = reader.decode().ok()?.into_rgba8();
         Some(Self {
             width: image.width(),
             height: image.height(),
@@ -119,17 +126,23 @@ impl Skin {
             zip::ZipError::NotAnArchive => SkinError::NotAnArchive,
             other => SkinError::Archive(other),
         })?;
-        let mut files = Files::new();
+        let mut latest = HashMap::new();
         for entry in archive.entries() {
-            if entry.is_dir() {
-                continue;
-            }
             let file_name = entry.file_name();
-            if !wanted(&file_name) {
+            if !entry.is_dir() && wanted(&file_name) {
+                latest.insert(file_name, entry);
+            }
+        }
+        let mut files = Files::new();
+        let mut budget = MAX_ARCHIVE_BYTES;
+        for (file_name, entry) in latest {
+            if entry.size() > budget {
+                log::warn!("skin {name}: {file_name} goes past the size limit");
                 continue;
             }
             match archive.read(entry) {
                 Ok(bytes) => {
+                    budget -= bytes.len().min(budget);
                     files.insert(file_name, bytes);
                 }
                 Err(error) => log::warn!("skin {name}: {error}"),
@@ -257,6 +270,8 @@ impl Skin {
 }
 
 pub(crate) const MAX_SKIN_DEPTH: usize = 8;
+const MAX_BITMAP_SIDE: u32 = 2048;
+const MAX_ARCHIVE_BYTES: usize = 128 << 20;
 
 /// Whether a file inside a skin is one this reader looks at, so cursors,
 /// readmes, and the equalizer's bitmaps are never inflated.

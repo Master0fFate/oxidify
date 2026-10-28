@@ -51,6 +51,10 @@ pub struct Entry {
 }
 
 impl Entry {
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
     /// The final path component in lower case, which is how skin files are
     /// looked up: Winamp ran on a case-insensitive file system, and skins
     /// often nest everything in a folder.
