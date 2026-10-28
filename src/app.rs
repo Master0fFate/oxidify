@@ -1920,7 +1920,7 @@ impl App {
     }
 
     fn playing_after_queued_actions(&self) -> bool {
-        let playing = self.now_playing().is_some_and(|now| now.playing);
+        let playing = self.believed_playing();
         let toggles = self
             .actions
             .iter()
