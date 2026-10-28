@@ -97,6 +97,7 @@ struct PendingPlay {
     start_ms: u32,
     reattach: bool,
     paused: bool,
+    outgoing_hint: Option<FormatHint>,
 }
 
 struct CachedMatch {
@@ -680,6 +681,16 @@ impl Engine {
             self.follow(advance);
             return;
         };
+        if let Some(pending) = self.pending.take_if(|pending| !pending.reattach) {
+            if let Some(decode) = pending.decode {
+                decode.stop();
+            }
+            if let Some(buffer) = self.active_buffer.take() {
+                buffer.cancel();
+            }
+            self.active_buffer = self.outgoing.take();
+            self.active_hint = pending.outgoing_hint;
+        }
         if let Some(prefetch) = self.prefetch.take() {
             let reached = prefetch.uri == track.uri
                 || (forward
@@ -1011,7 +1022,7 @@ impl Engine {
     fn play_ready(&mut self, ready: Prefetched, paused: bool) {
         self.cache_match(ready.uri, ready.video_id);
         self.outgoing = self.active_buffer.replace(ready.buffer.clone());
-        self.active_hint = Some(ready.hint.clone());
+        let outgoing_hint = self.active_hint.replace(ready.hint.clone());
         let start_ms = self.session.position_now();
         match spawn_decoder(ready.buffer, ready.hint, start_ms) {
             Ok((pcm, decode)) => {
@@ -1022,6 +1033,7 @@ impl Engine {
                     start_ms,
                     reattach: false,
                     paused,
+                    outgoing_hint,
                 });
                 self.try_start_pending();
             }
@@ -1344,6 +1356,7 @@ impl Engine {
             start_ms: 0,
             reattach: false,
             paused: false,
+            outgoing_hint: None,
         });
         self.emit();
         self.try_start_pending();
@@ -1413,6 +1426,7 @@ impl Engine {
             start_ms: pos,
             reattach: true,
             paused: false,
+            outgoing_hint: None,
         });
         self.try_start_pending();
         Ok(())
