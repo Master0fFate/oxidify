@@ -514,8 +514,9 @@ impl Engine {
                     if let Some(decode) = &pending.decode {
                         decode.seek(position_ms);
                     }
+                } else {
+                    let _ = self.output.seek(position_ms);
                 }
-                let _ = self.output.seek(position_ms);
                 self.emit();
             }
             PlayerCommand::Volume(volume) | PlayerCommand::VolumePreview(volume) => {
