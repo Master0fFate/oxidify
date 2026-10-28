@@ -2864,11 +2864,11 @@ impl App {
                                 .iter()
                                 .find(|device| device.name == name)
                                 .and_then(|device| device.id.clone());
-                            if let Some(id) = matching {
+                            if since.elapsed() > Duration::from_secs(20) {
+                                self.pending_transfer_to = None;
+                            } else if let Some(id) = matching {
                                 self.pending_transfer_to = None;
                                 self.transfer(id);
-                            } else if since.elapsed() > Duration::from_secs(20) {
-                                self.pending_transfer_to = None;
                             } else {
                                 self.devices_fetched_at = None;
                             }
