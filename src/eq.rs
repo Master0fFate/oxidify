@@ -23,6 +23,7 @@ const FLAT: f32 = 0.05;
 /// combined response meet them; a guard, not a target.
 const SOLVED_LIMIT: f64 = 36.0;
 const TOP_OF_RATE: f64 = 0.45;
+const DENORMAL: f64 = 1e-25;
 
 /// What the listener set: the switch, the preamp, and the bands, and
 /// the two things Winamp's main window did to the sound as well, the
@@ -385,6 +386,7 @@ impl Biquad {
         let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
             - self.a1 * self.y1
             - self.a2 * self.y2;
+        let y = if y.abs() < DENORMAL { 0.0 } else { y };
         self.x2 = self.x1;
         self.x1 = x;
         self.y2 = self.y1;
