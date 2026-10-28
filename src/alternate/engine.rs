@@ -596,12 +596,19 @@ impl Engine {
             self.session.peek_previous().cloned()
         };
         let Some(track) = next else {
-            self.bump();
             let advance = if forward {
                 self.session.skip_forward()
             } else {
                 self.session.previous()
             };
+            if advance == Advance::SeekZero {
+                if let Some(uri) = self.overlap_uri.take() {
+                    self.abort_job(&uri);
+                    self.note_job_done(&uri);
+                }
+            } else {
+                self.bump();
+            }
             self.follow(advance);
             return;
         };
