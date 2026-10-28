@@ -530,6 +530,8 @@ pub enum Command {
     StoreLikedCache(Vec<SavedTrack>),
     /// Resolve user ids to display names through the streaming session.
     UserNames(Vec<String>),
+    ImportYoutubeCookies(std::path::PathBuf),
+    RemoveYoutubeCookies,
 }
 
 pub struct LyricsRequest {
@@ -578,6 +580,7 @@ pub enum Event {
         items: Vec<PlaylistItem>,
     },
     LibraryCacheCleared(Result<u64, String>),
+    YoutubeCookies(Result<Option<usize>, String>),
     /// The playlist list as last cached.
     LibraryCache {
         account_id: String,
@@ -1035,6 +1038,8 @@ impl Worker {
                 Command::LoadHistory => self.load_history(),
                 Command::RecordPlay(record) => self.record_play(*record),
                 Command::ClearHistory => self.clear_history(),
+                Command::ImportYoutubeCookies(path) => self.change_youtube_cookies(Some(path)),
+                Command::RemoveYoutubeCookies => self.change_youtube_cookies(None),
                 Command::StoreLikedCache(items) => self.store_library_cache("liked.json", &items),
                 Command::UserNames(ids) => self.fetch_user_names(ids),
                 Command::ConfigurePersonalWebApp(client_id) => {
@@ -1446,7 +1451,7 @@ impl Worker {
             self.http.clone(),
             self.engine_notify(),
             None,
-            self.dirs.bin_dir(),
+            &self.dirs,
             Arc::clone(&self.engine_config.eq),
         ) {
             Ok(handle) => {
@@ -2008,6 +2013,20 @@ impl Worker {
         let path = self.dirs.history_file(account.as_str());
         tokio::task::spawn_blocking(move || {
             let _ = std::fs::remove_file(path);
+        });
+    }
+
+    fn change_youtube_cookies(&self, source: Option<std::path::PathBuf>) {
+        let target = self.dirs.youtube_cookies_file();
+        let events = self.events.clone();
+        let waker = self.waker.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = match source {
+                Some(source) => alternate::import_youtube_cookies(&source, &target).map(Some),
+                None => alternate::remove_youtube_cookies(&target).map(|()| None),
+            };
+            let _ = events.send(Event::YoutubeCookies(result));
+            waker.wake();
         });
     }
 

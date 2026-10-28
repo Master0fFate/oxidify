@@ -257,16 +257,23 @@ mismatch score; the higher-scoring source wins. A match at 90% or above ends
 the race early and cancels slower providers.
 
 Native asynchronous Rust HTTP is used for YouTube **search**. Playable stream
-URLs come from Piped, if you set one, otherwise `yt-dlp` asking only for AAC
+URLs come from `yt-dlp`, racing Piped if you set one, asking only for AAC
 M4A (itag 140) or MP3. rusty_ytdl lists those formats but does not decrypt
-their URLs, so it is not used for playback. Search results are cached for six
-hours and resolved media URLs for ten minutes. HTTP range fetch starts from
+their URLs, so it is not used for playback. Search results are remembered for
+seven days and resolved media URLs until they expire, in a bounded file in the
+state directory. HTTP range fetch starts from
 headers and seeks into undownloaded regions; the rest of the file is not
 pulled unless you listen or seek there. Release builds
 embed one official pinned `yt-dlp` executable, extract it into the local state
 directory, and never download it at runtime. A user-installed `yt-dlp` is used
 only when its version is strictly newer than the pin. Spotify tokens are never
-sent to those tools, and the result is not Spotify audio. You are responsible
+sent to those tools, and the result is not Spotify audio.
+If YouTube makes yt-dlp confirm it is not a bot, Settings → YouTube cookies
+takes a `cookies.txt` (Netscape format) exported from a browser signed in to
+YouTube: paste its path or drop the file on the window. Only its youtube.com
+cookies are kept, owner-only, in the credentials directory, and each yt-dlp
+run gets a private copy that is deleted when it exits; Spotify, native search
+and Piped never see them. You are responsible
 for the endpoint and any binary you run, and for their terms of use. Nothing
 here is approved or authorized by Spotify or by YouTube, and Oxidify makes no
 claim that it is.
@@ -387,7 +394,7 @@ what, `http` and `socks5` use one named proxy. Spotify playback itself
 can only tunnel through `http`; with `socks5` it connects directly while
 the Web API, artwork, lyrics and alternate playback use the proxy. Its optional password
 never sits in the settings file; it is kept alone, with owner-only
-permissions, in the credentials directory. A changed proxy applies the
+permissions, in the credentials directory, as are optional YouTube cookies. A changed proxy applies the
 next time Oxidify starts.
 Playback settings apply when you press **Apply and restart playback**.
 Switching source stops the other engine so both never run at once. The

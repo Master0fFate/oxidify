@@ -1,19 +1,21 @@
-//! yt-dlp adapter. No cookies, accounts, bypass flags, or self-update.
+//! yt-dlp adapter. No bypass flags or self-update.
 
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::Command;
 
+use super::cookies::RunCookies;
 use super::matching::Candidate;
 use super::piped::sanitize_video_id;
 use super::streams::AudioStream;
 
 const MAX_STDOUT: usize = 8 * 1024 * 1024;
+const MAX_STDERR: usize = 4096;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(25);
 const STREAM_TIMEOUT: Duration = Duration::from_secs(25);
 /// Audio YouTube actually publishes that this player can decode.
@@ -24,34 +26,33 @@ const AUDIO_FORMAT: &str = "140/139/bestaudio[ext=m4a]/bestaudio[acodec*=mp4a]/b
 pub struct YtDlp {
     binary: PathBuf,
     cache_dir: PathBuf,
+    cookies: PathBuf,
 }
 
 impl YtDlp {
-    pub fn new(binary: PathBuf, cache_dir: PathBuf) -> Self {
-        Self { binary, cache_dir }
+    pub fn new(binary: PathBuf, cache_dir: PathBuf, cookies: PathBuf) -> Self {
+        Self {
+            binary,
+            cache_dir,
+            cookies,
+        }
     }
 
     pub async fn search(&self, query: &str) -> Result<Vec<Candidate>> {
         let query = sanitize_query(query);
-        let cache = self.cache_dir.to_string_lossy().into_owned();
-        let stdout = run(
-            &self.binary,
-            &[
-                "--ignore-config",
-                "--no-update",
-                "--no-warnings",
-                "--cache-dir",
-                &cache,
-                "--no-playlist",
-                "--flat-playlist",
-                "--skip-download",
-                "--dump-json",
-                "--",
-                &format!("ytsearch8:{query}"),
-            ],
-            SEARCH_TIMEOUT,
-        )
-        .await?;
+        let stdout = self
+            .run(
+                &[
+                    "--no-playlist",
+                    "--flat-playlist",
+                    "--skip-download",
+                    "--dump-json",
+                    "--",
+                    &format!("ytsearch8:{query}"),
+                ],
+                SEARCH_TIMEOUT,
+            )
+            .await?;
         parse_search_json(&stdout)
     }
 
@@ -62,28 +63,44 @@ impl YtDlp {
     }
 
     async fn streams_for_url(&self, url: &str) -> Result<Vec<AudioStream>> {
-        let cache = self.cache_dir.to_string_lossy().into_owned();
-        let stdout = run(
-            &self.binary,
-            &[
+        let stdout = self
+            .run(
+                &[
+                    "--no-check-formats",
+                    "--no-playlist",
+                    "--skip-download",
+                    "--format",
+                    AUDIO_FORMAT,
+                    "--dump-json",
+                    "--",
+                    url,
+                ],
+                STREAM_TIMEOUT,
+            )
+            .await?;
+        parse_format_json(&stdout)
+    }
+
+    async fn run(&self, args: &[&str], timeout: Duration) -> Result<String> {
+        let stored = self.cookies.clone();
+        let cookies = tokio::task::spawn_blocking(move || RunCookies::copy(&stored))
+            .await
+            .ok()
+            .flatten();
+        let mut command = Command::new(&self.binary);
+        command
+            .args([
                 "--ignore-config",
                 "--no-update",
                 "--no-warnings",
                 "--cache-dir",
-                &cache,
-                "--no-check-formats",
-                "--no-playlist",
-                "--skip-download",
-                "--format",
-                AUDIO_FORMAT,
-                "--dump-json",
-                "--",
-                url,
-            ],
-            STREAM_TIMEOUT,
-        )
-        .await?;
-        parse_format_json(&stdout)
+            ])
+            .arg(&self.cache_dir);
+        if let Some(cookies) = &cookies {
+            command.arg("--cookies").arg(cookies.path());
+        }
+        command.args(args);
+        capture(command, timeout, cookies.is_some()).await
     }
 }
 
@@ -97,10 +114,8 @@ fn sanitize_query(query: &str) -> String {
         .to_string()
 }
 
-async fn run(binary: &Path, args: &[&str], timeout: Duration) -> Result<String> {
-    let mut command = Command::new(binary);
+async fn capture(mut command: Command, timeout: Duration, with_cookies: bool) -> Result<String> {
     command
-        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -145,9 +160,9 @@ async fn run(binary: &Path, args: &[&str], timeout: Duration) -> Result<String> 
                 if n == 0 {
                     break;
                 }
-                if err_buf.len() < 4096 {
-                    let take = n.min(4096 - err_buf.len());
-                    err_buf.extend_from_slice(&chunk[..take]);
+                err_buf.extend_from_slice(&chunk[..n]);
+                if err_buf.len() > MAX_STDERR {
+                    err_buf.drain(..err_buf.len() - MAX_STDERR);
                 }
             }
             Ok::<_, anyhow::Error>(())
@@ -165,6 +180,13 @@ async fn run(binary: &Path, args: &[&str], timeout: Duration) -> Result<String> 
     let status = child.wait().await.context("yt-dlp exit")?;
     if !status.success() {
         let err = String::from_utf8_lossy(&err_buf);
+        if err.contains("Sign in to confirm") {
+            anyhow::bail!(if with_cookies {
+                "YouTube did not accept the saved cookies. Add fresh ones in Settings."
+            } else {
+                "YouTube wants a signed-in check. Add YouTube cookies in Settings."
+            });
+        }
         let detail = err
             .lines()
             .rev()

@@ -1,7 +1,6 @@
 //! Alternate local engine: resolve, fetch, decode, and drive the session.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -170,12 +169,12 @@ pub fn spawn(
     http: reqwest::Client,
     notify: Notify,
     output: Option<Box<dyn AudioOutput + Send>>,
-    ytdlp_dir: PathBuf,
+    dirs: &crate::paths::AppDirs,
     eq: crate::eq::SharedEq,
 ) -> Result<AlternateHandle, String> {
     config.validate()?;
     let lookup: Arc<dyn MediaLookup> =
-        Arc::new(Resolver::from_config(&config, &ytdlp_dir, http.clone())?);
+        Arc::new(Resolver::from_config(&config, dirs, http.clone())?);
     let output = match output {
         Some(output) => output,
         None => Box::new(RodioOutput::open(eq).map_err(|error| error.to_string())?),

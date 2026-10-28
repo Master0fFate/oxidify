@@ -469,6 +469,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             "device name",
             "piped",
             "yt-dlp",
+            "youtube cookies",
             "match score",
             "gapless",
             "skip on miss",
@@ -653,9 +654,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 "yt-dlp path",
                 ytdlp_error.as_deref().unwrap_or(
                     if crate::alternate::has_bundled_ytdlp() {
-                        "Last-resort fallback. Oxidify extracts an official pinned yt-dlp locally and never downloads it at runtime. A strictly newer installed yt-dlp (this path or PATH) wins. Spotify tokens are never sent to it."
+                        "Resolves the audio stream and searches when the others find no match. Oxidify extracts an official pinned yt-dlp locally and never downloads it at runtime. A strictly newer installed yt-dlp (this path or PATH) wins. Spotify tokens are never sent to it."
                     } else {
-                        "Last-resort fallback. Blank uses yt-dlp on PATH. This build has no bundled yt-dlp. Oxidify never downloads yt-dlp at runtime and never sends Spotify tokens to it."
+                        "Resolves the audio stream and searches when the others find no match. Blank uses yt-dlp on PATH. This build has no bundled yt-dlp. Oxidify never downloads yt-dlp at runtime and never sends Spotify tokens to it."
                     },
                 ),
                 |ui| {
@@ -681,6 +682,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 },
             );
+                youtube_cookies_row(app, ui, &query, &palette);
                 search_row(
                     ui,
                     &query,
@@ -743,9 +745,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(if crate::alternate::has_bundled_ytdlp() {
-                        "Native YouTube and optional Piped searches use one shared HTTP client. yt-dlp runs only after native providers fail. You are responsible for provider endpoints and terms. The bundled yt-dlp is extracted locally and never downloaded at runtime. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
+                        "Native YouTube and optional Piped search first; yt-dlp searches only when they find no match, and resolves the audio stream, racing Piped when one is set. You are responsible for provider endpoints and terms. The bundled yt-dlp is extracted locally and never downloaded at runtime. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
                     } else {
-                        "Native YouTube and optional Piped searches use one shared HTTP client. yt-dlp runs only after native providers fail. You are responsible for provider endpoints and terms. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
+                        "Native YouTube and optional Piped search first; yt-dlp searches only when they find no match, and resolves the audio stream, racing Piped when one is set. You are responsible for provider endpoints and terms. Matches are not Spotify audio. Podcasts are not supported. Apply restarts the local player; Spotify Connect is stopped while this mode is on."
                     })
                         .font(theme::regular(13.0))
                         .color(palette.secondary),
@@ -1435,6 +1437,61 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if changed {
         app.actions.push(Action::SettingsChanged);
     }
+}
+
+fn youtube_cookies_row(app: &mut App, ui: &mut egui::Ui, query: &str, palette: &Palette) {
+    let dropped = ui.ctx().input(|input| {
+        input
+            .raw
+            .dropped_files
+            .iter()
+            .map(|file| file.path())
+            .find(|path| crate::alternate::is_cookies_file(path))
+            .map(std::path::Path::to_path_buf)
+    });
+    if let Some(path) = dropped {
+        app.actions.push(Action::ImportYoutubeCookies(path));
+    }
+    let description = if app.youtube_cookies {
+        "Added. yt-dlp signs in to YouTube with them. Kept in the credentials folder; Spotify, native search and Piped never get them."
+    } else {
+        "Optional. If YouTube makes yt-dlp confirm you're not a bot, export cookies.txt from a browser signed in to YouTube, then paste its path or drop the file here. Only youtube.com cookies are kept."
+    };
+    search_row(ui, query, palette, "YouTube cookies", description, |ui| {
+        if app.youtube_cookies {
+            if theme::soft_button(ui, palette, Some(Icon::Trash), "Remove", false).clicked() {
+                app.actions.push(Action::RemoveYoutubeCookies);
+            }
+            return;
+        }
+        let response = Frame::new()
+            .fill(palette.surface)
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.youtube_cookies_path)
+                        .hint_text(egui::RichText::new("cookies.txt path").color(palette.dim))
+                        .font(theme::regular(13.0))
+                        .frame(egui::Frame::NONE)
+                        .desired_width(160.0),
+                )
+            })
+            .inner;
+        let path = app.youtube_cookies_path.trim().trim_matches('"');
+        let submitted =
+            response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        let clicked = ui
+            .add_enabled_ui(!path.is_empty(), |ui| {
+                theme::soft_button(ui, palette, None, "Add", false)
+            })
+            .inner
+            .clicked();
+        if (clicked || submitted) && !path.is_empty() {
+            app.actions
+                .push(Action::ImportYoutubeCookies(std::path::PathBuf::from(path)));
+        }
+    });
 }
 
 /// A band's frequency the short way: 60, 170, 1K, 16K.

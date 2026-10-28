@@ -295,6 +295,8 @@ pub struct App {
     pending_album: Option<PendingAlbumQueue>,
     pub settings_search: String,
     pub proxy_password: String,
+    pub youtube_cookies: bool,
+    pub youtube_cookies_path: String,
     /// A receiver just activated, waiting for Spotify to list it so playback
     /// can move there.
     pending_transfer_to: Option<(String, Instant)>,
@@ -408,6 +410,7 @@ impl App {
             *shared = eq_settings(&settings);
         }
         let proxy_password = read_proxy_password(&dirs);
+        let youtube_cookies = dirs.youtube_cookies_file().is_file();
         let engine_config = engine_config(
             &dirs,
             &settings,
@@ -540,6 +543,8 @@ impl App {
             pending_album: None,
             settings_search: String::new(),
             proxy_password: proxy_password.clone(),
+            youtube_cookies,
+            youtube_cookies_path: String::new(),
             pending_transfer_to: None,
             remote_recheck_at: None,
             seek_preview: None,
@@ -1246,6 +1251,22 @@ impl App {
                 } => {
                     self.adopt_playlist_cache(&account_id, &id, generation, snapshot, items);
                 }
+                Event::YoutubeCookies(result) => match result {
+                    Ok(Some(count)) => {
+                        self.youtube_cookies = true;
+                        self.youtube_cookies_path.clear();
+                        self.toast(if count == 1 {
+                            "Added 1 YouTube cookie".to_string()
+                        } else {
+                            format!("Added {count} YouTube cookies")
+                        });
+                    }
+                    Ok(None) => {
+                        self.youtube_cookies = false;
+                        self.toast("Removed the YouTube cookies");
+                    }
+                    Err(error) => self.toast_error(error),
+                },
                 Event::LibraryCacheCleared(result) => match result {
                     Ok(bytes) => self.toast(format!(
                         "Cleared {:.1} MB of library cache",
@@ -5463,6 +5484,10 @@ impl App {
                 Err(error) => self.toast_error(format!("Couldn't clear artwork: {error}")),
             },
             Action::SaveProxyPassword => write_proxy_password(&self.dirs, &self.proxy_password),
+            Action::ImportYoutubeCookies(path) => {
+                self.backend.send(Command::ImportYoutubeCookies(path));
+            }
+            Action::RemoveYoutubeCookies => self.backend.send(Command::RemoveYoutubeCookies),
             Action::ClearLibraryCache => {
                 for page in self.playlist_pages.values_mut() {
                     page.pending_cache = None;

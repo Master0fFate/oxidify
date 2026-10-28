@@ -87,8 +87,11 @@ no playback request to Spotify.
   played again starts without a lookup. It holds video ids and stream URLs
   only, never anything from Spotify. A local yt-dlp process (the official
   pinned build extracted on this computer, or a strictly newer one you
-  installed) is the last fallback. Spotify tokens are never sent to an
-  alternate provider. yt-dlp is never downloaded at runtime.
+  installed) resolves the audio URL, racing Piped when one is set, and
+  searches when the others find no match. Spotify tokens are never sent to an
+  alternate provider. yt-dlp is never downloaded at runtime. YouTube cookies
+  added in Settings stay in the credentials directory; each yt-dlp run gets
+  a private copy, deleted when it exits, and no other request carries them.
 
 ## Refreshing a page
 

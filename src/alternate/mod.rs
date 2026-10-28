@@ -8,6 +8,7 @@
 mod audio;
 mod buffer;
 mod bundle;
+mod cookies;
 mod decode;
 mod engine;
 mod fetch;
@@ -22,6 +23,9 @@ mod streams;
 mod ytdlp;
 
 pub use bundle::has_bundled_ytdlp;
+pub use cookies::{
+    import as import_youtube_cookies, is_cookies_file, remove as remove_youtube_cookies,
+};
 pub use engine::{AlternateHandle, spawn};
 pub use hydrate::{MAX_TRACKS as MAX_QUEUE_TRACKS, local_from_track};
 pub use matching::{Candidate, TrackQuery, normalize_query, rank_candidates};

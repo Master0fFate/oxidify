@@ -16,6 +16,7 @@ Oxidify follows each platform's conventions. On Linux:
 | Personal Web API sign-in | `~/.local/state/oxidify/personal_web_api_token.json` | Yes, personal acceleration is removed |
 | Playback credential | `~/.local/state/oxidify/credentials/` | Yes, you approve playback again |
 | Proxy password | `~/.local/state/oxidify/credentials/proxy-password` | Yes, you type it again |
+| YouTube cookies for yt-dlp (optional, youtube.com entries only) | `~/.local/state/oxidify/credentials/youtube-cookies.txt` | Yes, you add them again |
 | Last session | `~/.local/state/oxidify/session.json` | Yes |
 | Audio cache | `~/.cache/oxidify/audio/` | Always |
 | Artwork cache | `~/.cache/oxidify/art/` | Always |
@@ -32,7 +33,8 @@ Oxidify follows each platform's conventions. On Linux:
 Clearing caches never signs you out; credentials live in *state*, not
 *cache*. Web API token files are written with owner-only permissions.
 Signing out from Settings deletes both Web API grants and the separate
-playback credential.
+playback credential. The proxy password and YouTube cookies stay until you
+remove them in Settings.
 
 On macOS, settings, state, and the logs are in
 `~/Library/Application Support/me.master0ffate.oxidify` and the caches in
@@ -84,7 +86,7 @@ without resetting preferences. Its main fields are:
 | `web_client_id` | none | Optional personal Spotify app id used alongside shared coverage |
 | `playback_backend` | `spotify` | `spotify` (Connect / librespot) or `alternate` |
 | `piped_api_base` | empty | Optional Piped-compatible YouTube fallback |
-| `ytdlp_path` | empty | Last-resort user yt-dlp; used only if strictly newer than the official pin |
+| `ytdlp_path` | empty | A user yt-dlp, used only if strictly newer than the official pin |
 | `alternate_min_score` | `0.55` | Minimum match score; weaker hits are never played |
 | `alternate_skip_on_miss` | `true` | Skip forward when no match meets the score. Transient network errors retry; terminal transport and decode failures stop instead of skipping. |
 | `proxy_mode` | `system` | `system` (environment and platform settings), `off` (direct, always), `http`, or `socks5` |

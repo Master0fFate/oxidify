@@ -184,6 +184,10 @@ impl AppDirs {
         self.credentials_dir().join("proxy-password")
     }
 
+    pub fn youtube_cookies_file(&self) -> PathBuf {
+        self.credentials_dir().join("youtube-cookies.txt")
+    }
+
     pub fn volume_dir(&self) -> PathBuf {
         self.state.join("volume")
     }

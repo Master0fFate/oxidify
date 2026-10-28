@@ -26,8 +26,8 @@ uses a layout similar to Spotify's desktop client.
   audio cache.
 - **Plays without Premium.** Free and unconfirmed accounts are routed to
   alternate local playback. Oxidify races native YouTube and optional Piped
-  search, then applies one match score across all results. yt-dlp is the final
-  compatibility fallback, not the normal path. Those matches are not Spotify
+  search, then applies one match score across all results. yt-dlp resolves
+  the audio URL, racing Piped when you set one. Those matches are not Spotify
   audio; the interface labels their actual route, and you are responsible for
   using this lawfully under the terms of your account and of the providers you
   configure.

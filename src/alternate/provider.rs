@@ -14,6 +14,7 @@ use tokio::task::JoinSet;
 
 use super::AlternateConfig;
 use super::bundle;
+use super::cookies;
 use super::matching::{Candidate, TrackQuery, rank_candidates};
 use super::native_youtube::NativeYoutube;
 use super::piped::PipedClient;
@@ -128,10 +129,11 @@ impl MatchStore {
 impl Resolver {
     pub fn from_config(
         config: &AlternateConfig,
-        ytdlp_dir: &Path,
+        dirs: &crate::paths::AppDirs,
         http: reqwest::Client,
     ) -> Result<Self, String> {
         config.validate()?;
+        let ytdlp_dir = &dirs.bin_dir();
         let native = NativeYoutube::new(http.clone()).map_err(|error| error.to_string())?;
         let piped = config
             .piped_api_base
@@ -145,7 +147,13 @@ impl Resolver {
             match bundle::resolve(config.ytdlp_path.as_deref(), ytdlp_dir) {
                 Some(resolved) => {
                     bundle::log_choice(&resolved);
-                    Some(YtDlp::new(resolved.path, ytdlp_dir.join("ytdlp-cache")))
+                    let cookies = dirs.youtube_cookies_file();
+                    cookies::sweep_runs(&cookies);
+                    Some(YtDlp::new(
+                        resolved.path,
+                        ytdlp_dir.join("ytdlp-cache"),
+                        cookies,
+                    ))
                 }
                 None => None,
             }

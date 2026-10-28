@@ -78,8 +78,11 @@ The app still uses the Spotify Web API for your library and search, then looks
 up a third-party match. Native YouTube is ready without extra setup. You can
 also add a Piped endpoint in Settings. Those providers search concurrently and
 the existing match score chooses the strongest result. Search and stream
-lookups use bounded memory caches. yt-dlp runs only as the compatibility
-fallback.
+lookups are remembered in a bounded file. yt-dlp resolves the playable audio
+URL, racing Piped when you set one, and also searches when the others find no
+match. If YouTube makes yt-dlp confirm it is not a bot, add a
+`cookies.txt` from a browser signed in to YouTube under Settings → YouTube
+cookies; only yt-dlp gets them.
 
 That mode is not Spotify Connect, not Spotify audio, and not a way to bypass
 DRM. Oxidify does not ship a Piped instance. It does embed an official pinned

@@ -931,6 +931,8 @@ pub enum Action {
     ClearArtCache,
     ClearLibraryCache,
     SaveProxyPassword,
+    ImportYoutubeCookies(std::path::PathBuf),
+    RemoveYoutubeCookies,
     /// Open or close the Winamp window.
     ToggleWinampWindow,
     /// Wear a skin from the skins folder, or the built-in one for `None`.
