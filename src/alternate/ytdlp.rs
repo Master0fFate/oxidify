@@ -16,8 +16,8 @@ use super::streams::AudioStream;
 
 const MAX_STDOUT: usize = 8 * 1024 * 1024;
 const MAX_STDERR: usize = 4096;
-const SEARCH_TIMEOUT: Duration = Duration::from_secs(25);
-const STREAM_TIMEOUT: Duration = Duration::from_secs(25);
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
+const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 /// Audio YouTube actually publishes that this player can decode.
 /// No HLS, no Opus/WebM, no muxed video. `140` is AAC ~128 kbps.
 const AUDIO_FORMAT: &str = "140/139/bestaudio[ext=m4a]/bestaudio[acodec*=mp4a]/bestaudio[ext=mp3]";
@@ -126,6 +126,8 @@ async fn capture(mut command: Command, timeout: Duration, with_cookies: bool) ->
         command.creation_flags(CREATE_NO_WINDOW);
     }
     let mut child = command.spawn().context("unable to start yt-dlp")?;
+    #[cfg(windows)]
+    let _tree = KillTree::adopt(&child);
     let stdout = child
         .stdout
         .take()
@@ -195,6 +197,52 @@ async fn capture(mut command: Command, timeout: Duration, with_cookies: bool) ->
         anyhow::bail!("yt-dlp failed: {detail}");
     }
     String::from_utf8(buf).context("yt-dlp output was not UTF-8")
+}
+
+#[cfg(windows)]
+struct KillTree(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+unsafe impl Send for KillTree {}
+
+#[cfg(windows)]
+impl KillTree {
+    fn adopt(child: &tokio::process::Child) -> Option<Self> {
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+        let process = child.raw_handle()?;
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return None;
+        }
+        let tree = Self(job);
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let set = unsafe {
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&limits).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if set == 0 || unsafe { AssignProcessToJobObject(job, process) } == 0 {
+            return None;
+        }
+        Some(tree)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for KillTree {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
