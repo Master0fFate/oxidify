@@ -287,6 +287,7 @@ struct PcmChunk {
 
 pub struct PcmSource {
     rx: Receiver<PcmChunk>,
+    spent: SyncSender<Vec<f32>>,
     cmd: Sender<DecodeCmd>,
     state: Arc<DecodeState>,
     audio: SharedAudio,
@@ -331,9 +332,11 @@ impl PcmSource {
             match self.rx.try_recv() {
                 Ok(chunk) => {
                     if chunk.epoch != epoch {
+                        let _ = self.spent.try_send(chunk.samples);
                         continue;
                     }
-                    self.buf = chunk.samples;
+                    let spent = std::mem::replace(&mut self.buf, chunk.samples);
+                    let _ = self.spent.try_send(spent);
                     self.buf_epoch = chunk.epoch;
                     self.idx = 0;
                 }
@@ -401,16 +404,28 @@ pub fn spawn_decoder(
 ) -> Result<(PcmSource, DecodeHandle), String> {
     let state = Arc::new(DecodeState::new(start_ms));
     let (pcm_tx, pcm_rx) = mpsc::sync_channel(CHUNK_QUEUE);
+    let (spent_tx, spent_rx) = mpsc::sync_channel(CHUNK_QUEUE + 2);
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let thread_state = Arc::clone(&state);
     let thread_buffer = buffer.clone();
     thread::Builder::new()
         .name("oxidify-decode".into())
-        .spawn(move || decode_loop(thread_buffer, hint, start_ms, pcm_tx, cmd_rx, thread_state))
+        .spawn(move || {
+            decode_loop(
+                thread_buffer,
+                hint,
+                start_ms,
+                pcm_tx,
+                spent_rx,
+                cmd_rx,
+                thread_state,
+            )
+        })
         .map_err(|error| error.to_string())?;
     Ok((
         PcmSource {
             rx: pcm_rx,
+            spent: spent_tx,
             cmd: cmd_tx.clone(),
             state: Arc::clone(&state),
             audio: buffer.clone(),
@@ -431,6 +446,7 @@ fn decode_loop(
     hint: FormatHint,
     _start_ms: u32,
     pcm_tx: SyncSender<PcmChunk>,
+    spent_rx: Receiver<Vec<f32>>,
     cmd_rx: Receiver<DecodeCmd>,
     state: Arc<DecodeState>,
 ) {
@@ -564,6 +580,7 @@ fn decode_loop(
             pump_samples(
                 &mut decoder,
                 &pcm_tx,
+                &spent_rx,
                 &cmd_rx,
                 &state,
                 &buffer,
@@ -773,6 +790,7 @@ fn skip_ms<D: Iterator<Item = f32>>(
 fn pump_samples<D: Source>(
     decoder: &mut D,
     pcm_tx: &SyncSender<PcmChunk>,
+    spent_rx: &Receiver<Vec<f32>>,
     cmd_rx: &Receiver<DecodeCmd>,
     state: &Arc<DecodeState>,
     buffer: &SharedAudio,
@@ -799,7 +817,8 @@ fn pump_samples<D: Source>(
                 samples += 1;
                 chunk.push(sample);
                 if chunk.len() >= CHUNK_SAMPLES
-                    && let Err(pump) = send_chunk(pcm_tx, cmd_rx, state, &mut chunk, produce_epoch)
+                    && let Err(pump) =
+                        send_chunk(pcm_tx, spent_rx, cmd_rx, state, &mut chunk, produce_epoch)
                 {
                     return pump;
                 }
@@ -809,7 +828,8 @@ fn pump_samples<D: Source>(
                     return Pump::Seek;
                 }
                 if !chunk.is_empty()
-                    && let Err(pump) = send_chunk(pcm_tx, cmd_rx, state, &mut chunk, produce_epoch)
+                    && let Err(pump) =
+                        send_chunk(pcm_tx, spent_rx, cmd_rx, state, &mut chunk, produce_epoch)
                 {
                     return pump;
                 }
@@ -825,13 +845,20 @@ fn native_seek_allowed(hint: &FormatHint) -> bool {
 
 fn send_chunk(
     pcm_tx: &SyncSender<PcmChunk>,
+    spent_rx: &Receiver<Vec<f32>>,
     cmd_rx: &Receiver<DecodeCmd>,
     state: &Arc<DecodeState>,
     chunk: &mut Vec<f32>,
     produce_epoch: u64,
 ) -> Result<(), Pump> {
     let samples = std::mem::take(chunk);
-    *chunk = Vec::with_capacity(CHUNK_SAMPLES);
+    *chunk = match spent_rx.try_recv() {
+        Ok(mut spent) => {
+            spent.clear();
+            spent
+        }
+        Err(_) => Vec::with_capacity(CHUNK_SAMPLES),
+    };
     let mut pending = PcmChunk {
         epoch: produce_epoch,
         samples,
