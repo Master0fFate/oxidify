@@ -420,10 +420,7 @@ fn full_window(
     if view
         .interact(layout::ABOUT, "about", Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(format!(
-            "Back to the big window ({})",
-            crate::ui::keys::winamp_chord()
-        ))
+        .on_hover_text(crate::ui::keys::BIG_WINDOW_TIP)
         .clicked()
     {
         app.actions.push(Action::ToggleWinampWindow);
@@ -463,10 +460,7 @@ fn shade_bar(
     }
     let unit = view.unit;
     egui::Popup::context_menu(&title).show(|ui| options_menu(app, ui, unit));
-    let big_window = format!(
-        "Back to the big window ({})",
-        crate::ui::keys::winamp_chord()
-    );
+    let big_window = crate::ui::keys::BIG_WINDOW_TIP;
     if view
         .button(
             layout::OPTIONS_BUTTON,
@@ -474,7 +468,7 @@ fn shade_bar(
             sprites::OPTIONS_BUTTON_PRESSED,
             "logo",
         )
-        .on_hover_text(&big_window)
+        .on_hover_text(big_window)
         .clicked()
     {
         app.actions.push(Action::ToggleWinampWindow);
@@ -509,7 +503,7 @@ fn shade_bar(
             sprites::CLOSE_BUTTON_PRESSED,
             "close",
         )
-        .on_hover_text(&big_window)
+        .on_hover_text(big_window)
         .clicked()
     {
         app.actions.push(Action::ToggleWinampWindow);
@@ -630,10 +624,7 @@ fn title_bar(app: &mut App, view: &mut View, ctx: &egui::Context, focused: bool)
     // The logo and the close button lead back to the big window: the mini
     // player is a way of looking at the same app, not a second one to
     // close. Quitting is in the menu and Ctrl+Q.
-    let big_window = format!(
-        "Back to the big window ({})",
-        crate::ui::keys::winamp_chord()
-    );
+    let big_window = crate::ui::keys::BIG_WINDOW_TIP;
     if view
         .button(
             layout::OPTIONS_BUTTON,
@@ -641,7 +632,7 @@ fn title_bar(app: &mut App, view: &mut View, ctx: &egui::Context, focused: bool)
             sprites::OPTIONS_BUTTON_PRESSED,
             "logo",
         )
-        .on_hover_text(&big_window)
+        .on_hover_text(big_window)
         .clicked()
     {
         app.actions.push(Action::ToggleWinampWindow);
@@ -676,7 +667,7 @@ fn title_bar(app: &mut App, view: &mut View, ctx: &egui::Context, focused: bool)
             sprites::CLOSE_BUTTON_PRESSED,
             "close",
         )
-        .on_hover_text(&big_window)
+        .on_hover_text(big_window)
         .clicked()
     {
         app.actions.push(Action::ToggleWinampWindow);

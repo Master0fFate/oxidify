@@ -293,6 +293,18 @@ pub fn shortcuts() -> Vec<(String, &'static str)> {
         .collect()
 }
 
+pub const MINI_PLAYER_TIP: &str = if cfg!(target_os = "macos") {
+    "Winamp mini player (Cmd+Shift+M)"
+} else {
+    "Winamp mini player (Ctrl+M)"
+};
+
+pub const BIG_WINDOW_TIP: &str = if cfg!(target_os = "macos") {
+    "Back to the big window (Cmd+Shift+M)"
+} else {
+    "Back to the big window (Ctrl+M)"
+};
+
 pub fn winamp_chord() -> &'static str {
     if cfg!(target_os = "macos") {
         "Cmd+Shift+M"

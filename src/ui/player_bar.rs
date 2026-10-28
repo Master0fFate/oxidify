@@ -559,7 +559,7 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
         18.0,
         palette.secondary,
         palette.text,
-        &format!("Winamp mini player ({})", super::keys::winamp_chord()),
+        super::keys::MINI_PLAYER_TIP,
     )
     .clicked()
     {
