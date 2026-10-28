@@ -422,7 +422,7 @@ fn commands(app: &App) -> Vec<JumpEntry> {
         ),
         command(
             "Shuffle",
-            if app.now_playing().is_some_and(|now| now.shuffle) {
+            if app.playing_context_shuffle() {
                 "Turn shuffle off"
             } else {
                 "Turn shuffle on"

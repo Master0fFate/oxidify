@@ -1290,7 +1290,7 @@ fn transport(app: &mut App, view: &mut View, now: Option<&NowPlaying>) {
 }
 
 fn shuffle_repeat(app: &mut App, view: &mut View, now: Option<&NowPlaying>) {
-    let shuffle = now.is_some_and(|now| now.shuffle);
+    let shuffle = app.playing_context_shuffle();
     let (normal, pressed) = if shuffle {
         (sprites::SHUFFLE_ON, sprites::SHUFFLE_ON_PRESSED)
     } else {
@@ -1302,7 +1302,7 @@ fn shuffle_repeat(app: &mut App, view: &mut View, now: Option<&NowPlaying>) {
     {
         app.actions.push(Action::ToggleShuffle);
     }
-    let repeat = now.is_some_and(|now| now.repeat != RepeatMode::Off);
+    let repeat = now.map_or(app.wanted_repeat(), |now| now.repeat) != RepeatMode::Off;
     let (normal, pressed) = if repeat {
         (sprites::REPEAT_ON, sprites::REPEAT_ON_PRESSED)
     } else {
