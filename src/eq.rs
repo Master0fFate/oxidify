@@ -443,7 +443,7 @@ impl Processor {
     pub fn process(&mut self, samples: &mut [f64]) {
         let wanted = self
             .shared
-            .lock()
+            .try_lock()
             .map(|settings| settings.clamped())
             .unwrap_or(self.applied);
         if wanted != self.applied {
