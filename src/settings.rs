@@ -368,13 +368,45 @@ impl Settings {
                 let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
                 serde_json::from_str(text).unwrap_or_else(|error| {
                     log::warn!("settings at {} are unreadable: {error}", path.display());
-                    Self::default()
+                    keep_unreadable_copy(path);
+                    Self::salvage(text)
                 })
             }
-            Err(_) => Self::default(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(error) => {
+                log::warn!("settings at {} are unreadable: {error}", path.display());
+                keep_unreadable_copy(path);
+                Self::default()
+            }
         };
         settings.sanitize();
         settings
+    }
+
+    fn salvage(text: &str) -> Self {
+        let Ok(serde_json::Value::Object(found)) = serde_json::from_str(text) else {
+            return Self::default();
+        };
+        let Ok(mut kept) = serde_json::to_value(Self::default()) else {
+            return Self::default();
+        };
+        for (key, value) in found {
+            let Some(fields) = kept.as_object_mut() else {
+                break;
+            };
+            let previous = fields.insert(key.clone(), value);
+            if Self::deserialize(&kept).is_ok() {
+                continue;
+            }
+            log::warn!("settings field {key} had an unusable value; its default is used");
+            if let Some(fields) = kept.as_object_mut() {
+                match previous {
+                    Some(previous) => fields.insert(key, previous),
+                    None => fields.remove(&key),
+                };
+            }
+        }
+        Self::deserialize(&kept).unwrap_or_default()
     }
 
     fn sanitize(&mut self) {
@@ -397,10 +429,7 @@ impl Settings {
                 return;
             }
         };
-        let temporary = path.with_extension("json.tmp");
-        let written =
-            std::fs::write(&temporary, text).and_then(|()| std::fs::rename(&temporary, path));
-        if let Err(error) = written {
+        if let Err(error) = replace_file(path, &text) {
             log::warn!("unable to save settings to {}: {error}", path.display());
         }
     }
@@ -586,9 +615,22 @@ impl SessionState {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(text) = serde_json::to_string(self) {
-            let _ = std::fs::write(path, text);
+        if let Ok(text) = serde_json::to_string(self)
+            && let Err(error) = replace_file(path, &text)
+        {
+            log::warn!("unable to save the session to {}: {error}", path.display());
         }
+    }
+}
+
+fn replace_file(path: &Path, text: &str) -> std::io::Result<()> {
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, text).and_then(|()| std::fs::rename(&temporary, path))
+}
+
+fn keep_unreadable_copy(path: &Path) {
+    if let Err(error) = std::fs::copy(path, path.with_extension("json.bad")) {
+        log::warn!("couldn't keep a copy of {}: {error}", path.display());
     }
 }
 

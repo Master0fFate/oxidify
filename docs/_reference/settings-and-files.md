@@ -46,13 +46,17 @@ On macOS, settings, state, and the logs are in
 Fastpotify, the project Oxidify is derived from, kept its files in
 `fastpotify` directories next to these. The first run after switching
 imports settings, sign-ins, skins, and playback credentials from there,
-once; the old directories are left untouched.
+once; the old directories are left untouched. An empty `fastpotify-imported`
+file in the state directory records that the import ran, so signing out or
+deleting a file here never brings the Fastpotify copy back.
 
 ## settings.json
 
 Settings are stored in one readable JSON file and written atomically. UTF-8
 files saved with a leading byte order mark by a Windows editor are accepted
-without resetting preferences. Its main fields are:
+without resetting preferences. A field with a value Oxidify cannot use falls
+back to its default while the other fields are kept, and the file as it was
+is copied to `settings.json.bad` next to it first. Its main fields are:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
