@@ -58,7 +58,7 @@ no playback request to Spotify.
   appears before the normal Spotify refresh; no requests are skipped and
   no tokens are stored in this cache. Home previews and later pages are not
   cached.
-- Account-scoped playlist pages, in `playlists/<account-id>/`, at most 2 MiB
+- Account-scoped playlist pages, in `playlists/<account-id>/`, at most 32 MiB
   each. A hit is shown immediately, then Spotify confirms or replaces it.
   Tokens are not stored. Settings can delete this library cache, together
   with the library snapshot.

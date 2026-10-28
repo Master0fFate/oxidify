@@ -22,7 +22,7 @@ Oxidify follows each platform's conventions. On Linux:
 | Artwork cache | `~/.cache/oxidify/art/` | Always |
 | Lyrics cache | `~/.cache/oxidify/lyrics/` | Always |
 | Account-tagged Top songs cache (six-hour lifetime, at most 1 MiB) | `~/.cache/oxidify/top-tracks.json` | Always |
-| Account-scoped playlist cache (shown first, then revalidated; at most 2 MiB per playlist; Settings can clear it) | `~/.cache/oxidify/playlists/<account-id>/` | Always |
+| Account-scoped playlist cache (shown first, then revalidated; at most 32 MiB per playlist; Settings can clear it) | `~/.cache/oxidify/playlists/<account-id>/` | Always |
 | Account-scoped library snapshot (the playlist list and Liked Songs as last seen; Settings can clear it) | `~/.cache/oxidify/library/<account-id>/` | Always |
 | Last run's log | `~/.local/state/oxidify/oxidify.log` | Always |
 | Crash log | `~/.local/state/oxidify/panic.log` | Always |
