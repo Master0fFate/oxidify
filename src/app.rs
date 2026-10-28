@@ -3544,10 +3544,7 @@ impl App {
                                             self.load_more(Page::LikedSongs);
                                         }
                                     } else {
-                                        self.library
-                                            .liked
-                                            .items
-                                            .retain(|item| item.track.uri != *uri);
+                                        self.library.liked.retain(|item| item.track.uri != *uri);
                                         if let Some(total) = self.library.liked.total.as_mut() {
                                             *total = total.saturating_sub(1);
                                         }
