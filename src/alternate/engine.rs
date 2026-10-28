@@ -391,6 +391,7 @@ impl Engine {
     }
 
     fn spawn_job(&mut self, uri: Option<String>, handle: JoinHandle<()>) {
+        self.jobs.retain(|job| !job.handle.is_finished());
         self.jobs.push(Spawned { uri, handle });
     }
 
