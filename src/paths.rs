@@ -66,6 +66,18 @@ impl AppDirs {
     /// extracted helper binaries are left behind: they are disposable and
     /// large. Returns how many files were imported.
     pub fn import_legacy(&self, legacy: &AppDirs) -> usize {
+        let marker = self.state.join("fastpotify-imported");
+        if marker.exists() || !(legacy.config.is_dir() || legacy.state.is_dir()) {
+            return 0;
+        }
+        let mark_done = || {
+            let _ = std::fs::create_dir_all(&self.state);
+            let _ = std::fs::write(&marker, b"");
+        };
+        if self.settings_file().exists() {
+            mark_done();
+            return 0;
+        }
         let mut imported = 0usize;
         fn copy_if_absent(from: &Path, to: &Path, imported: &mut usize) {
             if from.is_file() && !to.exists() {
@@ -129,6 +141,7 @@ impl AppDirs {
         if imported > 0 {
             log::info!("imported {imported} file(s) from the previous Fastpotify install");
         }
+        mark_done();
         imported
     }
 
