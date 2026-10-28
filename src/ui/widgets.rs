@@ -556,7 +556,7 @@ pub fn picker_actions(
 /// holding the song under Saved in with a check and the rest under
 /// Recently updated with an empty circle. Rows toggle; Done applies every
 /// change in one go and Cancel drops them. Enter in the field adds the
-/// song to the first matching playlist straight away.
+/// song to the highlighted playlist and applies the other changes too.
 pub fn playlist_picker(ui: &mut Ui, app: &mut App, uri: &str) {
     let palette = app.palette;
     const WIDTH: f32 = 340.0;
@@ -648,15 +648,14 @@ pub fn playlist_picker(ui: &mut Ui, app: &mut App, uri: &str) {
     let highlighted_key = highlighted.map(|index| addable[index].key.as_str());
     // Enter takes the first matching playlist, so a song reaches one with
     // a few letters and a keystroke.
-    if enter && let Some(row) = addable.get(highlighted.unwrap_or(0)) {
-        app.actions.push(Action::AddToPlaylist {
-            playlist_id: row.key.clone(),
-            playlist_name: row.name.clone(),
-            uris: vec![uri.to_string()],
-            position: None,
-            confirmed: true,
-        });
-        leave = true;
+    if enter {
+        if let Some(row) = highlighted.and_then(|index| addable.get(index)) {
+            pending.insert(row.key.clone(), true);
+        }
+        if !pending.is_empty() {
+            app.actions.extend(picker_actions(uri, &rows, &pending));
+            leave = true;
+        }
     }
     ui.add_space(2.0);
     if menu_item(ui, &palette, Some(Icon::Plus), "New playlist") {
