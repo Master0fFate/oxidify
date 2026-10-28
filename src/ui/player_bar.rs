@@ -333,7 +333,8 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
     // on screen this puts equal breathing room above and beneath the
     // cluster.
     let cy = region.center().y - 8.0;
-    let enabled = now.is_some_and(|now| now.can_control) || app.is_connected();
+    let enabled = now.is_some_and(|now| now.can_control);
+    let playable = now.is_none_or(|now| now.can_control);
     let playing = now.is_some_and(|now| now.playing);
     let loading = now.is_some_and(|now| now.loading);
     let shuffle = app.playing_context_shuffle();
@@ -362,8 +363,15 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
         )
     };
 
-    let shuffle_color = if shuffle { palette.accent } else { dim };
+    let shuffle_color = if shuffle && enabled {
+        palette.accent
+    } else {
+        dim
+    };
     let mut cell = centered(ui, slot(widths[0]));
+    if !enabled {
+        cell.disable();
+    }
     if theme::icon_button(
         &mut cell,
         Icon::Shuffle,
@@ -382,6 +390,9 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
     }
 
     let mut cell = centered(ui, slot(widths[1]));
+    if !enabled {
+        cell.disable();
+    }
     if theme::icon_button(
         &mut cell,
         Icon::SkipBackFilled,
@@ -408,6 +419,9 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
             Icon::PlayFilled
         };
         let mut cell = centered(ui, disc);
+        if !playable {
+            cell.disable();
+        }
         if theme::accent_button(
             &mut cell,
             &palette,
@@ -422,6 +436,9 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
     }
 
     let mut cell = centered(ui, slot(widths[3]));
+    if !enabled {
+        cell.disable();
+    }
     if theme::icon_button(
         &mut cell,
         Icon::SkipForwardFilled,
@@ -440,7 +457,11 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
         RepeatMode::Context => (Icon::Repeat, palette.accent, "Repeat one"),
         RepeatMode::Track => (Icon::Repeat1, palette.accent, "Repeat off"),
     };
+    let repeat_color = if enabled { repeat_color } else { dim };
     let mut cell = centered(ui, slot(widths[4]));
+    if !enabled {
+        cell.disable();
+    }
     if theme::icon_button(
         &mut cell,
         repeat_icon,
