@@ -2169,7 +2169,7 @@ pub fn search_field(
             .max_rect(field_rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
-    let response = child.add(
+    let mut response = child.add(
         egui::TextEdit::singleline(text)
             .id(id)
             .hint_text(egui::RichText::new(hint).color(palette.dim))
@@ -2202,6 +2202,7 @@ pub fn search_field(
         {
             text.clear();
             ui.memory_mut(|memory| memory.request_focus(id));
+            response.mark_changed();
         }
     }
     response
