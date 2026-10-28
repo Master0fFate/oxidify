@@ -538,7 +538,9 @@ impl Resolver {
                 }
                 Ok((provider, Err(error))) => {
                     log::warn!("{provider:?} streams failed: {error}");
-                    last_error = Some(error);
+                    if provider == ProviderKind::YtDlpYoutube || last_error.is_none() {
+                        last_error = Some(error);
+                    }
                 }
                 Err(error) if error.is_cancelled() => {}
                 Err(error) => last_error = Some(error.to_string()),

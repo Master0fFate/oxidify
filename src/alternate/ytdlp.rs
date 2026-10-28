@@ -248,7 +248,7 @@ async fn capture(mut command: Command, timeout: Duration, with_cookies: bool) ->
     let status = child.wait().await.context("yt-dlp exit")?;
     if !status.success() {
         let err = String::from_utf8_lossy(&err_buf);
-        if err.contains("Sign in to confirm") {
+        if err.contains("Sign in to confirm") && err.contains("not a bot") {
             anyhow::bail!(if with_cookies {
                 "YouTube did not accept the saved cookies. Add fresh ones in Settings."
             } else {
