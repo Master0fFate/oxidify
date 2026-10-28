@@ -624,6 +624,7 @@ impl App {
             ThemeChoice::System => egui::ThemePreference::System,
         });
         self.applied_dark = None;
+        self.zoom_applied = false;
         self.winamp.forget_textures();
         self.window_hidden = false;
         self.hide_intent = false;
@@ -1703,7 +1704,7 @@ impl App {
             if (zoom - 1.0).abs() > 0.001 {
                 ctx.set_zoom_factor(zoom);
             }
-        } else {
+        } else if !self.window_hidden {
             let zoom = ctx.zoom_factor();
             if (zoom - self.settings.zoom).abs() > 0.001 {
                 // Ctrl+plus/minus zoomed; remembered for the next start.
