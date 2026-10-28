@@ -585,12 +585,16 @@ impl Engine {
                     self.emit();
                     return;
                 }
-                if self.overlap_uri.is_some() && self.overlap_uri == current {
-                    self.overlap_uri = None;
+                if let Some(target) = self.overlap_uri.take() {
                     self.overlap_paused = false;
-                    self.session.set_loading();
-                    self.emit();
-                    return;
+                    if current.as_deref() == Some(target.as_str())
+                        || self.session.select_uri(&target, self.overlap_forward)
+                    {
+                        self.session.set_loading();
+                        self.emit();
+                        return;
+                    }
+                    self.abort_job(&target);
                 }
                 self.start_resolve();
             }
