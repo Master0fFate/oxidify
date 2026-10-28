@@ -884,6 +884,13 @@ impl Engine {
             } else if spec.play && now.is_some() && self.session.playback() == Playback::Stopped {
                 let advance = self.session.skip_forward();
                 self.follow(advance);
+            } else if spec.play
+                && self.config.skip_on_miss
+                && self.session.playback() == Playback::Paused
+                && self.current_is_unplayable()
+            {
+                let advance = self.session.fail_next();
+                self.follow(advance);
             } else {
                 self.emit();
                 // The clicked track may already be playing with
