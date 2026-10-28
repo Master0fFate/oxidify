@@ -1282,6 +1282,9 @@ impl Engine {
             }
             OutputStatus::Ended if self.session.playback() == Playback::Playing => {
                 let advance = self.session.on_ended();
+                if self.session.repeat() == RepeatMode::Track && self.replay_active() {
+                    return;
+                }
                 self.follow(advance);
             }
             OutputStatus::Failed(message) if self.session.playback() == Playback::Playing => {
@@ -1292,6 +1295,30 @@ impl Engine {
             | OutputStatus::Ended
             | OutputStatus::Failed(_) => {}
         }
+    }
+
+    fn replay_active(&mut self) -> bool {
+        if self.pending.is_some() || self.overlap_uri.is_some() {
+            return false;
+        }
+        let (Some(buffer), Some(hint)) = (self.active_buffer.clone(), self.active_hint.clone())
+        else {
+            return false;
+        };
+        let Ok((pcm, decode)) = spawn_decoder(buffer, hint, 0) else {
+            return false;
+        };
+        self.pending = Some(PendingPlay {
+            pcm: Some(pcm),
+            decode: Some(decode),
+            label: self.session.source_label().unwrap_or_default().to_string(),
+            start_ms: 0,
+            reattach: false,
+            paused: false,
+        });
+        self.emit();
+        self.try_start_pending();
+        true
     }
 
     fn freeze_output_clock(&mut self) {

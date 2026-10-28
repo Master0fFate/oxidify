@@ -443,6 +443,10 @@ impl Session {
         self.playback
     }
 
+    pub fn source_label(&self) -> Option<&str> {
+        self.source_label.as_deref()
+    }
+
     pub fn volume(&self) -> u16 {
         self.volume
     }
