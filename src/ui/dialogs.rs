@@ -241,7 +241,13 @@ fn create_playlist(app: &mut App, ui: &mut egui::Ui) {
         if busy {
             theme::spinner(ui, 18.0, palette.accent);
         } else {
-            let create = theme::pill_button(ui, &palette, "Create", true).clicked() || submit;
+            let create = ui
+                .add_enabled_ui(!name_value.is_empty(), |ui| {
+                    theme::pill_button(ui, &palette, "Create", true)
+                })
+                .inner
+                .clicked()
+                || submit;
             if create && !name_value.is_empty() {
                 app.actions.push(Action::CreatePlaylist {
                     name: name_value.clone(),
@@ -305,7 +311,13 @@ fn edit_playlist(app: &mut App, ui: &mut egui::Ui) {
         if busy {
             theme::spinner(ui, 18.0, palette.accent);
         } else {
-            if theme::pill_button(ui, &palette, "Save", true).clicked() && !name_value.is_empty() {
+            if ui
+                .add_enabled_ui(!name_value.is_empty(), |ui| {
+                    theme::pill_button(ui, &palette, "Save", true)
+                })
+                .inner
+                .clicked()
+            {
                 app.actions.push(Action::UpdatePlaylist {
                     id: id.clone(),
                     name: name_value.clone(),
