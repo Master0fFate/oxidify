@@ -16,6 +16,7 @@ use egui::load::{Bytes, BytesLoadResult, BytesLoader, BytesPoll, LoadError};
 use sha1::{Digest, Sha1};
 
 const STALE_AFTER: Duration = Duration::from_secs(150);
+const RETRY_FAILED_AFTER: Duration = Duration::from_secs(2 * 60);
 const MAX_ART_BYTES: usize = 8 * 1024 * 1024;
 
 enum Entry {
@@ -24,7 +25,10 @@ enum Entry {
         bytes: Arc<[u8]>,
         last_used: Instant,
     },
-    Failed(String),
+    Failed {
+        error: String,
+        at: Instant,
+    },
 }
 
 struct Inner {
@@ -67,7 +71,9 @@ impl ArtLoader {
                     Entry::Ready { last_used, .. } if last_used.elapsed() > STALE_AFTER => {
                         Some(url.clone())
                     }
-                    Entry::Failed(_) => Some(url.clone()),
+                    Entry::Failed { at, .. } if at.elapsed() > RETRY_FAILED_AFTER => {
+                        Some(url.clone())
+                    }
                     _ => None,
                 })
                 .collect()
@@ -169,7 +175,10 @@ impl Inner {
                     bytes,
                     last_used: Instant::now(),
                 },
-                Err(error) => Entry::Failed(error),
+                Err(error) => Entry::Failed {
+                    error,
+                    at: Instant::now(),
+                },
             };
             loader
                 .entries
@@ -201,7 +210,7 @@ impl BytesLoader for ArtLoader {
                 })
             }
             Some(Entry::Pending) => Ok(BytesPoll::Pending { size: None }),
-            Some(Entry::Failed(error)) => Err(LoadError::Loading(error.clone())),
+            Some(Entry::Failed { error, .. }) => Err(LoadError::Loading(error.clone())),
             None => {
                 entries.insert(uri.to_string(), Entry::Pending);
                 drop(entries);
