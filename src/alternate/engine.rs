@@ -730,6 +730,7 @@ impl Engine {
                 }
             }
             Job::MatchFailed { token, uri, error } => {
+                self.matches.remove(&uri);
                 if !self.job_accepts(token, &uri) {
                     return;
                 }
@@ -790,6 +791,7 @@ impl Engine {
                 });
             }
             Job::TransportFailed { token, uri, error } => {
+                self.matches.remove(&uri);
                 if !self.job_accepts(token, &uri) {
                     return;
                 }
@@ -1394,6 +1396,7 @@ async fn resolve_and_stream(
     let resolved = match lookup.streams(&video_id).await {
         Ok(value) => value,
         Err(error) => {
+            lookup.forget(&query, &video_id);
             send(Job::TransportFailed {
                 token,
                 uri: track.uri.clone(),
@@ -1403,6 +1406,7 @@ async fn resolve_and_stream(
         }
     };
     let Some(stream) = select_audio_stream(&resolved.streams) else {
+        lookup.forget(&query, &video_id);
         send(Job::MatchFailed {
             token,
             uri: track.uri.clone(),
@@ -1470,11 +1474,14 @@ async fn resolve_and_stream(
     match result {
         Ok(()) => on_ready(),
         Err(error) if error == "cancelled" => {}
-        Err(error) => send(Job::TransportFailed {
-            token,
-            uri: track.uri.clone(),
-            error,
-        }),
+        Err(error) => {
+            lookup.forget(&query, &video_id);
+            send(Job::TransportFailed {
+                token,
+                uri: track.uri.clone(),
+                error,
+            });
+        }
     }
 }
 

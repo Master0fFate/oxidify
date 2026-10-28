@@ -29,6 +29,7 @@ const STRONG_MATCH_SCORE: f32 = 0.90;
 /// Matches outlive the process now that they are kept on disk; a week keeps
 /// replays off the network while a removed video still gets re-searched.
 const SEARCH_CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const MISS_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 /// For a stream URL without an `expire=` query parameter.
 const STREAM_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 /// A googlevideo URL is cached until its own `expire=` minus this margin.
@@ -86,6 +87,8 @@ pub trait MediaLookup: Send + Sync {
     fn scripted_body(&self) -> Option<ScriptedBody> {
         None
     }
+
+    fn forget(&self, _query: &TrackQuery, _id: &str) {}
 }
 
 #[derive(Clone, Debug)]
@@ -217,6 +220,26 @@ impl Resolver {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(key, candidates);
+        self.schedule_save();
+    }
+
+    fn remember_miss(&self, key: String, candidates: Vec<Candidate>) {
+        self.search_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert_with_ttl(key, candidates, MISS_CACHE_TTL);
+        self.schedule_save();
+    }
+
+    fn forget_match(&self, query: &TrackQuery, id: &str) {
+        self.search_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&search_key(query));
+        self.stream_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id);
         self.schedule_save();
     }
 
@@ -383,11 +406,7 @@ impl Resolver {
 
     pub async fn search(&self, query: &TrackQuery, min_score: f32) -> Result<Vec<Candidate>> {
         let search_text = search_text(query);
-        let cache_key = format!(
-            "{}|{}",
-            search_text.to_lowercase(),
-            query.duration_ms.unwrap_or(0)
-        );
+        let cache_key = search_key(query);
         if let Some(cached) = self
             .search_cache
             .lock()
@@ -438,7 +457,11 @@ impl Resolver {
         if candidates.is_empty() && !answered {
             return Err(anyhow!("no alternate search provider answered"));
         }
-        self.remember_search(cache_key, candidates.clone());
+        if rank_candidates(query, &candidates, min_score).is_some() {
+            self.remember_search(cache_key, candidates.clone());
+        } else {
+            self.remember_miss(cache_key, candidates.clone());
+        }
         Ok(candidates)
     }
 
@@ -555,6 +578,10 @@ impl MediaLookup for Resolver {
                 .map_err(|error| error.to_string())
         })
     }
+
+    fn forget(&self, query: &TrackQuery, id: &str) {
+        self.forget_match(query, id);
+    }
 }
 
 struct SearchRace {
@@ -621,6 +648,14 @@ fn search_text(query: &TrackQuery) -> String {
     let mut parts = query.artists.clone();
     parts.push(query.title.clone());
     parts.join(" ")
+}
+
+fn search_key(query: &TrackQuery) -> String {
+    format!(
+        "{}|{}",
+        search_text(query).to_lowercase(),
+        query.duration_ms.unwrap_or(0)
+    )
 }
 
 fn deduplicate(candidates: &mut Vec<Candidate>) {

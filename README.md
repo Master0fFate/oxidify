@@ -260,8 +260,9 @@ Native asynchronous Rust HTTP is used for YouTube **search**. Playable stream
 URLs come from `yt-dlp`, racing Piped if you set one, asking only for AAC
 M4A (itag 140) or MP3. rusty_ytdl lists those formats but does not decrypt
 their URLs, so it is not used for playback. Search results are remembered for
-seven days and resolved media URLs until they expire, in a bounded file in the
-state directory. HTTP range fetch starts from
+seven days (a search with no confident match for 15 minutes, and a match is
+forgotten when its video fails to play) and resolved media URLs until they
+expire, in a bounded file in the state directory. HTTP range fetch starts from
 headers and seeks into undownloaded regions; the rest of the file is not
 pulled unless you listen or seek there. Release builds
 embed one official pinned `yt-dlp` executable, extract it into the local state

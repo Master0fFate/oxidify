@@ -84,8 +84,9 @@ no playback request to Spotify.
   These searches run concurrently with short timeouts. A strong result cancels
   slower work. Matches are remembered in a bounded file on this computer,
   `bin/alternate-matches.json` under the state directory: search results for
-  seven days and resolved stream URLs until the URL's own expiry, so a song
-  played again starts without a lookup. It holds video ids and stream URLs
+  seven days (one with no confident match for 15 minutes, and a match is
+  forgotten when its video fails to play) and resolved stream URLs until the
+  URL's own expiry, so a song played again starts without a lookup. It holds video ids and stream URLs
   only, never anything from Spotify. A local yt-dlp process (the official
   pinned build extracted on this computer, or a strictly newer one you
   installed) resolves the audio URL, racing Piped when one is set, and
