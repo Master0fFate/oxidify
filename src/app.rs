@@ -3428,6 +3428,11 @@ impl App {
                 }
             },
             ApiResponse::SavedTracks { offset, result } => {
+                if !self.library.liked.pending.contains(&offset)
+                    && !(self.library.liked_cached && offset == 0)
+                {
+                    return;
+                }
                 match result {
                     Ok(page) => {
                         for item in &page.items {
