@@ -36,15 +36,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, page: Page) {
     ui.add_space(14.0);
     match page {
         Page::Albums => {
-            let albums: Vec<_> = app
-                .library
-                .albums
-                .items
-                .iter()
-                .map(|saved| saved.album.clone())
-                .collect();
+            let albums = std::mem::take(&mut app.library.albums.items);
             widgets::grid(ui, |ui| {
-                for album in &albums {
+                for album in albums.iter().map(|saved| &saved.album) {
                     let subtitle =
                         join_names(album.artists.iter().map(|artist| artist.name.as_str()));
                     let card = widgets::card(
@@ -69,6 +63,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, page: Page) {
                     }
                 }
             });
+            app.library.albums.items = albums;
             let list = &app.library.albums;
             let (loading, error, can_load, empty) = (
                 list.loading,
@@ -90,7 +85,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, page: Page) {
             );
         }
         Page::Artists => {
-            let artists = app.library.artists.items.clone();
+            let artists = std::mem::take(&mut app.library.artists.items);
             widgets::grid(ui, |ui| {
                 for artist in &artists {
                     let card = widgets::card(
@@ -115,6 +110,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, page: Page) {
                     }
                 }
             });
+            app.library.artists.items = artists;
             let list = &app.library.artists;
             let (loading, error, can_load, empty) = (
                 list.loading,
@@ -136,15 +132,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, page: Page) {
             );
         }
         Page::Podcasts => {
-            let shows: Vec<_> = app
-                .library
-                .shows
-                .items
-                .iter()
-                .map(|saved| saved.show.clone())
-                .collect();
+            let shows = std::mem::take(&mut app.library.shows.items);
             widgets::grid(ui, |ui| {
-                for show in &shows {
+                for show in shows.iter().map(|saved| &saved.show) {
                     let card = widgets::card(
                         ui,
                         app,
@@ -159,6 +149,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, page: Page) {
                     }
                 }
             });
+            app.library.shows.items = shows;
             let list = &app.library.shows;
             let (loading, error, can_load, empty) = (
                 list.loading,
@@ -180,21 +171,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, page: Page) {
             );
         }
         _ => {
-            let episodes: Vec<_> = app
-                .library
-                .episodes
-                .items
-                .iter()
-                .map(|saved| saved.episode.clone())
-                .collect();
+            let episodes = std::mem::take(&mut app.library.episodes.items);
             widgets::virtual_rows(
                 ui,
                 episodes.len(),
                 super::show::EPISODE_ROW_HEIGHT,
                 |ui, index| {
-                    super::show::episode_row(app, ui, &episodes[index], None);
+                    super::show::episode_row(app, ui, &episodes[index].episode, None);
                 },
             );
+            app.library.episodes.items = episodes;
             let list = &app.library.episodes;
             let (loading, error, can_load, empty) = (
                 list.loading,

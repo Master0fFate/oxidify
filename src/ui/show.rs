@@ -107,7 +107,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
             }
             theme::section_title(ui, &palette, "All episodes");
             ui.add_space(6.0);
-            let episodes = page.episodes.items.clone();
+            let episodes = &page.episodes.items;
             let show_image = pick_image(&show.images, 64).map(str::to_string);
             widgets::virtual_rows(ui, episodes.len(), EPISODE_ROW_HEIGHT, |ui, index| {
                 episode_row(app, ui, &episodes[index], show_image.as_deref());
