@@ -531,8 +531,13 @@ fn loose_match(left: &str, right: &str) -> bool {
 /// skipped. The result is sorted by time.
 pub fn parse_lrc(text: &str) -> Vec<Line> {
     let mut lines = Vec::new();
+    let mut offset_ms = 0i64;
     for raw in text.lines() {
         let mut rest = raw.trim_start();
+        if let Some(offset) = offset_tag(rest) {
+            offset_ms = offset;
+            continue;
+        }
         let mut times = Vec::new();
         while let Some(stamp) = leading_stamp(rest) {
             times.push(stamp.0);
@@ -549,8 +554,24 @@ pub fn parse_lrc(text: &str) -> Vec<Line> {
             });
         }
     }
+    if offset_ms != 0 {
+        for line in &mut lines {
+            line.at_ms = line
+                .at_ms
+                .map(|at_ms| (i64::from(at_ms) - offset_ms).clamp(0, i64::from(u32::MAX)) as u32);
+        }
+    }
     lines.sort_by_key(|line| line.at_ms);
     lines
+}
+
+fn offset_tag(text: &str) -> Option<i64> {
+    let (tag, _) = text.split_once(']')?;
+    let (name, value) = tag.strip_prefix('[')?.split_once(':')?;
+    if !name.trim().eq_ignore_ascii_case("offset") {
+        return None;
+    }
+    value.trim().parse().ok()
 }
 
 /// A timestamp at the head of `text`: its milliseconds and its length.
@@ -573,7 +594,11 @@ fn leading_stamp(text: &str) -> Option<(u32, usize)> {
         Some(_) => return None,
         None => 0,
     };
-    Some((minutes * 60_000 + seconds * 1_000 + fraction_ms, close + 2))
+    let at_ms = minutes
+        .checked_mul(60_000)?
+        .checked_add(seconds.checked_mul(1_000)?)?
+        .checked_add(fraction_ms)?;
+    Some((at_ms, close + 2))
 }
 
 // ---- cache ------------------------------------------------------------------
