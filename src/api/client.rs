@@ -204,13 +204,13 @@ pub enum TokenProvider {
 impl TokenProvider {
     async fn access_token(&self) -> Result<String> {
         match self {
-            Self::Web(tokens) => tokens.access_token(false).await,
+            Self::Web(tokens) => tokens.access_token(None).await,
         }
     }
 
-    async fn invalidate(&self) {
+    async fn invalidate(&self, rejected: &str) -> Result<()> {
         let Self::Web(tokens) = self;
-        let _ = tokens.access_token(true).await;
+        tokens.access_token(Some(rejected)).await.map(|_| ())
     }
 }
 
@@ -238,9 +238,10 @@ impl WebTokens {
     }
 
     /// A valid access token, refreshing first when it is close to expiry or
-    /// `force` asks for a fresh one after a 401.
-    async fn access_token(&self, force: bool) -> Result<String> {
+    /// when `rejected` is still the current token after a 401.
+    async fn access_token(&self, rejected: Option<&str>) -> Result<String> {
         let mut guard = self.token.lock().await;
+        let force = rejected.is_some_and(|rejected| guard.access_token == rejected);
         if force || guard.needs_refresh() {
             let client_id = guard.client_id.clone();
             let refresh_token = guard.refresh_token.clone();
@@ -526,7 +527,7 @@ impl ApiClient {
             if status == StatusCode::UNAUTHORIZED && attempt == 1 {
                 drop(activity);
                 drop(permit);
-                provider.invalidate().await;
+                provider.invalidate(&token).await?;
                 continue;
             }
             if status == StatusCode::TOO_MANY_REQUESTS {
