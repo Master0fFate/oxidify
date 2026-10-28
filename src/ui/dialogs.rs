@@ -104,8 +104,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         .num_columns(2)
                         .spacing([24.0, 8.0])
                         .show(ui, |ui| {
-                            for (keys, description) in super::keys::SHORTCUTS {
-                                cell(ui, keys, theme::semibold(13.0), palette.text);
+                            for (keys, description) in super::keys::shortcuts() {
+                                cell(ui, &keys, theme::semibold(13.0), palette.text);
                                 cell(ui, description, theme::regular(13.5), palette.secondary);
                                 ui.end_row();
                             }

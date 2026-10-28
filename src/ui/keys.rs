@@ -233,7 +233,7 @@ fn handle_keys(app: &mut App, ctx: &egui::Context, mini: bool) {
     }
 }
 
-pub const SHORTCUTS: &[(&str, &str)] = &[
+const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+K", "Jump to anything in your library"),
     ("Space", "Play or pause"),
     ("Ctrl+←  /  Ctrl+→", "Previous or next"),
@@ -244,6 +244,14 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("S", "Toggle shuffle"),
     ("R", "Cycle repeat"),
     ("Q", "Show the queue, also in full-screen lyrics"),
+    (
+        if cfg!(target_os = "macos") {
+            "Ctrl+U"
+        } else {
+            "Ctrl+Shift+Q"
+        },
+        "Show or hide the queue",
+    ),
     ("L", "Show the lyrics"),
     ("F  or  F11", "Full-screen lyrics"),
     ("Ctrl+F  or  /", "Search"),
@@ -272,6 +280,26 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+/ or ?", "Keyboard shortcuts"),
     ("Ctrl+Q", "Quit"),
 ];
+
+pub fn shortcuts() -> Vec<(String, &'static str)> {
+    let command = if cfg!(target_os = "macos") {
+        "Cmd"
+    } else {
+        "Ctrl"
+    };
+    SHORTCUTS
+        .iter()
+        .map(|(keys, what)| (keys.replace("Ctrl", command), *what))
+        .collect()
+}
+
+pub fn winamp_chord() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Cmd+Shift+M"
+    } else {
+        "Ctrl+M"
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1136,7 +1136,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 &query,
                 &palette,
                 "Mini player",
-                "Oxidify becomes a small player that wears classic Winamp skins (.wsz files); the logo in the skin, or Ctrl+M, brings this window back. Drop a skin on either window to add it.",
+                &format!(
+                    "Oxidify becomes a small player that wears classic Winamp skins (.wsz files); the logo in the skin, or {}, brings this window back. Drop a skin on either window to add it.",
+                    super::keys::winamp_chord()
+                ),
                 |ui| {
                     if theme::pill_button(ui, &palette, "Switch to it", true).clicked() {
                         app.actions.push(Action::ToggleWinampWindow);

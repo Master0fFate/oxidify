@@ -304,6 +304,7 @@ Connect devices and conflicting media-key handlers.
 | `B` | Like or unlike the playing song |
 | `S` / `R` | Shuffle / cycle repeat |
 | `Q` | Queue panel |
+| `Ctrl+Shift+Q` (`Cmd+U` on macOS) | Queue panel |
 | `Ctrl+F` or `/` | Search |
 | `Ctrl+K` | Jump to anything in your library |
 | `Ctrl+B` | Show or hide Your Library |
