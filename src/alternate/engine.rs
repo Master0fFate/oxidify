@@ -1173,7 +1173,12 @@ impl Engine {
             decode.seek(now);
         }
         let probe = pcm.duration_probe();
-        match self.output.play_pcm(pcm, decode) {
+        let paused = if pending.reattach {
+            self.session.playback() == Playback::Paused
+        } else {
+            pending.paused
+        };
+        match self.output.play_pcm(pcm, decode, paused) {
             Ok(_) if pending.reattach => {
                 self.active_duration = Some(probe);
                 match self.session.playback() {
@@ -1681,6 +1686,7 @@ mod tests {
             &mut self,
             _source: super::super::decode::PcmSource,
             _decode: super::super::decode::DecodeHandle,
+            _paused: bool,
         ) -> Result<super::super::audio::PlayInfo> {
             self.plays.fetch_add(1, Ordering::SeqCst);
             Ok(super::super::audio::PlayInfo {
@@ -1740,6 +1746,7 @@ mod tests {
             &mut self,
             source: PcmSource,
             decode: DecodeHandle,
+            _paused: bool,
         ) -> Result<super::super::audio::PlayInfo> {
             *self.pcm.lock().unwrap_or_else(|p| p.into_inner()) = Some(source);
             *self.decode.lock().unwrap_or_else(|p| p.into_inner()) = Some(decode);
@@ -2754,6 +2761,7 @@ mod tests {
             &mut self,
             source: PcmSource,
             decode: DecodeHandle,
+            _paused: bool,
         ) -> Result<super::super::audio::PlayInfo> {
             *self.pcm.lock().unwrap_or_else(|p| p.into_inner()) = Some(source);
             *self.decode.lock().unwrap_or_else(|p| p.into_inner()) = Some(decode);

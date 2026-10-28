@@ -116,7 +116,12 @@ pub enum OutputStatus {
 
 pub trait AudioOutput {
     fn play_bytes(&mut self, bytes: Vec<u8>, start_ms: u32) -> Result<PlayInfo>;
-    fn play_pcm(&mut self, source: PcmSource, decode: DecodeHandle) -> Result<PlayInfo>;
+    fn play_pcm(
+        &mut self,
+        source: PcmSource,
+        decode: DecodeHandle,
+        paused: bool,
+    ) -> Result<PlayInfo>;
     fn pause(&mut self);
     fn resume(&mut self);
     fn stop(&mut self);
@@ -162,8 +167,13 @@ impl AudioOutput for NullOutput {
         Ok(PlayInfo { duration_ms: None })
     }
 
-    fn play_pcm(&mut self, _source: PcmSource, _decode: DecodeHandle) -> Result<PlayInfo> {
-        self.playing = true;
+    fn play_pcm(
+        &mut self,
+        _source: PcmSource,
+        _decode: DecodeHandle,
+        paused: bool,
+    ) -> Result<PlayInfo> {
+        self.playing = !paused;
         self.finished = false;
         Ok(PlayInfo { duration_ms: None })
     }
@@ -264,15 +274,25 @@ impl AudioOutput for DirectRodioOutput {
         Ok(PlayInfo { duration_ms })
     }
 
-    fn play_pcm(&mut self, source: PcmSource, decode: DecodeHandle) -> Result<PlayInfo> {
+    fn play_pcm(
+        &mut self,
+        source: PcmSource,
+        decode: DecodeHandle,
+        paused: bool,
+    ) -> Result<PlayInfo> {
         self.sink.stop();
         if let Some(old) = self.decode.take() {
             old.stop();
         }
         self.decode = Some(decode);
+        if paused {
+            self.sink.pause();
+        }
         self.sink
             .append(Equalized::new(source, Arc::clone(&self.eq)));
-        self.sink.play();
+        if !paused {
+            self.sink.play();
+        }
         Ok(PlayInfo { duration_ms: None })
     }
 
@@ -396,6 +416,7 @@ enum MacCommand {
     PlayPcm(
         PcmSource,
         DecodeHandle,
+        bool,
         std::sync::mpsc::SyncSender<std::result::Result<PlayInfo, String>>,
     ),
     Pause,
@@ -429,9 +450,9 @@ impl RodioOutput {
                                     .map_err(|error| error.to_string());
                                 let _ = reply.send(result);
                             }
-                            MacCommand::PlayPcm(source, decode, reply) => {
+                            MacCommand::PlayPcm(source, decode, paused, reply) => {
                                 let result = output
-                                    .play_pcm(source, decode)
+                                    .play_pcm(source, decode, paused)
                                     .map_err(|error| error.to_string());
                                 let _ = reply.send(result);
                             }
@@ -498,8 +519,13 @@ impl AudioOutput for RodioOutput {
         self.play_request(|reply| MacCommand::PlayBytes(bytes, start_ms, reply))
     }
 
-    fn play_pcm(&mut self, source: PcmSource, decode: DecodeHandle) -> Result<PlayInfo> {
-        self.play_request(|reply| MacCommand::PlayPcm(source, decode, reply))
+    fn play_pcm(
+        &mut self,
+        source: PcmSource,
+        decode: DecodeHandle,
+        paused: bool,
+    ) -> Result<PlayInfo> {
+        self.play_request(|reply| MacCommand::PlayPcm(source, decode, paused, reply))
     }
 
     fn pause(&mut self) {
