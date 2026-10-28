@@ -1422,7 +1422,7 @@ impl Worker {
         self.playback_mode = mode;
         self.alternate_config = alternate;
         match self.playback_mode {
-            PlaybackBackend::Alternate => self.start_alternate(),
+            PlaybackBackend::Alternate => self.start_alternate().await,
             PlaybackBackend::Spotify => {
                 if self.signed_in {
                     self.resume_engine();
@@ -1433,7 +1433,7 @@ impl Worker {
         }
     }
 
-    fn start_alternate(&mut self) {
+    async fn start_alternate(&mut self) {
         if self.alternate.is_some() {
             return;
         }
@@ -1447,15 +1447,17 @@ impl Worker {
             )));
             return;
         };
-        match alternate::spawn(
-            self.alternate_config.clone(),
-            api,
-            self.http.clone(),
-            self.engine_notify(),
-            None,
-            &self.dirs,
-            Arc::clone(&self.engine_config.eq),
-        ) {
+        let config = self.alternate_config.clone();
+        let http = self.http.clone();
+        let notify = self.engine_notify();
+        let dirs = self.dirs.clone();
+        let eq = Arc::clone(&self.engine_config.eq);
+        let started = tokio::task::spawn_blocking(move || {
+            alternate::spawn(config, api, http, notify, None, &dirs, eq)
+        })
+        .await
+        .unwrap_or_else(|error| Err(format!("Alternate playback failed to start: {error}")));
+        match started {
             Ok(handle) => {
                 let source = self.alternate_config.source_summary();
                 self.alternate = Some(Arc::new(handle));
@@ -1485,7 +1487,6 @@ impl Worker {
     /// authorization, if there is one. Silent when there is nothing to resume.
     fn resume_engine(&mut self) {
         if self.playback_mode == PlaybackBackend::Alternate {
-            self.start_alternate();
             return;
         }
         if self.engine.is_some() || self.engine_busy || self.premium == Some(false) {
