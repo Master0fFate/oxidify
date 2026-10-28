@@ -299,6 +299,7 @@ pub struct App {
     pending_album: Option<PendingAlbumQueue>,
     pub settings_search: String,
     pub proxy_password: String,
+    saved_proxy_password: String,
     pub youtube_cookies: bool,
     pub youtube_cookies_path: String,
     /// A receiver just activated, waiting for Spotify to list it so playback
@@ -546,7 +547,8 @@ impl App {
             queued_play: None,
             pending_album: None,
             settings_search: String::new(),
-            proxy_password: proxy_password.clone(),
+            saved_proxy_password: proxy_password.clone(),
+            proxy_password,
             youtube_cookies,
             youtube_cookies_path: String::new(),
             pending_transfer_to: None,
@@ -5584,7 +5586,7 @@ impl App {
             }
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             Action::ClearArtCache => self.backend.send(Command::ClearArtCache),
-            Action::SaveProxyPassword => write_proxy_password(&self.dirs, &self.proxy_password),
+            Action::SaveProxyPassword => self.save_proxy_password(),
             Action::ImportYoutubeCookies(path) => {
                 self.backend.send(Command::ImportYoutubeCookies(path));
             }
@@ -6099,6 +6101,14 @@ impl App {
     pub fn save_state(&mut self) {
         self.save_settings();
         self.save_session();
+        self.save_proxy_password();
+    }
+
+    fn save_proxy_password(&mut self) {
+        if self.proxy_password != self.saved_proxy_password {
+            write_proxy_password(&self.dirs, &self.proxy_password);
+            self.saved_proxy_password.clone_from(&self.proxy_password);
+        }
     }
 
     /// Write the restorable session: page, recents, resume point, sorts.
