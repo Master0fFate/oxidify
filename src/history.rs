@@ -7,6 +7,7 @@
 //! year and all time. Nothing here leaves the machine.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -48,7 +49,6 @@ pub fn read(path: &Path) -> Vec<PlayRecord> {
 }
 
 pub fn append(path: &Path, record: &PlayRecord) -> std::io::Result<()> {
-    use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -56,8 +56,18 @@ pub fn append(path: &Path, record: &PlayRecord) -> std::io::Result<()> {
     line.push('\n');
     let mut file = std::fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(path)?;
+    let len = file.metadata()?.len();
+    if len > 0 {
+        let mut last = [0u8];
+        file.seek(SeekFrom::Start(len - 1))?;
+        file.read_exact(&mut last)?;
+        if last[0] != b'\n' {
+            line.insert(0, '\n');
+        }
+    }
     file.write_all(line.as_bytes())
 }
 
