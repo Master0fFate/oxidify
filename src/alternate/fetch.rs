@@ -28,6 +28,7 @@ pub struct FetchPolicy {
     pub retry_initial: Duration,
     pub retry_cap: Duration,
     pub dishonest_retries: u32,
+    pub transient_retries: u32,
     pub max_refresh: u32,
 }
 
@@ -39,6 +40,7 @@ impl FetchPolicy {
             retry_initial: Duration::from_millis(250),
             retry_cap: Duration::from_secs(20),
             dishonest_retries: 2,
+            transient_retries: 8,
             max_refresh: 6,
         }
     }
@@ -51,6 +53,7 @@ impl FetchPolicy {
             retry_initial: Duration::from_millis(15),
             retry_cap: Duration::from_millis(80),
             dishonest_retries: 2,
+            transient_retries: 6,
             max_refresh: 4,
         }
     }
@@ -240,6 +243,9 @@ struct FetchCtx<'a> {
     hint: Option<&'a FormatHint>,
     backoff: Duration,
     refreshes: u32,
+    last_filled: u64,
+    no_progress: u32,
+    failures: u32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -268,6 +274,9 @@ async fn fetch_inner(
         hint,
         backoff: policy.retry_initial,
         refreshes: 0,
+        last_filled: 0,
+        no_progress: 0,
+        failures: 0,
     };
     loop {
         if ctx.buffer.is_cancelled() {
@@ -316,10 +325,8 @@ async fn fetch_inner(
                             ctx.buffer.fail("Couldn't read matched audio.");
                             return Err(permanent("Couldn't read matched audio."));
                         }
-                        ctx.reset_backoff();
-                        ctx.wait_backoff().await?;
+                        ctx.retry_incomplete().await?;
                     }
-                    Err(FetchErr::Transient(_)) => ctx.wait_backoff().await?,
                     Ok(StreamDone::Retarget) => continue,
                     Err(error) => ctx.on_request_err(error).await?,
                 }
@@ -355,8 +362,8 @@ async fn fetch_inner(
                 .await
                 {
                     Ok(_) => {}
-                    Err(FetchErr::Transient(_)) => {
-                        ctx.wait_backoff().await?;
+                    Err(FetchErr::Transient(message)) => {
+                        ctx.retry_transient(message).await?;
                         if ctx.buffer.filled_bytes() > 0 && ctx.buffer.is_random_access() {
                             if ctx.buffer.is_cancelled() {
                                 return Err(FetchErr::Cancelled);
@@ -411,11 +418,44 @@ impl FetchCtx<'_> {
         self.backoff = self.policy.retry_initial;
     }
 
+    fn note_progress(&mut self) -> bool {
+        let filled = self.buffer.filled_bytes();
+        if filled <= self.last_filled {
+            return false;
+        }
+        self.last_filled = filled;
+        self.no_progress = 0;
+        self.failures = 0;
+        self.reset_backoff();
+        true
+    }
+
+    async fn retry_incomplete(&mut self) -> Result<(), FetchErr> {
+        if !self.note_progress() {
+            self.no_progress = self.no_progress.saturating_add(1);
+            if self.no_progress > self.policy.dishonest_retries {
+                self.buffer.fail("Couldn't read matched audio.");
+                return Err(permanent("Couldn't read matched audio."));
+            }
+        }
+        self.wait_backoff().await
+    }
+
+    async fn retry_transient(&mut self, message: String) -> Result<(), FetchErr> {
+        self.note_progress();
+        self.failures = self.failures.saturating_add(1);
+        if self.failures > self.policy.transient_retries {
+            self.buffer.fail(message.clone());
+            return Err(permanent(message));
+        }
+        self.wait_backoff().await
+    }
+
     async fn on_request_err(&mut self, error: FetchErr) -> Result<(), FetchErr> {
         match error {
             FetchErr::Cancelled => Err(FetchErr::Cancelled),
             FetchErr::Permanent(message) => Err(FetchErr::Permanent(message)),
-            FetchErr::Transient(_) => self.wait_backoff().await,
+            FetchErr::Transient(message) => self.retry_transient(message).await,
             FetchErr::Expired => self.refresh_url().await,
         }
     }
@@ -550,8 +590,7 @@ async fn range_followup(
     on_ready: &mut impl FnMut(),
 ) -> Result<(), FetchErr> {
     let mut did_tail = false;
-    let mut last_filled = ctx.buffer.filled_bytes();
-    let mut no_progress = 0u32;
+    ctx.note_progress();
     loop {
         if ctx.buffer.is_cancelled() {
             return Err(FetchErr::Cancelled);
@@ -609,10 +648,10 @@ async fn range_followup(
                 )
                 .await
                 {
+                    Ok(StreamDone::Incomplete) => ctx.retry_incomplete().await?,
                     Ok(_) => {
-                        note_progress(ctx, &mut last_filled, &mut no_progress);
+                        ctx.note_progress();
                     }
-                    Err(FetchErr::Transient(_)) => ctx.wait_backoff().await?,
                     Err(error) => ctx.on_request_err(error).await?,
                 }
             }
@@ -644,35 +683,14 @@ async fn range_followup(
                 .await
                 {
                     Ok(StreamDone::Complete | StreamDone::Retarget) => {
-                        note_progress(ctx, &mut last_filled, &mut no_progress);
+                        ctx.note_progress();
                     }
-                    Ok(StreamDone::Incomplete) => {
-                        if ctx.buffer.filled_bytes() > last_filled {
-                            note_progress(ctx, &mut last_filled, &mut no_progress);
-                        } else {
-                            no_progress = no_progress.saturating_add(1);
-                            if no_progress > ctx.policy.dishonest_retries {
-                                ctx.buffer.fail("Couldn't read matched audio.");
-                                return Err(permanent("Couldn't read matched audio."));
-                            }
-                        }
-                        ctx.wait_backoff().await?;
-                    }
-                    Err(FetchErr::Transient(_)) => ctx.wait_backoff().await?,
+                    Ok(StreamDone::Incomplete) => ctx.retry_incomplete().await?,
                     Err(error) => ctx.on_request_err(error).await?,
                 }
             }
             Err(error) => ctx.on_request_err(error).await?,
         }
-    }
-}
-
-fn note_progress(ctx: &mut FetchCtx<'_>, last_filled: &mut u64, no_progress: &mut u32) {
-    let filled = ctx.buffer.filled_bytes();
-    if filled > *last_filled {
-        *last_filled = filled;
-        *no_progress = 0;
-        ctx.reset_backoff();
     }
 }
 
