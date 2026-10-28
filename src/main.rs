@@ -305,12 +305,10 @@ fn main() -> eframe::Result<()> {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter));
     // Launched from a desktop, stderr goes nowhere; keep the run's log where
     // a bug report can find it.
-    match std::fs::File::create(dirs.log_file()) {
-        Ok(file) => {
-            logger.target(env_logger::Target::Pipe(Box::new(Tee(file))));
-        }
-        Err(error) => eprintln!("not keeping a log file: {error}"),
-    }
+    let log_file = std::sync::Arc::new(std::sync::Mutex::new(LogFile::Held(Vec::new())));
+    logger.target(env_logger::Target::Pipe(Box::new(Tee(
+        std::sync::Arc::clone(&log_file),
+    ))));
     logger.init();
     if let Err(error) = dirs_ready {
         log::warn!("unable to create the application directories: {error}");
@@ -346,6 +344,7 @@ fn main() -> eframe::Result<()> {
     } else {
         None
     };
+    keep_log(&log_file, dirs.log_file());
 
     // A capture run is a throwaway process next to the real one: no tray
     // icon of its own, and no second MPRIS service to fight over media keys.
@@ -472,19 +471,47 @@ fn main() -> eframe::Result<()> {
     Ok(())
 }
 
+enum LogFile {
+    Held(Vec<u8>),
+    Open(std::fs::File),
+    Closed,
+}
+
+fn keep_log(slot: &std::sync::Mutex<LogFile>, path: std::path::PathBuf) {
+    use std::io::Write;
+    let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
+    let held = std::mem::replace(&mut *slot, LogFile::Closed);
+    match std::fs::File::create(path) {
+        Ok(mut file) => {
+            if let LogFile::Held(held) = held {
+                let _ = file.write_all(&held);
+            }
+            *slot = LogFile::Open(file);
+        }
+        Err(error) => eprintln!("not keeping a log file: {error}"),
+    }
+}
+
 /// Every log line goes to stderr and to the log file.
-struct Tee(std::fs::File);
+struct Tee(std::sync::Arc<std::sync::Mutex<LogFile>>);
 
 impl std::io::Write for Tee {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let _ = std::io::stderr().write_all(buf);
-        self.0.write_all(buf)?;
+        match &mut *self.0.lock().unwrap_or_else(|p| p.into_inner()) {
+            LogFile::Held(held) => held.extend_from_slice(buf),
+            LogFile::Open(file) => file.write_all(buf)?,
+            LogFile::Closed => {}
+        }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         let _ = std::io::stderr().flush();
-        self.0.flush()
+        match &mut *self.0.lock().unwrap_or_else(|p| p.into_inner()) {
+            LogFile::Open(file) => file.flush(),
+            LogFile::Held(_) | LogFile::Closed => Ok(()),
+        }
     }
 }
 
