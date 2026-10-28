@@ -1339,6 +1339,7 @@ impl App {
     fn handle_auth(&mut self, status: AuthStatus) {
         // The status is taken on first, so that loading the current page
         // below sees the connection it needs.
+        let was_connected = matches!(self.auth, AuthStatus::Connected { .. });
         self.auth = status;
         match &self.auth {
             AuthStatus::Connected { .. } => {
@@ -1362,6 +1363,30 @@ impl App {
                 self.local_device_id = None;
                 self.local_playback = LocalPlayback::Unavailable;
                 self.remote = None;
+                self.plays.clear();
+                self.history_loaded = false;
+                self.stats_cache = None;
+                self.play_clock = None;
+                self.selected_device = None;
+                self.queued_play = None;
+                self.clear_play_pending();
+                self.pending_transfer_to = None;
+                self.remote_recheck_at = None;
+                self.pending_remote_position = None;
+                self.pending_remote_volume = None;
+                self.pending_local_volume = None;
+                self.optimistic_playing = None;
+                self.intent_track = None;
+                self.assumed_context = None;
+                self.played_row = None;
+                self.last_now_playing_uri = None;
+                if was_connected {
+                    self.recent_contexts.clear();
+                    self.resume_context = None;
+                    self.resume_track = None;
+                    self.resume_position_ms = 0;
+                    self.session_dirty = true;
+                }
                 self.reset_data();
             }
             AuthStatus::Failed(message) => {
