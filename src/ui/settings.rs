@@ -605,6 +605,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         if theme::pill_button(ui, &palette, label, true).clicked() {
                             if app.settings.playback_backend == PlaybackBackend::Alternate {
                                 app.actions.push(Action::RestartEngine);
+                                playback_dirty = false;
                             } else {
                                 app.actions.push(Action::EnablePlayback);
                             }
@@ -614,6 +615,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             .clicked()
                     {
                         app.actions.push(Action::RestartEngine);
+                        playback_dirty = false;
                     }
                 },
             );
