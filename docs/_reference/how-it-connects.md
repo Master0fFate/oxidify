@@ -86,8 +86,9 @@ no playback request to Spotify.
   `bin/alternate-matches.json` under the state directory: search results for
   seven days (one with no confident match for 15 minutes, and a match is
   forgotten when its video fails to play) and resolved stream URLs until the
-  URL's own expiry, so a song played again starts without a lookup. It holds video ids and stream URLs
-  only, never anything from Spotify. A local yt-dlp process (the official
+  URL's own expiry less five minutes, so a song played again starts without a lookup. It holds
+  the search keys made from a track's artists, title and length, video ids and
+  stream URLs, and never a Spotify token. A local yt-dlp process (the official
   pinned build extracted on this computer, or a strictly newer one you
   installed) resolves the audio URL, racing Piped when one is set, and
   searches when the others find no match. Spotify tokens are never sent to an
@@ -99,7 +100,7 @@ no playback request to Spotify.
 
 ## Refreshing a page
 
-The circular arrow immediately left of the Winamp mini player button reloads
+The circular arrow immediately left of the Settings gear reloads
 only the current page. Top songs skips its disk-cache read and starts a new
 live request even if an older load is still running; older responses cannot
 replace the refreshed view or overwrite a newer cache write. Playlist refresh requests both current metadata
@@ -196,7 +197,7 @@ Connect device, does not use Spirc, and does not run at the same time as
 librespot. It resolves Spotify track metadata to a third-party match. Native
 YouTube and optional Piped searches share one async HTTP client; the existing
 match score ranks their candidates together. Playable stream URLs come from
-Piped and/or yt-dlp (AAC M4A itag 140, then MP3). rusty_ytdl is search-only:
+Piped and/or yt-dlp (AAC M4A, itag 140 first, then MP3). rusty_ytdl is search-only:
 it does not decrypt adaptive media URLs. The engine fetches by HTTP range and
 decodes AAC/M4A or MP3 locally. Playback starts when container headers and
 the first packets are in (a few frames for MP3; fast-start M4A once `moov`

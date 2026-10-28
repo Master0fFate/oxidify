@@ -122,10 +122,11 @@ getting started, everyday use, and how it connects to Spotify.
   song under Saved in with a check, the rest with an empty circle. Tick or
   untick any of them, Liked Songs included, and Done applies it all at
   once; Enter in the search adds to the first match straight away.
-- **Your listening.** A page of what you actually played: hours, plays,
+- **Your listening.** A page of what you actually played: time listened, plays,
   the songs, artists and albums you played most, a chart by day or month,
   and your streak, over the last 7 days, 30 days, 12 months or all time. A play is counted on
-  this computer once a song has run for half a minute, kept in a file you
+  this computer once a song has played for half a minute (half of a shorter
+  song), kept in a file you
   can clear, and nothing about it leaves the machine.
 - **Jump anywhere.** `Ctrl+K` opens a palette over the page that finds any
   song, playlist, album, artist or podcast already in your library as you
@@ -258,11 +259,11 @@ the race early and cancels slower providers.
 
 Native asynchronous Rust HTTP is used for YouTube **search**. Playable stream
 URLs come from `yt-dlp`, racing Piped if you set one, asking only for AAC
-M4A (itag 140) or MP3. rusty_ytdl lists those formats but does not decrypt
+M4A (itag 140 first) or MP3. rusty_ytdl lists those formats but does not decrypt
 their URLs, so it is not used for playback. Search results are remembered for
 seven days (a search with no confident match for 15 minutes, and a match is
-forgotten when its video fails to play) and resolved media URLs until they
-expire, in a bounded file in the state directory. HTTP range fetch starts from
+forgotten when its video fails to play) and resolved media URLs until shortly
+before they expire, in a bounded file in the state directory. HTTP range fetch starts from
 headers and seeks into undownloaded regions; the rest of the file is not
 pulled unless you listen or seek there. Release builds
 embed one official pinned `yt-dlp` executable, extract it into the local state
@@ -326,15 +327,15 @@ responsibility; see the section above.
 | `Ctrl+F` or `/` | Search |
 | `Ctrl+B` | Show or hide Your Library |
 | `Alt+←` / `Alt+→`, or mouse side buttons | Back or forward |
-| `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
+| `Ctrl+H` (`Cmd+Shift+H` on macOS) / `Ctrl+L` | Home / Liked Songs |
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
-| `Ctrl+M` | Winamp mini player |
+| `Ctrl+M` (`Cmd+Shift+M` on macOS) | Winamp mini player |
 | `F` or `F11` | Full-screen lyrics |
 | `Ctrl+,` | Settings |
 | `Ctrl+/` or `?` | All shortcuts |
 | `Ctrl+Q` | Quit |
 
-On macOS, `Cmd` replaces `Ctrl`.
+Otherwise, on macOS, `Cmd` replaces `Ctrl`.
 
 ## Controlling it from outside
 

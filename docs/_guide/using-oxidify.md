@@ -225,7 +225,7 @@ and tracks without a transcription show an unavailable message.
 
 ## The Winamp mini player
 
-Ctrl+M (Cmd+Shift+M on macOS), the shrink button beside the settings gear,
+Ctrl+M (Cmd+Shift+M on macOS), the shrink button at the right end of the player bar,
 or **Switch to it** in Settings turns Oxidify into a small player that
 wears classic Winamp skins: the `.wsz` files of the Winamp 2 era, of which
 the [Winamp Skin Museum](https://skins.webamp.org) keeps tens of thousands.
@@ -267,8 +267,7 @@ of the main window bring back the big window; its shade button, or a
 double-click on the title bar, rolls it up to a bar with the time, a small
 transport, and a seek bar, as Winamp's shade mode did. Skins that are not
 rectangles keep their shape: whatever their `region.txt` leaves out is
-see-through. Quitting is in the right-click menu and Ctrl+Q. Oxidify has no balance
-control, so that slider is drawn but does nothing.
+see-through. Quitting is in the right-click menu and Ctrl+Q.
 Click the time to count down instead of up. The balance slider moves the
 sound between the speakers and the MONO and STEREO lamps are a switch,
 both for music played on this computer. The playlist's own shade button
@@ -309,15 +308,15 @@ Connect devices and conflicting media-key handlers.
 | `Ctrl+K` | Jump to anything in your library |
 | `Ctrl+B` | Show or hide Your Library |
 | `Alt+←` / `Alt+→`, or mouse side buttons | Back or forward |
-| `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
+| `Ctrl+H` (`Cmd+Shift+H` on macOS) / `Ctrl+L` | Home / Liked Songs |
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
-| `Ctrl+M` | Winamp mini player |
+| `Ctrl+M` (`Cmd+Shift+M` on macOS) | Winamp mini player |
 | `F` or `F11` | Full-screen lyrics |
 | `Ctrl+,` | Settings |
 | `Ctrl+/` or `?` | All shortcuts |
 | `Ctrl+Q` | Quit |
 
-On macOS, `Cmd` replaces `Ctrl`. Text fields retain arrow-key editing and
+Otherwise, on macOS, `Cmd` replaces `Ctrl`. Text fields retain arrow-key editing and
 selection; Shift shortcuts do not trigger their unshifted counterparts.
 While a dialog is open, shortcuts that change the page or open another
 dialog wait until it closes. The Winamp mini player answers only the
@@ -328,6 +327,6 @@ playback, volume, like, mini player and quit shortcuts.
 Settings (Ctrl+,) includes the Connect device name, audio quality up to
 320 kbps, volume normalisation, autoplay, gapless playback, the audio backend
 on Linux, the audio cache size, the equalizer, themes, album-art tinting,
-the mini player's skin and size, and close-to-tray behaviour. Applying playback settings restarts the local player. Other
-settings take effect immediately. The search field at the top keeps only the
+the mini player's skin and size, and close-to-tray behaviour. Applying playback settings restarts the local player. A changed proxy
+applies the next time Oxidify starts. Other settings take effect immediately. The search field at the top keeps only the
 settings whose words match.

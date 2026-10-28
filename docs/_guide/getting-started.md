@@ -90,8 +90,8 @@ yt-dlp build in each supported release binary, extracts it into the local state
 directory, and never downloads yt-dlp at runtime. A yt-dlp you installed is
 used only when its version is strictly newer than that pin. You are responsible
 for provider endpoints, binaries, and terms. Podcasts are not supported. A weak match is never played; you
-can choose to skip to the next track instead. Playback starts after a short
-buffer. An M4A file with metadata at the end may wait until download
+can choose to skip to the next track instead. Playback starts as soon as the
+audio headers are in. An M4A file with metadata at the end may wait until download
 finishes. Network stalls and transient HTTP errors retry and resume from
 received ranges; several retries in a row without new bytes count as a
 failure. A terminal transport or decode failure stops instead of skipping.

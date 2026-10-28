@@ -62,7 +62,6 @@ Oxidify deliberately has a limited scope:
 - Alternate playback does not support podcasts, and Spotify Lossless is not
   available through it either.
 - No video podcasts or social features.
-- Playlist reordering is a menu action, not drag-and-drop.
 - Oxidify is an **unofficial** client built on Spotify's public Web API
   and librespot. Spotify changes these from time to time; when they do,
   features can break until the client catches up.

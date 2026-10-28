@@ -15,6 +15,7 @@ Oxidify follows each platform's conventions. On Linux:
 | Shared Web API sign-in | `~/.local/state/oxidify/shared_web_api_token.json` | Yes, you sign in again |
 | Personal Web API sign-in | `~/.local/state/oxidify/personal_web_api_token.json` | Yes, personal acceleration is removed |
 | Playback credential | `~/.local/state/oxidify/credentials/` | Yes, you approve playback again |
+| Last playback volume | `~/.local/state/oxidify/volume/` | Yes |
 | Proxy password | `~/.local/state/oxidify/credentials/proxy-password` | Yes, you type it again |
 | YouTube cookies for yt-dlp (optional, youtube.com entries only) | `~/.local/state/oxidify/credentials/youtube-cookies.txt` | Yes, you add them again |
 | Per-run copies of those cookies (owner-only, emptied when alternate playback starts) | `~/.local/state/oxidify/credentials/youtube-cookies-scratch/` | Always |
@@ -69,7 +70,14 @@ is copied to `settings.json.bad` next to it first. Its main fields are:
 | `audio_backend` | platform | `pulseaudio` or `rodio` on Linux |
 | `audio_cache_mb` | `1024` | On-disk audio cache budget |
 | `theme` | `dark` | `dark`, `light`, or `system` |
+| `accent` | `blue` | The accent colour: `blue` or `green` |
 | `accent_from_art` | `true` | Tint pages with album art |
+| `zoom` | `1` | Interface zoom; Ctrl+plus and Ctrl+minus change it |
+| `sidebar_visible` | `true` | Your Library is shown |
+| `sidebar_collapsed` | `false` | Your Library is folded to a rail of covers |
+| `sidebar_grid` | `false` | Your Library shows a grid of covers |
+| `compact_library` | `false` | Your Library rows show names only |
+| `compact_tracks` | `false` | Track tables use one-line rows without covers |
 | `winamp_window` | `false` | The window is the Winamp mini player |
 | `skin` | none | A file or folder name in the skins folder; the built-in skin when absent |
 | `skin_scale` | by display | Screen pixels per skin pixel, 1 to 4 |
