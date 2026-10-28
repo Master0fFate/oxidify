@@ -18,6 +18,7 @@ use sha1::{Digest, Sha1};
 const STALE_AFTER: Duration = Duration::from_secs(150);
 const RETRY_FAILED_AFTER: Duration = Duration::from_secs(2 * 60);
 const MAX_ART_BYTES: usize = 8 * 1024 * 1024;
+const DISK_BUDGET: u64 = 256 * 1024 * 1024;
 
 enum Entry {
     Pending,
@@ -92,6 +93,33 @@ impl ArtLoader {
                 if std::fs::remove_file(entry.path()).is_ok() {
                     removed += length;
                 }
+            }
+        }
+        Ok(removed)
+    }
+
+    pub fn prune_disk_cache(&self) -> std::io::Result<u64> {
+        let mut files = Vec::new();
+        let mut total = 0u64;
+        for entry in std::fs::read_dir(&self.inner.cache_dir)?.flatten() {
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_file() {
+                total = total.saturating_add(metadata.len());
+                let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+                files.push((modified, metadata.len(), entry.path()));
+            }
+        }
+        files.sort();
+        let mut removed = 0u64;
+        for (_, length, path) in files {
+            if total <= DISK_BUDGET {
+                break;
+            }
+            if std::fs::remove_file(&path).is_ok() {
+                total -= length;
+                removed += length;
             }
         }
         Ok(removed)

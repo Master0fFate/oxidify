@@ -747,6 +747,12 @@ impl Backend {
             }
         };
         let art = ArtLoader::new(http.clone(), runtime.handle().clone(), dirs.art_cache_dir());
+        let pruning = art.clone();
+        runtime.spawn_blocking(move || match pruning.prune_disk_cache() {
+            Ok(0) => {}
+            Ok(bytes) => log::info!("pruned {bytes} bytes of cached artwork"),
+            Err(error) => log::debug!("unable to prune the artwork cache: {error}"),
+        });
         let activity = Arc::new(NetActivity::default());
 
         let worker_activity = Arc::clone(&activity);

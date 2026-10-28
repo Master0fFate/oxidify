@@ -19,7 +19,7 @@ Oxidify follows each platform's conventions. On Linux:
 | YouTube cookies for yt-dlp (optional, youtube.com entries only) | `~/.local/state/oxidify/credentials/youtube-cookies.txt` | Yes, you add them again |
 | Last session | `~/.local/state/oxidify/session.json` | Yes |
 | Audio cache | `~/.cache/oxidify/audio/` | Always |
-| Artwork cache | `~/.cache/oxidify/art/` | Always |
+| Artwork cache (trimmed to 256 MiB at each start, oldest first) | `~/.cache/oxidify/art/` | Always |
 | Lyrics cache | `~/.cache/oxidify/lyrics/` | Always |
 | Account-tagged Top songs cache (six-hour lifetime, at most 1 MiB) | `~/.cache/oxidify/top-tracks.json` | Always |
 | Account-scoped playlist cache (shown first, then revalidated; at most 32 MiB per playlist; Settings can clear it) | `~/.cache/oxidify/playlists/<account-id>/` | Always |

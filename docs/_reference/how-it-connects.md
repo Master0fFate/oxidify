@@ -47,8 +47,9 @@ no playback request to Spotify.
 
 - The shared and personal Web API refresh tokens and librespot's reusable credential, owner-only,
   in the state directory ([where](/settings-and-files/)).
-- Downloaded audio and artwork, in the cache directory, within the budget
-  you set.
+- Downloaded audio, in the cache directory, within the budget you set.
+- Artwork, in the cache directory, trimmed to 256 MiB at each start by
+  removing the oldest covers first.
 - Lyrics, in the cache directory, for a month.
 - The first page of full Top songs (up to 50 tracks), in `top-tracks.json` in
   the cache directory. This single file stores one account's metadata, at
