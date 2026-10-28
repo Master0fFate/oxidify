@@ -118,7 +118,10 @@ and rate-limit cooldown; foreground priority does not bypass Spotify limits.
 
 Each Web API session has its own concurrency and cooldown. Oxidify honours
 `Retry-After` without pausing the other session and treats Development Mode
-quota exhaustion separately from an ordinary burst limit. A logical request
+quota exhaustion separately from an ordinary burst limit. Requests wait out
+a cooldown of up to 30 seconds; during a longer one, or for five minutes
+after quota exhaustion when Spotify names no wait, they fail at once
+instead of reaching Spotify. A logical request
 is routed once before dispatch and is never retried through the other app.
 
 ## Receivers on the local network

@@ -23,6 +23,7 @@ const BASE_URL: &str = "https://api.spotify.com/v1";
 const MAX_IN_FLIGHT: usize = 6;
 const RATE_LIMIT_RETRIES: u32 = 3;
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
+const QUOTA_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 const QUEUE_WRITE_RETRIES: u32 = 2;
 const QUEUE_WRITE_RETRY_WAIT: Duration = Duration::from_secs(5);
 
@@ -401,6 +402,7 @@ pub struct ApiClient {
     limiter: Semaphore,
     queue_writes: tokio::sync::Mutex<()>,
     cooldown_until: tokio::sync::Mutex<Instant>,
+    quota_until: tokio::sync::Mutex<Instant>,
     search_limit: u32,
     artist_albums_limit: u32,
     source: ApiSource,
@@ -425,6 +427,7 @@ impl ApiClient {
             limiter: Semaphore::new(MAX_IN_FLIGHT),
             queue_writes: tokio::sync::Mutex::new(()),
             cooldown_until: tokio::sync::Mutex::new(Instant::now()),
+            quota_until: tokio::sync::Mutex::new(Instant::now()),
             classic_library: AtomicBool::new(false),
             search_limit,
             artist_albums_limit,
@@ -446,14 +449,25 @@ impl ApiClient {
             .ok_or(ApiError::NotSignedIn)
     }
 
-    async fn wait_for_cooldown(&self) {
+    async fn wait_for_cooldown(&self) -> Result<()> {
         loop {
             let until = *self.cooldown_until.lock().await;
             let Some(wait) = until.checked_duration_since(Instant::now()) else {
-                return;
+                return Ok(());
             };
+            if wait > MAX_RETRY_AFTER {
+                return Err(if *self.quota_until.lock().await > Instant::now() {
+                    ApiError::QuotaExhausted
+                } else {
+                    ApiError::RateLimited
+                });
+            }
             tokio::time::sleep(wait).await;
         }
+    }
+
+    async fn cooling_down(&self) -> bool {
+        *self.cooldown_until.lock().await > Instant::now()
     }
 
     async fn extend_cooldown(&self, wait: Duration) {
@@ -482,12 +496,17 @@ impl ApiClient {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            self.wait_for_cooldown().await;
-            let permit = self
-                .limiter
-                .acquire()
-                .await
-                .map_err(|_| ApiError::NotSignedIn)?;
+            let permit = loop {
+                self.wait_for_cooldown().await?;
+                let permit = self
+                    .limiter
+                    .acquire()
+                    .await
+                    .map_err(|_| ApiError::NotSignedIn)?;
+                if !self.cooling_down().await {
+                    break permit;
+                }
+            };
             self.activity.begin();
             let activity = ActivityGuard(&self.activity);
             let token = provider.access_token().await?;
@@ -510,27 +529,39 @@ impl ApiClient {
                 provider.invalidate().await;
                 continue;
             }
-            if status == StatusCode::TOO_MANY_REQUESTS && attempt <= RATE_LIMIT_RETRIES {
-                let wait = response
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                let retry_after = response
                     .headers()
                     .get(reqwest::header::RETRY_AFTER)
                     .and_then(|value| value.to_str().ok())
                     .and_then(|value| value.parse::<u64>().ok())
-                    .map_or(Duration::from_secs(1), Duration::from_secs)
-                    .min(MAX_RETRY_AFTER);
+                    .map(Duration::from_secs);
                 let text = response.text().await.unwrap_or_default();
-                if is_quota_exhausted(&text) {
-                    return Err(ApiError::QuotaExhausted);
-                }
+                let quota = is_quota_exhausted(&text);
+                let wait = match (retry_after, quota) {
+                    (Some(wait), _) => wait,
+                    (None, true) => QUOTA_COOLDOWN,
+                    (None, false) => Duration::from_secs(1),
+                };
                 log::warn!("Spotify rate limit source={} wait={wait:?}", self.source);
                 log::info!(
                     "Spotify cooldown source={} duration_ms={}",
                     self.source,
                     wait.as_millis()
                 );
+                if quota {
+                    let mut until = self.quota_until.lock().await;
+                    *until = (*until).max(Instant::now() + wait);
+                }
+                self.extend_cooldown(wait).await;
                 drop(activity);
                 drop(permit);
-                self.extend_cooldown(wait).await;
+                if quota {
+                    return Err(ApiError::QuotaExhausted);
+                }
+                if attempt > RATE_LIMIT_RETRIES || wait > MAX_RETRY_AFTER {
+                    return Err(ApiError::RateLimited);
+                }
                 continue;
             }
             if status.is_server_error() && method == Method::GET && attempt == 1 {
@@ -538,9 +569,6 @@ impl ApiClient {
                 drop(permit);
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 continue;
-            }
-            if status == StatusCode::TOO_MANY_REQUESTS {
-                return Err(ApiError::RateLimited);
             }
             let text = response.text().await?;
             log::debug!(
