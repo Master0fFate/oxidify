@@ -345,6 +345,7 @@ impl Resolver {
         }
         let now = Instant::now();
         let now_ms = unix_ms_now();
+        let floor = earliest_instant(now);
         let mut searches = persisted.searches;
         searches.sort_by_key(|entry| entry.inserted_at_ms);
         {
@@ -353,12 +354,11 @@ impl Resolver {
                 if entry.expires_at_ms <= now_ms || entry.key.is_empty() {
                     continue;
                 }
-                let (Some(expires_at), Some(inserted_at)) = (
-                    unix_ms_to_instant(entry.expires_at_ms, now, now_ms),
-                    unix_ms_to_instant(entry.inserted_at_ms, now, now_ms),
-                ) else {
+                let Some(expires_at) = unix_ms_to_instant(entry.expires_at_ms, now, now_ms) else {
                     continue;
                 };
+                let inserted_at =
+                    unix_ms_to_instant(entry.inserted_at_ms, now, now_ms).unwrap_or(floor);
                 cache.restore(entry.key, entry.candidates, expires_at, inserted_at);
             }
         }
@@ -372,12 +372,11 @@ impl Resolver {
             {
                 continue;
             }
-            let (Some(expires_at), Some(inserted_at)) = (
-                unix_ms_to_instant(entry.expires_at_ms, now, now_ms),
-                unix_ms_to_instant(entry.inserted_at_ms, now, now_ms),
-            ) else {
+            let Some(expires_at) = unix_ms_to_instant(entry.expires_at_ms, now, now_ms) else {
                 continue;
             };
+            let inserted_at =
+                unix_ms_to_instant(entry.inserted_at_ms, now, now_ms).unwrap_or(floor);
             cache.restore(entry.id, entry.lookup, expires_at, inserted_at);
         }
     }
@@ -795,6 +794,18 @@ fn unix_ms_to_instant(ms: u64, now: Instant, now_ms: u64) -> Option<Instant> {
     } else {
         now.checked_sub(Duration::from_millis(now_ms - ms))
     }
+}
+
+fn earliest_instant(now: Instant) -> Instant {
+    let mut earliest = now;
+    let mut step = SEARCH_CACHE_TTL;
+    while !step.is_zero() {
+        if let Some(earlier) = earliest.checked_sub(step) {
+            earliest = earlier;
+        }
+        step /= 2;
+    }
+    earliest
 }
 
 fn load_persisted(path: &Path) -> Option<PersistedCaches> {
