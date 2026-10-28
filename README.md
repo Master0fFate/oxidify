@@ -381,6 +381,11 @@ PowerShell print its answer without waiting for it: the prompt can come
 back first, and the exit code is not reported. A script that needs to wait
 can pipe the output, as in `oxidify now-playing | more`.
 
+The channel is one per computer, not one per user. When several people
+are signed in at once (fast user switching or Remote Desktop), the first
+to start Oxidify holds it; the others' Oxidify still starts, without these
+verbs, and a verb any of them sends reaches the first one's player.
+
 Launchers such as Raycast or Alfred can use these commands to control
 playback. The Stream Deck plugin speaks the same channel, which is why
 the verbs cover more than a media key can ask for.

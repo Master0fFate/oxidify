@@ -20,10 +20,10 @@
 //!
 //! macOS and Windows have no session bus, so there the same two jobs are done
 //! by a listening socket bound to loopback: binding is exclusive, so whoever
-//! binds is the running instance, and a later launch connects to say "show
-//! yourself" before exiting. It is bound to 127.0.0.1 so no firewall has an
-//! opinion about it, it speaks only to itself, and the operating system
-//! releases the port when the process ends.
+//! binds is the running instance, and a later launch by the same user
+//! connects to say "show yourself" before exiting. It is bound to 127.0.0.1
+//! so no firewall has an opinion about it, it speaks only to itself, and the
+//! operating system releases the port when the process ends.
 //!
 //! On those platforms the socket doubles as the remote-control channel:
 //! `oxidify next` (or a Raycast script running it) connects, sends one
@@ -158,6 +158,8 @@ const OK_REPLY: &str = "oxidify:ok";
 const NOW_REPLY: &str = "oxidify:now ";
 #[cfg(not(target_os = "linux"))]
 const DEVICES_REPLY: &str = "oxidify:devices ";
+#[cfg(not(target_os = "linux"))]
+const OTHER_USER_REPLY: &str = "oxidify:other-user";
 
 #[cfg(not(target_os = "linux"))]
 const READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -207,6 +209,11 @@ fn send_to(port: u16, verb: &str) -> std::io::Result<Reply> {
         Ok(Reply::NowPlaying(snapshot.to_owned()))
     } else if let Some(snapshot) = line.strip_prefix(DEVICES_REPLY) {
         Ok(Reply::Devices(snapshot.to_owned()))
+    } else if line == OTHER_USER_REPLY {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the running Oxidify belongs to another user",
+        ))
     } else {
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -231,7 +238,21 @@ pub fn acquire(waker: &crate::backend::Waker) -> Outcome {
         Err(_) => {
             // Someone holds the port. Ask them to show themselves, and only
             // stand down if they answer as Oxidify.
-            let answered = send("show").is_ok_and(|reply| matches!(reply, Reply::Ok));
+            let show = || send("show").is_ok_and(|reply| matches!(reply, Reply::Ok));
+            let answered = match user_key() {
+                Some(key) => match send(&format!("show-for {key}")) {
+                    Ok(reply) => matches!(reply, Reply::Ok),
+                    Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                        log::warn!(
+                            "port {INSTANCE_PORT} is held by another user's Oxidify; running without remote control"
+                        );
+                        return Outcome::Only(unguarded());
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => show(),
+                    Err(_) => false,
+                },
+                None => show(),
+            };
             if answered {
                 return Outcome::Surfaced;
             }
@@ -267,6 +288,7 @@ fn serve(
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    let own_key = user_key();
     let active = AtomicUsize::new(0);
     let mut accept_failing = false;
     std::thread::scope(|scope| {
@@ -288,10 +310,11 @@ fn serve(
                 continue;
             }
             let active = &active;
+            let own_key = own_key.as_deref();
             let spawned = std::thread::Builder::new()
                 .name("oxidify-control".to_owned())
                 .spawn_scoped(scope, move || {
-                    answer(&mut stream, commands, now_playing, devices, waker);
+                    answer(&mut stream, own_key, commands, now_playing, devices, waker);
                     active.fetch_sub(1, Ordering::SeqCst);
                 });
             if spawned.is_err() {
@@ -304,6 +327,7 @@ fn serve(
 #[cfg(not(target_os = "linux"))]
 fn answer(
     stream: &mut std::net::TcpStream,
+    own_key: Option<&str>,
     commands: &std::sync::Mutex<Vec<ControlCommand>>,
     now_playing: &std::sync::Mutex<String>,
     devices: &std::sync::Mutex<String>,
@@ -323,6 +347,14 @@ fn answer(
         return;
     };
     match parse(&line) {
+        Some(Request::ShowFor(key)) => {
+            if own_key.is_none_or(|own| own == key) {
+                let _ = stream.write_all(format!("{OK_REPLY}\n").as_bytes());
+                queue(ControlCommand::Show);
+            } else {
+                let _ = stream.write_all(format!("{OTHER_USER_REPLY}\n").as_bytes());
+            }
+        }
         Some(Request::Command(command)) => {
             let _ = stream.write_all(format!("{OK_REPLY}\n").as_bytes());
             queue(command);
@@ -357,6 +389,7 @@ enum Request {
     Command(ControlCommand),
     NowPlaying,
     Devices,
+    ShowFor(String),
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -398,6 +431,7 @@ fn parse(line: &str) -> Option<Request> {
         ("transfer", Some(id)) => ControlCommand::Transfer(device_id(id)?),
         ("nowplaying", None) => return Some(Request::NowPlaying),
         ("devices", None) => return Some(Request::Devices),
+        ("show-for", Some(key)) => return Some(Request::ShowFor(user_key_shaped(key)?)),
         _ => return None,
     };
     Some(Request::Command(command))
@@ -427,6 +461,26 @@ fn device_id(text: &str) -> Option<String> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
     shaped.then(|| text.to_owned())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn user_key_shaped(text: &str) -> Option<String> {
+    let shaped =
+        !text.is_empty() && text.len() <= 64 && text.chars().all(|c| c.is_ascii_hexdigit());
+    shaped.then(|| text.to_owned())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn user_key() -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let dirs = directories::BaseDirs::new()?;
+    let digest = Sha256::digest(dirs.home_dir().as_os_str().as_encoded_bytes());
+    Some(
+        digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
 }
 
 /// Reads up to the first newline. A line too long to be one of ours, or any
