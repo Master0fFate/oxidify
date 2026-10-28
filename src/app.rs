@@ -4791,7 +4791,6 @@ impl App {
             return;
         }
         let play = self.now_playing().is_some_and(|now| now.playing);
-        self.selected_device = Some(device_id.clone());
         self.backend.api(ApiRequest::Transfer { device_id, play });
     }
 
