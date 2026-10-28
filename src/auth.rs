@@ -315,7 +315,7 @@ async fn token_request(
         .map_err(|error| TokenEndpointError::Unreachable(error.to_string()))?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
-    if status.is_client_error() {
+    if matches!(status.as_u16(), 400 | 401) {
         let detail = serde_json::from_str::<serde_json::Value>(&text)
             .ok()
             .and_then(|value| {
