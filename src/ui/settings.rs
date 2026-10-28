@@ -503,14 +503,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         let connect_locked = !app.is_confirmed_premium();
                         for choice in PlaybackBackend::ALL {
                             let locked = connect_locked && choice == PlaybackBackend::Spotify;
-                            if theme::soft_button(
-                                ui,
-                                &palette,
-                                None,
-                                choice.label(),
-                                app.settings.playback_backend == choice,
-                            )
-                            .clicked()
+                            let response = ui
+                                .add_enabled_ui(!locked, |ui| {
+                                    theme::soft_button(
+                                        ui,
+                                        &palette,
+                                        None,
+                                        choice.label(),
+                                        app.settings.playback_backend == choice,
+                                    )
+                                })
+                                .inner
+                                .on_disabled_hover_text("Needs Premium");
+                            if response.clicked()
                                 && app.settings.playback_backend != choice
                                 && !locked
                             {
@@ -766,11 +771,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            for (kbps, label) in [
-                                (320u16, "320 kbps"),
-                                (160, "160 kbps"),
-                                (96, "96 kbps"),
-                            ] {
+                            for (kbps, label) in
+                                [(320u16, "320 kbps"), (160, "160 kbps"), (96, "96 kbps")]
+                            {
                                 if theme::soft_button(
                                     ui,
                                     &palette,
