@@ -3348,7 +3348,9 @@ impl App {
                             playlists.insert(0, playlist.clone());
                         }
                         self.saved.insert(playlist.uri.clone(), true);
-                        if let Some(Dialog::CreatePlaylist { add_uris, .. }) = self.dialog.take()
+                        if matches!(self.dialog, Some(Dialog::CreatePlaylist { .. }))
+                            && let Some(Dialog::CreatePlaylist { add_uris, .. }) =
+                                self.dialog.take()
                             && !add_uris.is_empty()
                         {
                             self.backend.api(ApiRequest::AddToPlaylist {
