@@ -215,6 +215,7 @@ pub async fn wait_for_code(
         let _ = stream.shutdown().await;
         match outcome {
             Ok(code) => return Ok(code),
+            Err(error) if error.is::<Refused>() => return Err(error),
             Err(error) => {
                 // A favicon request or a stale tab is not the redirect; keep waiting.
                 log::debug!("ignored request on the redirect listener: {error}");
@@ -223,6 +224,10 @@ pub async fn wait_for_code(
         }
     }
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("Spotify refused the sign-in: {0}")]
+struct Refused(String);
 
 fn parse_request_line(line: &str, expected_state: &str) -> Result<String> {
     let target = line
@@ -248,11 +253,11 @@ fn parse_request_line(line: &str, expected_state: &str) -> Result<String> {
             _ => {}
         }
     }
-    if let Some(error) = error {
-        bail!("Spotify refused the sign-in: {error}");
-    }
     if state.as_deref() != Some(expected_state) {
         bail!("state mismatch");
+    }
+    if let Some(error) = error {
+        return Err(Refused(error).into());
     }
     code.ok_or_else(|| anyhow!("Spotify did not return an authorization code"))
 }
