@@ -203,7 +203,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let width = response.response.rect.width();
     if !collapsed && (width - app.settings.sidebar_width).abs() > 1.0 {
         app.settings.sidebar_width = width;
-        app.actions.push(Action::SettingsChanged);
+        app.mark_settings_dirty();
     }
 }
 
