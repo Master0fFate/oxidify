@@ -167,24 +167,26 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
         theme::text(ui, "Now playing", theme::semibold(14.0), palette.text);
         ui.add_space(4.0);
         let context = RowContext::Uris(vec![current.uri().to_string()]);
-        widgets::track_row(
-            ui,
-            app,
-            TrackRow {
-                index: 0,
-                number: Some(1),
-                item: current,
-                context: &context,
-                show_cover: true,
-                show_album: !compact,
-                added_at: None,
-                added_by: None,
-                show_added_by: false,
-                compact,
-                shift: 0.0,
-                moves: None,
-            },
-        );
+        ui.push_id("now-playing", |ui| {
+            widgets::track_row(
+                ui,
+                app,
+                TrackRow {
+                    index: 0,
+                    number: Some(1),
+                    item: current,
+                    context: &context,
+                    show_cover: true,
+                    show_album: !compact,
+                    added_at: None,
+                    added_by: None,
+                    show_added_by: false,
+                    compact,
+                    shift: 0.0,
+                    moves: None,
+                },
+            );
+        });
         ui.add_space(14.0);
     }
     if queue.queue.is_empty() {
