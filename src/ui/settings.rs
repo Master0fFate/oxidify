@@ -1481,24 +1481,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn youtube_cookies_row(app: &mut App, ui: &mut egui::Ui, query: &str, palette: &Palette) {
-    let dropped = ui.ctx().input(|input| {
-        input
-            .raw
-            .dropped_files
-            .iter()
-            .map(|file| file.path())
-            .find(|path| crate::alternate::is_cookies_file(path))
-            .map(std::path::Path::to_path_buf)
-    });
-    if let Some(path) = dropped {
-        app.actions.push(Action::ImportYoutubeCookies(path));
-    }
     let description = if app.youtube_cookies {
         "Added. yt-dlp signs in to YouTube with them. Kept in the credentials folder; Spotify, native search and Piped never get them."
     } else {
         "Optional. If YouTube makes yt-dlp confirm you're not a bot, export cookies.txt from a browser signed in to YouTube, then paste its path or drop the file here. Only youtube.com cookies are kept."
     };
     search_row(ui, query, palette, "YouTube cookies", description, |ui| {
+        let dropped = ui.ctx().input(|input| {
+            input
+                .raw
+                .dropped_files
+                .iter()
+                .map(|file| file.path())
+                .find(|path| crate::alternate::is_cookies_file(path))
+                .map(std::path::Path::to_path_buf)
+        });
+        if let Some(path) = dropped {
+            app.actions.push(Action::ImportYoutubeCookies(path));
+        }
         if app.youtube_cookies {
             if theme::soft_button(ui, palette, Some(Icon::Trash), "Remove", false).clicked() {
                 app.actions.push(Action::RemoveYoutubeCookies);
