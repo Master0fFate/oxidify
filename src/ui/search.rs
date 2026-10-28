@@ -22,15 +22,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         app.actions.push(Action::SetSearchFilter(filter));
     }
     ui.add_space(12.0);
-    let results = match &app.search.results {
-        Loadable::Loaded(results) => results.clone(),
-        Loadable::Loading | Loadable::NotLoaded => {
-            widgets::skeleton_rows(ui, &palette, 6);
-            return;
-        }
-        Loadable::Failed(error) => {
-            let error = error.clone();
-            widgets::error_row(ui, app, &error, None);
+    let results = match std::mem::take(&mut app.search.results) {
+        Loadable::Loaded(results) => results,
+        other => {
+            match &other {
+                Loadable::Failed(error) => widgets::error_row(ui, app, error, None),
+                _ => widgets::skeleton_rows(ui, &palette, 6),
+            }
+            app.search.results = other;
             return;
         }
     };
@@ -44,6 +43,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             &format!("No results for “{}”", app.search.committed),
             "Check the spelling, or try fewer words.",
         );
+        app.search.results = Loadable::Loaded(results);
         return;
     }
     let catalogue_waiting = app.search.catalogue_pending && results.tracks.is_none();
@@ -66,6 +66,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         widgets::loading_row(ui, &palette);
     }
+    app.search.results = Loadable::Loaded(results);
 }
 
 fn recent(app: &mut App, ui: &mut egui::Ui) {
@@ -130,7 +131,13 @@ fn all(app: &mut App, ui: &mut egui::Ui, results: &SearchResults) {
                 );
             } else if let Some(track) = results.tracks.as_ref().and_then(|page| page.items.first())
             {
-                app.remember_track(track);
+                if track
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| !app.track_cache.contains_key(id))
+                {
+                    app.remember_track(track);
+                }
                 let page = track
                     .album
                     .as_ref()
@@ -355,10 +362,11 @@ fn songs(app: &mut App, ui: &mut egui::Ui, results: &SearchResults, limit: usize
     let items: Vec<PlayableItem> = page
         .items
         .iter()
+        .take(limit)
         .cloned()
         .map(PlayableItem::Track)
         .collect();
-    for (index, item) in items.iter().take(limit).enumerate() {
+    for (index, item) in items.iter().enumerate() {
         let own;
         let context = match &results {
             Some(results) => results,
