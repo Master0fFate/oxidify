@@ -445,6 +445,7 @@ fn decode_loop(
     // rebuilt seekable when a seek is asked for, when playback must begin
     // away from zero, or once the file is complete.
     let mut want_seek = false;
+    let mut resume: Option<(u64, u32)> = None;
     'rebuild: loop {
         if state.stopped() && state.phase.load(Ordering::SeqCst) != PHASE_RUN {
             return;
@@ -457,7 +458,11 @@ fn decode_loop(
             Some(DecodeCmd::Seek) => want_seek = true,
             None => {}
         }
-        let start_ms = state.target_ms.load(Ordering::SeqCst);
+        let epoch = state.epoch.load(Ordering::SeqCst);
+        let start_ms = match resume {
+            Some((at, ms)) if at == epoch => ms,
+            _ => state.target_ms.load(Ordering::SeqCst),
+        };
         if buffer.is_cancelled() {
             state.cancel();
             return;
@@ -594,7 +599,7 @@ fn decode_loop(
                         continue 'rebuild;
                     }
                     EofNext::Rebuild { start_ms: next } => {
-                        state.target_ms.store(next, Ordering::SeqCst);
+                        resume = Some((epoch, next));
                         continue 'rebuild;
                     }
                 }
