@@ -212,7 +212,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
     } else {
         theme::ROW_HEIGHT
     };
-    let items = queue.queue.clone();
+    let items = queue.queue;
     widgets::virtual_rows(ui, items.len(), row_height, |ui, index| {
         widgets::track_row(
             ui,
