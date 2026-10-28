@@ -45,9 +45,9 @@ app accelerates supported work without replacing shared coverage.
 
 ## Use it in Oxidify
 
-1. Open **Settings**, find **Make it even faster**, and paste the
-   Client ID (not the Client Secret). **Show me how** expands the tutorial
-   inside Oxidify; **Copy URI** copies the callback used by authorization.
+1. Open **Settings**, find **Personal app** (searching *Make it even
+   faster* finds it too), and paste the Client ID (not the Client
+   Secret). **Show me how** expands the tutorial inside Oxidify; **Copy URI** copies the callback used by authorization.
 2. Click **Authorize**. Your browser opens Spotify's sign-in for your app.
    Oxidify shows **Authorizing…** while waiting for browser approval and account
    verification. Once it verifies the same Spotify account, the button is

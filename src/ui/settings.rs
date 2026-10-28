@@ -178,8 +178,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 ui,
                 &query,
                 &palette,
-                "Make it even faster",
-                "Add your own Spotify Development Mode app as optional acceleration. Oxidify keeps the shared app for catalog coverage and external playlists.",
+                "Personal app",
+                "Make it even faster with your own Spotify Development Mode app as optional acceleration. Oxidify keeps the shared app for catalog coverage and external playlists.",
                 |ui| {
                     let response = Frame::new()
                         .fill(palette.surface)
@@ -222,7 +222,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     ui,
                     &query,
                     &palette,
-                    "Don't have one?",
+                    "Setup guide",
                     "Set up a personal app in Spotify's developer dashboard. App owners need Premium.",
                     |ui| {
                         if theme::pill_button(ui, &palette, "Show me how", false).clicked() {
@@ -301,7 +301,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     ui,
                     &query,
                     &palette,
-                    "Authorize your personal app",
+                    "Authorize app",
                     "Spotify opens once to verify that both sessions belong to this account.",
                     |ui| {
                         if theme::pill_button(ui, &palette, "Authorize", true).clicked() {
@@ -767,9 +767,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
                             for (kbps, label) in [
-                                (320u16, "Very high · 320 kbps"),
-                                (160, "High · 160 kbps"),
-                                (96, "Normal · 96 kbps"),
+                                (320u16, "320 kbps"),
+                                (160, "160 kbps"),
+                                (96, "96 kbps"),
                             ] {
                                 if theme::soft_button(
                                     ui,
@@ -825,8 +825,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 ui,
                 &query,
                 &palette,
-                "Keep music playing when the window closes",
-                "Oxidify hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
+                "Background play",
+                "Keep music playing when the window closes. Oxidify hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
                 |ui| {
                     if widgets::switch(ui, &palette, &mut app.settings.keep_playing_in_background)
                         .changed()
@@ -839,8 +839,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 ui,
                 &query,
                 &palette,
-                "Tell me when a new version is out",
-                "Asks GitHub once a day. Nothing about you is sent.",
+                "Update check",
+                "Tell me when a new version is out. Asks GitHub once a day. Nothing about you is sent.",
                 |ui| {
                     if widgets::switch(ui, &palette, &mut app.settings.check_for_updates).changed()
                     {
@@ -1023,8 +1023,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 ui,
                 &query,
                 &palette,
-                "Colour from album art",
-                "Tint pages and the player with the playing cover.",
+                "Cover colour",
+                "Colour from album art: tint pages and the player with the playing cover.",
                 |ui| {
                     if widgets::switch(ui, &palette, &mut app.settings.accent_from_art).changed() {
                         changed = true;
