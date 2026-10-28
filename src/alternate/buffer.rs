@@ -1,6 +1,7 @@
 //! Sparse compressed-audio buffer. Decoder thread reads; fetch task writes.
 
 use std::io::{self, Read, Seek, SeekFrom};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -49,7 +50,6 @@ struct Inner {
     status: Status,
     demand: Option<ByteRange>,
     demand_gen: u64,
-    read_epoch: u64,
 }
 
 struct Shared {
@@ -62,6 +62,7 @@ struct Shared {
 pub struct SharedAudio {
     shared: Arc<Shared>,
     limit: usize,
+    reads: Arc<AtomicU64>,
 }
 
 impl SharedAudio {
@@ -90,13 +91,21 @@ impl SharedAudio {
                     status: Status::Open,
                     demand: None,
                     demand_gen: 0,
-                    read_epoch: 0,
                 }),
                 wait: Condvar::new(),
                 notify: Notify::new(),
             }),
             limit,
+            reads: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    pub(crate) fn with_own_reads(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+            limit: self.limit,
+            reads: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -328,12 +337,12 @@ impl SharedAudio {
     }
 
     pub(crate) fn read_epoch(&self) -> u64 {
-        self.lock().read_epoch
+        self.reads.load(Ordering::SeqCst)
     }
 
     pub(crate) fn abandon_reads(&self) {
-        let mut inner = self.lock();
-        inner.read_epoch = inner.read_epoch.wrapping_add(1);
+        let inner = self.lock();
+        self.reads.fetch_add(1, Ordering::SeqCst);
         drop(inner);
         self.wake_all();
     }
@@ -558,7 +567,7 @@ impl Read for GrowableReader {
                     return Err(io::Error::other(message.clone()));
                 }
                 Status::Open | Status::Closed => {
-                    if inner.read_epoch != self.epoch {
+                    if self.audio.read_epoch() != self.epoch {
                         return Err(seek_retarget());
                     }
                     let pos = self.pos;
@@ -598,7 +607,7 @@ impl Seek for GrowableReader {
             Status::Cancelled => Err(cancelled_error()),
             Status::Failed(message) => Err(io::Error::other(message.clone())),
             Status::Open | Status::Closed => {
-                if inner.read_epoch != self.epoch {
+                if self.audio.read_epoch() != self.epoch {
                     return Err(seek_retarget());
                 }
                 let end_base = if inner.random_access {

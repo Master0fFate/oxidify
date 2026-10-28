@@ -402,6 +402,7 @@ pub fn spawn_decoder(
     hint: FormatHint,
     start_ms: u32,
 ) -> Result<(PcmSource, DecodeHandle), String> {
+    let buffer = buffer.with_own_reads();
     let state = Arc::new(DecodeState::new(start_ms));
     let (pcm_tx, pcm_rx) = mpsc::sync_channel(CHUNK_QUEUE);
     let (spent_tx, spent_rx) = mpsc::sync_channel(CHUNK_QUEUE + 2);
