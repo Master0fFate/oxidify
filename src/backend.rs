@@ -1819,6 +1819,7 @@ impl Worker {
                     })?;
                 let http = reqwest::blocking::Client::builder()
                     .timeout(std::time::Duration::from_secs(8))
+                    .no_proxy()
                     .build()
                     .map_err(|error| error.to_string())?;
                 let info = crate::zeroconf::get_info(&http, &receiver)

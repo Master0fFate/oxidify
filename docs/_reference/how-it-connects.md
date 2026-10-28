@@ -140,7 +140,8 @@ receiver and exchange. Oxidify does not write another copy of the
 credential.
 
 The receiver then signs in and appears in Spotify's device list. Oxidify
-uses the Web API for subsequent control requests.
+uses the Web API for subsequent control requests. The handover itself is
+local-network traffic and never goes through a proxy.
 
 ## Proxies
 

@@ -112,7 +112,8 @@ accepts anonymous connections.
 
 A changed proxy is picked up the next time Oxidify starts. `off` ignores
 environment variables and platform settings; `system` leaves them in
-charge.
+charge. Handing playback to a receiver on the local network always
+connects to it directly.
 
 ## Command line
 
