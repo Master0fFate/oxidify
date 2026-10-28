@@ -172,9 +172,10 @@ pub struct PagedList<T> {
     /// Offsets requested and not yet answered.
     pub pending: std::collections::BTreeSet<u32>,
     /// Pages that arrived before the ones ahead of them.
-    parked: std::collections::BTreeMap<u32, Vec<T>>,
+    parked: std::collections::BTreeMap<u32, (Vec<T>, u32)>,
     /// The page size Spotify answered with, once known.
     page_size: u32,
+    dropped: u32,
 }
 
 impl<T> Default for PagedList<T> {
@@ -191,6 +192,7 @@ impl<T> Default for PagedList<T> {
             pending: std::collections::BTreeSet::new(),
             parked: std::collections::BTreeMap::new(),
             page_size: 50,
+            dropped: 0,
         }
     }
 }
@@ -232,7 +234,7 @@ impl<T> PagedList<T> {
             return offsets;
         };
         let page = self.page_size.max(1);
-        let mut offset = self.items.len() as u32;
+        let mut offset = self.server_len();
         while self.pending.len() + offsets.len() < window && offset < total && offset < limit {
             if !self.pending.contains(&offset) && !self.parked.contains_key(&offset) {
                 offsets.push(offset);
@@ -253,28 +255,39 @@ impl<T> PagedList<T> {
         self.total = Some(page.total);
         self.loaded_once = true;
         self.error = None;
-        let held = self.items.len() as u32;
+        let held = self.server_len();
         let before = (self.revision, self.items.len());
+        let expected = if page.limit > 0 {
+            page.limit.min(page.total.saturating_sub(offset))
+        } else {
+            page.items.len() as u32
+        };
+        let lost = expected.saturating_sub(page.items.len() as u32);
         if offset == 0 {
             // A fresh start: whatever was parked belongs to the old list
             // only if it was fetched under the same total; keep it, since
             // the offsets still mean the same rows.
             self.items.clear();
             self.items.extend(page.items);
+            self.dropped = lost;
         } else if offset < held {
-            self.items.truncate(offset as usize);
+            self.items
+                .truncate(offset.saturating_sub(self.dropped) as usize);
             self.items.extend(page.items);
+            self.dropped += lost;
         } else if offset == held {
             self.items.extend(page.items);
+            self.dropped += lost;
         } else {
-            self.parked.insert(offset, page.items);
+            self.parked.insert(offset, (page.items, lost));
         }
         // Pages that waited for this one follow it in.
-        while let Some(items) = self.parked.remove(&(self.items.len() as u32)) {
+        while let Some((items, lost)) = self.parked.remove(&self.server_len()) {
             self.items.extend(items);
+            self.dropped += lost;
         }
-        self.parked
-            .retain(|parked, _| *parked > self.items.len() as u32);
+        let end = self.server_len();
+        self.parked.retain(|parked, _| *parked > end);
         self.settle();
         self.revision = next_view_revision();
         self.grown_from = (offset > 0 && offset >= held).then_some(before);
@@ -282,8 +295,12 @@ impl<T> PagedList<T> {
 
     /// Works out what is still to come from what is held, parked and in
     /// flight.
+    fn server_len(&self) -> u32 {
+        self.items.len() as u32 + self.dropped
+    }
+
     fn settle(&mut self) {
-        let held = self.items.len() as u32;
+        let held = self.server_len();
         let page = self.page_size.max(1);
         self.next_offset = match self.total {
             Some(total) if held < total => {
@@ -321,6 +338,7 @@ impl<T> PagedList<T> {
     pub fn set_cached(&mut self, items: Vec<T>) {
         self.total = Some(items.len() as u32);
         self.items = items;
+        self.dropped = 0;
         self.next_offset = None;
         self.pending.clear();
         self.parked.clear();
