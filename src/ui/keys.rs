@@ -6,101 +6,168 @@ use crate::app::App;
 use crate::model::{Action, Dialog, Page};
 
 pub fn handle(app: &mut App, ctx: &egui::Context) {
+    handle_keys(app, ctx, false);
+}
+
+pub fn handle_mini(app: &mut App, ctx: &egui::Context) {
+    handle_keys(app, ctx, true);
+}
+
+fn handle_keys(app: &mut App, ctx: &egui::Context, mini: bool) {
     let typing = ctx.memory(|memory| memory.focused().is_some());
     // Text fields own caret-navigation arrows; other focused widgets still
     // allow player and page-navigation shortcuts.
     let editing_text = ctx.text_edit_focused();
+    let navigate = !mini && app.dialog.is_none();
     let mut actions = Vec::new();
     ctx.input_mut(|input| {
-        let mut key = |modifiers: Modifiers, key: Key, action: Action| {
-            if input.consume_key(modifiers, key) {
+        let mut key = |allowed: bool, modifiers: Modifiers, key: Key, action: Action| {
+            if input.consume_key(modifiers, key) && allowed {
                 actions.push(action);
             }
         };
         // egui's plain-key matcher accepts an extra Shift. Consume the
         // more specific chords first, especially Queue before Quit.
         key(
+            navigate,
             Modifiers::COMMAND | Modifiers::SHIFT,
             Key::A,
             Action::OpenUri("artist".into()),
         );
         key(
+            navigate,
             Modifiers::COMMAND | Modifiers::SHIFT,
             Key::B,
             Action::OpenUri("album".into()),
         );
         // Cmd+Shift+Q is Log Out, taken by the window server.
         if cfg!(target_os = "macos") {
-            key(Modifiers::COMMAND, Key::U, Action::ToggleQueuePanel);
+            key(
+                navigate,
+                Modifiers::COMMAND,
+                Key::U,
+                Action::ToggleQueuePanel,
+            );
         } else {
             key(
+                navigate,
                 Modifiers::COMMAND | Modifiers::SHIFT,
                 Key::Q,
                 Action::ToggleQueuePanel,
             );
         }
-        key(Modifiers::COMMAND, Key::F, Action::FocusSearch);
-        key(Modifiers::COMMAND, Key::K, Action::ShowDialog(Dialog::Jump));
-        key(Modifiers::COMMAND, Key::B, Action::ToggleSidebar);
-        key(Modifiers::COMMAND, Key::Comma, Action::Open(Page::Settings));
-        key(Modifiers::COMMAND, Key::Q, Action::Quit);
+        key(navigate, Modifiers::COMMAND, Key::F, Action::FocusSearch);
+        key(
+            navigate,
+            Modifiers::COMMAND,
+            Key::K,
+            Action::ShowDialog(Dialog::Jump),
+        );
+        key(navigate, Modifiers::COMMAND, Key::B, Action::ToggleSidebar);
+        key(
+            navigate,
+            Modifiers::COMMAND,
+            Key::Comma,
+            Action::Open(Page::Settings),
+        );
+        key(true, Modifiers::COMMAND, Key::Q, Action::Quit);
         // winit installs its own macOS app menu, whose Hide item owns Cmd+H
         // before the window is offered the key.
         if cfg!(target_os = "macos") {
             key(
+                navigate,
                 Modifiers::COMMAND | Modifiers::SHIFT,
                 Key::H,
                 Action::Open(Page::Home),
             );
         } else {
-            key(Modifiers::COMMAND, Key::H, Action::Open(Page::Home));
+            key(
+                navigate,
+                Modifiers::COMMAND,
+                Key::H,
+                Action::Open(Page::Home),
+            );
         }
-        key(Modifiers::COMMAND, Key::L, Action::Open(Page::LikedSongs));
+        key(
+            navigate,
+            Modifiers::COMMAND,
+            Key::L,
+            Action::Open(Page::LikedSongs),
+        );
         // Cmd+M minimises on macOS.
         if cfg!(target_os = "macos") {
             key(
+                true,
                 Modifiers::COMMAND | Modifiers::SHIFT,
                 Key::M,
                 Action::ToggleWinampWindow,
             );
         } else {
-            key(Modifiers::COMMAND, Key::M, Action::ToggleWinampWindow);
+            key(true, Modifiers::COMMAND, Key::M, Action::ToggleWinampWindow);
         }
         key(
+            navigate,
             Modifiers::COMMAND,
             Key::Slash,
             Action::ShowDialog(Dialog::Shortcuts),
         );
         if !editing_text {
-            key(Modifiers::ALT, Key::ArrowLeft, Action::Back);
-            key(Modifiers::ALT, Key::ArrowRight, Action::Forward);
-            key(Modifiers::COMMAND, Key::ArrowLeft, Action::Previous);
-            key(Modifiers::COMMAND, Key::ArrowRight, Action::Next);
-            key(Modifiers::COMMAND, Key::ArrowUp, Action::VolumeBy(5));
-            key(Modifiers::COMMAND, Key::ArrowDown, Action::VolumeBy(-5));
-            key(Modifiers::NONE, Key::Space, Action::TogglePlay);
+            key(navigate, Modifiers::ALT, Key::ArrowLeft, Action::Back);
+            key(navigate, Modifiers::ALT, Key::ArrowRight, Action::Forward);
+            key(true, Modifiers::COMMAND, Key::ArrowLeft, Action::Previous);
+            key(true, Modifiers::COMMAND, Key::ArrowRight, Action::Next);
+            key(true, Modifiers::COMMAND, Key::ArrowUp, Action::VolumeBy(5));
+            key(
+                true,
+                Modifiers::COMMAND,
+                Key::ArrowDown,
+                Action::VolumeBy(-5),
+            );
+            key(true, Modifiers::NONE, Key::Space, Action::TogglePlay);
         }
         if !typing {
             key(
+                navigate,
                 Modifiers::NONE,
                 Key::Questionmark,
                 Action::ShowDialog(Dialog::Shortcuts),
             );
             key(
+                navigate,
                 Modifiers::SHIFT,
                 Key::Questionmark,
                 Action::ShowDialog(Dialog::Shortcuts),
             );
-            key(Modifiers::SHIFT, Key::ArrowLeft, Action::SeekBy(-10_000));
-            key(Modifiers::SHIFT, Key::ArrowRight, Action::SeekBy(10_000));
-            key(Modifiers::NONE, Key::F, Action::ToggleFullscreenLyrics);
-            key(Modifiers::NONE, Key::F11, Action::ToggleFullscreenLyrics);
-            key(Modifiers::NONE, Key::M, Action::ToggleMute);
-            key(Modifiers::NONE, Key::S, Action::ToggleShuffle);
-            key(Modifiers::NONE, Key::R, Action::CycleRepeat);
-            key(Modifiers::NONE, Key::Q, Action::ToggleQueuePanel);
-            key(Modifiers::NONE, Key::L, Action::ToggleLyricsPanel);
-            key(Modifiers::NONE, Key::Slash, Action::FocusSearch);
+            key(
+                true,
+                Modifiers::SHIFT,
+                Key::ArrowLeft,
+                Action::SeekBy(-10_000),
+            );
+            key(
+                true,
+                Modifiers::SHIFT,
+                Key::ArrowRight,
+                Action::SeekBy(10_000),
+            );
+            key(
+                navigate,
+                Modifiers::NONE,
+                Key::F,
+                Action::ToggleFullscreenLyrics,
+            );
+            key(
+                navigate,
+                Modifiers::NONE,
+                Key::F11,
+                Action::ToggleFullscreenLyrics,
+            );
+            key(true, Modifiers::NONE, Key::M, Action::ToggleMute);
+            key(true, Modifiers::NONE, Key::S, Action::ToggleShuffle);
+            key(true, Modifiers::NONE, Key::R, Action::CycleRepeat);
+            key(navigate, Modifiers::NONE, Key::Q, Action::ToggleQueuePanel);
+            key(navigate, Modifiers::NONE, Key::L, Action::ToggleLyricsPanel);
+            key(navigate, Modifiers::NONE, Key::Slash, Action::FocusSearch);
         }
     });
     if !typing
@@ -149,13 +216,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             input.pointer.button_pressed(egui::PointerButton::Extra2),
         )
     });
-    if back {
+    if back && navigate {
         app.actions.push(Action::Back);
     }
-    if forward {
+    if forward && navigate {
         app.actions.push(Action::Forward);
     }
-    if ctx.input(|input| input.key_pressed(Key::Escape)) {
+    if !mini && ctx.input(|input| input.key_pressed(Key::Escape)) {
         if app.dialog.is_some() {
             app.actions.push(Action::CloseDialog);
         } else if app.fullscreen_lyrics {

@@ -318,6 +318,9 @@ Connect devices and conflicting media-key handlers.
 
 On macOS, `Cmd` replaces `Ctrl`. Text fields retain arrow-key editing and
 selection; Shift shortcuts do not trigger their unshifted counterparts.
+While a dialog is open, shortcuts that change the page or open another
+dialog wait until it closes. The Winamp mini player answers only the
+playback, volume, like, mini player and quit shortcuts.
 
 ## Settings
 
