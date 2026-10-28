@@ -134,6 +134,7 @@ impl Resolver {
         config: &AlternateConfig,
         dirs: &crate::paths::AppDirs,
         http: reqwest::Client,
+        proxy: crate::settings::ProxySetting,
     ) -> Result<Self, String> {
         config.validate()?;
         let ytdlp_dir = &dirs.bin_dir();
@@ -160,6 +161,7 @@ impl Resolver {
                         ytdlp_dir.join("ytdlp-cache"),
                         scratch,
                         cookies,
+                        &proxy,
                     ))
                 }
                 None => None,

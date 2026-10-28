@@ -171,17 +171,14 @@ pub fn spawn(
     api: Arc<ApiClient>,
     http: reqwest::Client,
     notify: Notify,
-    output: Option<Box<dyn AudioOutput + Send>>,
+    proxy: crate::settings::ProxySetting,
     dirs: &crate::paths::AppDirs,
     eq: crate::eq::SharedEq,
 ) -> Result<AlternateHandle, String> {
     config.validate()?;
     let lookup: Arc<dyn MediaLookup> =
-        Arc::new(Resolver::from_config(&config, dirs, http.clone())?);
-    let output = match output {
-        Some(output) => output,
-        None => Box::new(RodioOutput::open(eq).map_err(|error| error.to_string())?),
-    };
+        Arc::new(Resolver::from_config(&config, dirs, http.clone(), proxy)?);
+    let output = Box::new(RodioOutput::open(eq).map_err(|error| error.to_string())?);
     Ok(spawn_inner(config, api, http, notify, output, lookup))
 }
 
@@ -1683,9 +1680,6 @@ mod tests {
             Ok(())
         }
         fn set_volume(&mut self, _volume: f32) {}
-        fn is_finished(&self) -> bool {
-            false
-        }
         fn play_pcm(
             &mut self,
             _source: super::super::decode::PcmSource,
@@ -1743,9 +1737,6 @@ mod tests {
             Ok(())
         }
         fn set_volume(&mut self, _volume: f32) {}
-        fn is_finished(&self) -> bool {
-            false
-        }
         fn play_pcm(
             &mut self,
             source: PcmSource,
@@ -2783,12 +2774,6 @@ mod tests {
             Ok(())
         }
         fn set_volume(&mut self, _volume: f32) {}
-        fn is_finished(&self) -> bool {
-            matches!(
-                *self.status.lock().unwrap_or_else(|p| p.into_inner()),
-                OutputStatus::Ended
-            )
-        }
         fn status(&self) -> OutputStatus {
             self.status
                 .lock()

@@ -774,6 +774,7 @@ impl Backend {
                         waker,
                         playback_mode,
                         alternate,
+                        proxy,
                     );
                     worker.run(command_rx).await;
                 });
@@ -850,6 +851,7 @@ impl Drop for Backend {
 }
 
 struct Worker {
+    proxy: ProxySetting,
     dirs: AppDirs,
     engine_config: EngineConfig,
     web_client_id: Option<String>,
@@ -904,6 +906,7 @@ impl Worker {
         waker: Waker,
         playback_mode: PlaybackBackend,
         alternate_config: AlternateConfig,
+        proxy: ProxySetting,
     ) -> Self {
         Self {
             dirs,
@@ -923,6 +926,7 @@ impl Worker {
             alternate: None,
             playback_mode,
             alternate_config,
+            proxy,
             ignore_spotify_engine: false,
             event_generation: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             engine_busy: false,
@@ -1466,8 +1470,9 @@ impl Worker {
         let notify = self.engine_notify();
         let dirs = self.dirs.clone();
         let eq = Arc::clone(&self.engine_config.eq);
+        let proxy = self.proxy.clone();
         let started = tokio::task::spawn_blocking(move || {
-            alternate::spawn(config, api, http, notify, None, &dirs, eq)
+            alternate::spawn(config, api, http, notify, proxy, &dirs, eq)
         })
         .await
         .unwrap_or_else(|error| Err(format!("Alternate playback failed to start: {error}")));
@@ -2806,6 +2811,7 @@ mod tests {
             Waker::default(),
             PlaybackBackend::Spotify,
             AlternateConfig::from_settings(&crate::settings::Settings::default()),
+            ProxySetting::System,
         )
     }
 

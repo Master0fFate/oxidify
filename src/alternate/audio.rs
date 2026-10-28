@@ -127,7 +127,6 @@ pub trait AudioOutput {
     fn stop(&mut self);
     fn seek(&mut self, ms: u32) -> Result<()>;
     fn set_volume(&mut self, volume: f32);
-    fn is_finished(&self) -> bool;
     fn status(&self) -> OutputStatus;
     fn recover(&mut self) -> Result<(), String> {
         Ok(())
@@ -197,10 +196,6 @@ impl AudioOutput for NullOutput {
 
     fn set_volume(&mut self, volume: f32) {
         self.volume = volume;
-    }
-
-    fn is_finished(&self) -> bool {
-        self.finished
     }
 
     fn status(&self) -> OutputStatus {
@@ -324,10 +319,6 @@ impl AudioOutput for DirectRodioOutput {
     fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0.0, 1.0);
         self.sink.set_volume(self.volume);
-    }
-
-    fn is_finished(&self) -> bool {
-        matches!(self.status(), OutputStatus::Ended)
     }
 
     fn status(&self) -> OutputStatus {
@@ -555,10 +546,6 @@ impl AudioOutput for RodioOutput {
         let _ = self.tx.send(MacCommand::SetVolume(volume));
     }
 
-    fn is_finished(&self) -> bool {
-        matches!(self.status(), OutputStatus::Ended)
-    }
-
     fn status(&self) -> OutputStatus {
         let (reply, result) = std::sync::mpsc::sync_channel(1);
         if self.tx.send(MacCommand::Status(reply)).is_err() {
@@ -603,7 +590,7 @@ mod tests {
         let mut output = NullOutput::new();
         output.set_volume(0.5);
         assert!(output.play_bytes(vec![0, 1, 2], 0).is_ok());
-        assert!(!output.is_finished());
+        assert_eq!(output.status(), OutputStatus::Playing);
         output.pause();
         output.resume();
         assert!(output.seek(1000).is_ok());

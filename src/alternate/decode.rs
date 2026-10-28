@@ -261,11 +261,6 @@ impl DecodeHandle {
     pub fn epoch(&self) -> u64 {
         self.state.epoch.load(Ordering::SeqCst)
     }
-
-    #[cfg(test)]
-    pub fn start_target_ms(&self) -> u32 {
-        self.state.target_ms.load(Ordering::SeqCst)
-    }
 }
 
 impl Drop for DecodeHandle {

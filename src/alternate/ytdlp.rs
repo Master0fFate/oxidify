@@ -13,6 +13,7 @@ use super::cookies::RunCookies;
 use super::matching::Candidate;
 use super::piped::sanitize_video_id;
 use super::streams::AudioStream;
+use crate::settings::ProxySetting;
 
 const MAX_STDOUT: usize = 8 * 1024 * 1024;
 const MAX_STDERR: usize = 4096;
@@ -22,12 +23,47 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 /// No HLS, no Opus/WebM, no muxed video. `140` is AAC ~128 kbps.
 const AUDIO_FORMAT: &str = "140/139/bestaudio[ext=m4a]/bestaudio[acodec*=mp4a]/bestaudio[ext=mp3]";
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct YtDlp {
     binary: PathBuf,
     cache_dir: PathBuf,
     scratch_dir: PathBuf,
     cookies: PathBuf,
+    proxy: ProxyRoute,
+}
+
+#[derive(Clone)]
+enum ProxyRoute {
+    Inherit,
+    Direct,
+    Via(String),
+}
+
+impl ProxyRoute {
+    fn from_setting(setting: &ProxySetting) -> Self {
+        match setting {
+            ProxySetting::System => Self::Inherit,
+            ProxySetting::Off => Self::Direct,
+            ProxySetting::Manual {
+                address,
+                username,
+                password,
+            } => {
+                let Ok(mut url) = url::Url::parse(address) else {
+                    return Self::Inherit;
+                };
+                if !username.is_empty()
+                    && (url.set_username(username).is_err()
+                        || url
+                            .set_password(Some(password.as_str()).filter(|value| !value.is_empty()))
+                            .is_err())
+                {
+                    return Self::Inherit;
+                }
+                Self::Via(url.into())
+            }
+        }
+    }
 }
 
 impl YtDlp {
@@ -36,12 +72,14 @@ impl YtDlp {
         cache_dir: PathBuf,
         scratch_dir: PathBuf,
         cookies: PathBuf,
+        proxy: &ProxySetting,
     ) -> Self {
         Self {
             binary,
             cache_dir,
             scratch_dir,
             cookies,
+            proxy: ProxyRoute::from_setting(proxy),
         }
     }
 
@@ -106,6 +144,24 @@ impl YtDlp {
                 "--cache-dir",
             ])
             .arg(&self.cache_dir);
+        match &self.proxy {
+            ProxyRoute::Inherit => {}
+            ProxyRoute::Direct => {
+                command.args(["--proxy", ""]);
+            }
+            ProxyRoute::Via(url) => {
+                for key in [
+                    "http_proxy",
+                    "https_proxy",
+                    "all_proxy",
+                    "HTTP_PROXY",
+                    "HTTPS_PROXY",
+                    "ALL_PROXY",
+                ] {
+                    command.env(key, url);
+                }
+            }
+        }
         if let Some(cookies) = &cookies {
             command.arg("--cookies").arg(cookies.path());
         }
