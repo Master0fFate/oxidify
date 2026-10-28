@@ -5695,7 +5695,7 @@ impl App {
             kind: ToastKind::Info,
             created: Instant::now(),
         });
-        self.toasts.truncate(4);
+        self.cap_toasts();
     }
 
     pub fn toast_error(&mut self, message: impl Into<String>) {
@@ -5706,6 +5706,12 @@ impl App {
             kind: ToastKind::Error,
             created: Instant::now(),
         });
+        self.cap_toasts();
+    }
+
+    fn cap_toasts(&mut self) {
+        let excess = self.toasts.len().saturating_sub(4);
+        self.toasts.drain(..excess);
     }
 
     /// Playlists the signed-in user can add to.
