@@ -295,6 +295,10 @@ impl<T> PagedList<T> {
 
     /// Works out what is still to come from what is held, parked and in
     /// flight.
+    pub fn dropped_any(&self) -> bool {
+        self.dropped > 0
+    }
+
     fn server_len(&self) -> u32 {
         self.items.len() as u32 + self.dropped
     }

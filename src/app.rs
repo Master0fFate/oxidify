@@ -884,7 +884,11 @@ impl App {
             return None;
         }
         let id = context_uri.strip_prefix("spotify:playlist:")?;
-        let rows = &self.playlist_pages.get(id)?.items.items;
+        let list = &self.playlist_pages.get(id)?.items;
+        if list.dropped_any() {
+            return None;
+        }
+        let rows = &list.items;
         let row = rows.get(index as usize)?;
         let holds = |row: &PlaylistItem| row.playable().is_some_and(|item| item.uri() == uri);
         let counted = |row: &PlaylistItem| {
