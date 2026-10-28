@@ -317,11 +317,16 @@ pub fn popup(app: &mut App, ctx: &egui::Context) {
                             } else {
                                 device.name.clone()
                             };
+                            let selectable = !device.is_restricted;
                             let (rect, response) = ui.allocate_exact_size(
                                 vec2(ui.available_width(), 52.0),
-                                Sense::click(),
+                                if selectable {
+                                    Sense::click()
+                                } else {
+                                    Sense::hover()
+                                },
                             );
-                            if response.hovered() {
+                            if selectable && response.hovered() {
                                 ui.painter().rect_filled(
                                     rect,
                                     CornerRadius::same(6),
@@ -374,7 +379,9 @@ pub fn popup(app: &mut App, ctx: &egui::Context) {
                             {
                                 app.actions.push(Action::Transfer(id.clone()));
                             }
-                            response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if selectable {
+                                response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                            }
                         }
                         for receiver in &waiting {
                             receiver_row(app, ui, receiver);
