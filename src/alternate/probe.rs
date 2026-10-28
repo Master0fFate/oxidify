@@ -91,13 +91,10 @@ pub fn inspect(data: &[u8]) -> Inspect {
     if data.starts_with(b"RIFF") {
         return inspect_wav(data);
     }
-    if data.starts_with(b"ID3") || looks_like_mp3_frame(data) {
-        return inspect_mp3(data);
-    }
     if looks_like_isobmff(data) {
         return inspect_isobmff(data);
     }
-    if find_mp3_sync(data).is_some() {
+    if data.starts_with(b"ID3") || find_mp3_sync(data).is_some() {
         return inspect_mp3(data);
     }
     if data.len() < 16 {
@@ -157,35 +154,75 @@ fn id3v2_size(bytes: &[u8]) -> usize {
         | ((bytes[3] & 0x7f) as usize)
 }
 
-fn looks_like_mp3_frame(data: &[u8]) -> bool {
-    find_mp3_sync(data).is_some()
-}
-
 fn find_mp3_sync(data: &[u8]) -> Option<usize> {
     if data.len() < 4 {
         return None;
     }
     let last = (data.len() - 4).min(8191);
-    for i in 0..=last {
-        if valid_mp3_header(&data[i..i + 4]) {
-            return Some(i);
-        }
-    }
-    None
+    (0..=last).find(|&i| {
+        let head = &data[i..];
+        mp3_frame_len(head).is_some_and(|len| {
+            data.get(i + len..i + len + 4)
+                .is_some_and(|next| same_mp3_stream(head, next) && mp3_frame_len(next).is_some())
+        })
+    })
 }
 
-fn valid_mp3_header(h: &[u8]) -> bool {
+fn same_mp3_stream(a: &[u8], b: &[u8]) -> bool {
+    a[1] & 0xfe == b[1] & 0xfe && a[2] & 0x0c == b[2] & 0x0c
+}
+
+fn mp3_frame_len(h: &[u8]) -> Option<usize> {
     if h.len() < 4 {
-        return false;
+        return None;
     }
     if h[0] != 0xff || h[1] & 0xe0 != 0xe0 {
-        return false;
+        return None;
     }
     let version = (h[1] >> 3) & 0x03;
     let layer = (h[1] >> 1) & 0x03;
     let bitrate = h[2] >> 4;
     let sample = (h[2] >> 2) & 0x03;
-    version != 1 && layer != 0 && bitrate != 0 && bitrate != 0x0f && sample != 0x03
+    if version == 1 || layer == 0 || bitrate == 0 || bitrate == 0x0f || sample == 0x03 {
+        return None;
+    }
+    const V1_L1: [u32; 15] = [
+        0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448,
+    ];
+    const V1_L2: [u32; 15] = [
+        0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384,
+    ];
+    const V1_L3: [u32; 15] = [
+        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+    ];
+    const V2_L1: [u32; 15] = [
+        0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256,
+    ];
+    const V2_L23: [u32; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+    let mpeg1 = version == 3;
+    let table = match (mpeg1, layer) {
+        (true, 3) => &V1_L1,
+        (true, 2) => &V1_L2,
+        (true, _) => &V1_L3,
+        (false, 3) => &V2_L1,
+        (false, _) => &V2_L23,
+    };
+    let kbps = table[usize::from(bitrate)];
+    let base = [44_100u32, 48_000, 32_000][usize::from(sample)];
+    let rate = match version {
+        3 => base,
+        2 => base / 2,
+        _ => base / 4,
+    };
+    let padding = u32::from((h[2] >> 1) & 0x01);
+    let bits = kbps * 1000;
+    let len = match layer {
+        3 => (12 * bits / rate + padding) * 4,
+        2 => 144 * bits / rate + padding,
+        _ if mpeg1 => 144 * bits / rate + padding,
+        _ => 72 * bits / rate + padding,
+    };
+    Some(len as usize)
 }
 
 fn looks_like_isobmff(data: &[u8]) -> bool {
@@ -332,12 +369,20 @@ mod tests {
         out
     }
 
+    fn two_mp3_frames() -> Vec<u8> {
+        let mut out = vec![0xff, 0xfb, 0x90, 0x00];
+        out.resize(417, 0);
+        out.extend_from_slice(&[0xff, 0xfb, 0x90, 0x00]);
+        out
+    }
+
     #[test]
     fn mp3_probe_id3_and_frame_sync() {
         let mut id3 = b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec();
-        id3.extend_from_slice(&[0xff, 0xfb, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        id3.extend_from_slice(&two_mp3_frames());
         assert_eq!(inspect(&id3), Inspect::Mp3);
-        assert_eq!(inspect(&[0xff, 0xfb, 0x90, 0x00]), Inspect::Mp3);
+        assert_eq!(inspect(&[0xff, 0xfb, 0x90, 0x00]), Inspect::NeedMore);
+        assert_eq!(inspect(&two_mp3_frames()), Inspect::Mp3);
         assert_eq!(inspect(b"ID3\x04\x00\x00"), Inspect::NeedMore);
         assert!(playback_ready(&id3, id3.len(), false));
         assert!(playback_ready(&id3, id3.len(), true));
@@ -346,8 +391,7 @@ mod tests {
 
     #[test]
     fn headers_start_without_ten_second_buffer() {
-        let mut mp3 = vec![0xff, 0xfb, 0x90, 0x00];
-        mp3.resize(64, 0);
+        let mp3 = two_mp3_frames();
         assert!(playback_ready(&mp3, mp3.len(), false));
         assert!(mp3.len() < 160_000);
 
