@@ -221,7 +221,20 @@ async fn run(
                     }
                     if previous.is_none_or(|p| p.track != state.track) {
                         let _ = player.set_metadata(metadata(state.track.as_ref())).await;
-                        let _ = player.set_can_seek(state.track.is_some()).await;
+                    }
+                    if previous.is_none_or(|p| {
+                        p.track.is_some() != state.track.is_some()
+                            || p.can_control != state.can_control
+                    }) {
+                        let _ = player
+                            .set_can_seek(state.track.is_some() && state.can_control)
+                            .await;
+                    }
+                    if previous.is_none_or(|p| p.can_control != state.can_control) {
+                        let _ = player.set_can_play(state.can_control).await;
+                        let _ = player.set_can_pause(state.can_control).await;
+                        let _ = player.set_can_go_next(state.can_control).await;
+                        let _ = player.set_can_go_previous(state.can_control).await;
                     }
                     if previous.is_none_or(|p| (p.volume - state.volume).abs() >= 0.005) {
                         let _ = player.set_volume(state.volume).await;
