@@ -557,7 +557,7 @@ fn profile_source_brief(app: &App) -> Option<String> {
     }
     let alternate = app.settings.playback_backend == PlaybackBackend::Alternate
         || matches!(app.local_playback, LocalPlayback::AlternateReady { .. });
-    alternate.then_some("yt-dlp".to_string())
+    alternate.then_some("alternate audio".to_string())
 }
 
 fn alternate_source_brief(label: &str) -> String {
