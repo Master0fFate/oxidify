@@ -363,13 +363,18 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
         )
     };
 
-    let shuffle_color = if shuffle && enabled {
+    let mode_dim = if playable {
+        palette.secondary
+    } else {
+        palette.dim
+    };
+    let shuffle_color = if shuffle && playable {
         palette.accent
     } else {
-        dim
+        mode_dim
     };
     let mut cell = centered(ui, slot(widths[0]));
-    if !enabled {
+    if !playable {
         cell.disable();
     }
     if theme::icon_button(
@@ -453,13 +458,13 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
     }
 
     let (repeat_icon, repeat_color, tooltip) = match repeat {
-        RepeatMode::Off => (Icon::Repeat, dim, "Repeat"),
+        RepeatMode::Off => (Icon::Repeat, mode_dim, "Repeat"),
         RepeatMode::Context => (Icon::Repeat, palette.accent, "Repeat one"),
         RepeatMode::Track => (Icon::Repeat1, palette.accent, "Repeat off"),
     };
-    let repeat_color = if enabled { repeat_color } else { dim };
+    let repeat_color = if playable { repeat_color } else { mode_dim };
     let mut cell = centered(ui, slot(widths[4]));
-    if !enabled {
+    if !playable {
         cell.disable();
     }
     if theme::icon_button(
