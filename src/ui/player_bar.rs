@@ -550,7 +550,7 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
     let palette = app.palette;
     ui.spacing_mut().item_spacing.x = 6.0;
     let button = 18.0 + theme::ICON_BUTTON_PAD;
-    let slider_width = (ui.available_width() - 6.0 * (button + 6.0) - 12.0).min(92.0);
+    let slider_width = (ui.available_width() - 3.0 * (button + 6.0) - 12.0).min(92.0);
     // From the right edge in, the order the official client keeps: the
     // mini player, volume, the device, the queue, lyrics, Now Playing.
     if theme::icon_button(
