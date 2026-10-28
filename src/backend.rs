@@ -1215,7 +1215,10 @@ impl Worker {
                     username: user.name().to_string(),
                 }));
                 self.emit(Event::Api(Box::new(ApiResponse::Me(Ok(user.clone())))));
-                let premium = user.product.as_deref().map(|product| product == "premium");
+                let premium = user
+                    .product
+                    .as_deref()
+                    .map(|product| crate::app::is_confirmed_premium_product(Some(product)));
                 self.on_account_checked(premium);
             }
             ApiSource::Personal => {
@@ -2177,7 +2180,7 @@ impl Worker {
                     .as_ref()
                     .ok()
                     .and_then(|user| user.product.as_deref())
-                    .map(|product| product == "premium");
+                    .map(|product| crate::app::is_confirmed_premium_product(Some(product)));
                 let _ = commands.send(Command::AccountChecked { premium });
             }
             let _ = events.send(Event::Api(Box::new(response)));
