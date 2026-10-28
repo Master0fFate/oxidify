@@ -1144,7 +1144,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 },
             );
             let folder = app.dirs.skins_dir();
-            app.winamp.refresh_choices(&folder);
+            app.winamp.refresh_choices(ui.ctx(), &folder);
             search_row(
                 ui,
                 &query,
@@ -1177,7 +1177,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     });
                 },
             );
-            let choices = app.winamp.choices.clone();
+            let choices = std::mem::take(&mut app.winamp.choices);
             let mut options: Vec<(usize, &str)> = vec![(0, "Oxidify")];
             options.extend(
                 choices
@@ -1199,6 +1199,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     .map(|index| choices[index].name.clone());
                 app.actions.push(Action::SetSkin(name));
             }
+            drop(options);
+            app.winamp.choices = choices;
             ui.add_space(4.0);
             search_row(
                 ui,

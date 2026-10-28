@@ -76,6 +76,7 @@ pub struct WinampState {
     /// The skins folder's contents, as last listed.
     pub choices: Vec<SkinChoice>,
     choices_listed: Option<Instant>,
+    listing: Option<mpsc::Receiver<Vec<SkinChoice>>>,
     /// Count down instead of up; clicking the time toggles it.
     pub time_remaining: bool,
     /// The balance while its thumb is held, for the marquee to report.
@@ -113,6 +114,7 @@ impl WinampState {
             loading: None,
             choices: Vec::new(),
             choices_listed: None,
+            listing: None,
             time_remaining: false,
             balance_preview: None,
             marquee_text: String::new(),
@@ -267,18 +269,42 @@ impl WinampState {
     }
 
     /// Lists the folder again if the listing is old.
-    pub fn refresh_choices(&mut self, folder: &Path) {
+    pub fn refresh_choices(&mut self, ctx: &egui::Context, folder: &Path) {
+        if let Some(receiver) = &self.listing {
+            match receiver.try_recv() {
+                Ok(choices) => {
+                    self.choices = choices;
+                    self.listing = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => self.listing = None,
+            }
+        }
         if self
             .choices_listed
             .is_none_or(|at| at.elapsed() > CHOICES_FRESH)
         {
-            self.list_choices(folder);
+            self.choices_listed = Some(Instant::now());
+            let (sender, receiver) = mpsc::channel();
+            let folder = folder.to_path_buf();
+            let ctx = ctx.clone();
+            let spawned = std::thread::Builder::new()
+                .name("skin-lister".into())
+                .spawn(move || {
+                    let _ = sender.send(list_skins(&folder));
+                    ctx.request_repaint();
+                });
+            match spawned {
+                Ok(_) => self.listing = Some(receiver),
+                Err(error) => log::warn!("could not list the skins: {error}"),
+            }
         }
     }
 
     /// Lists the folder: `.wsz` files and folders with a `main.bmp`.
     pub fn list_choices(&mut self, folder: &Path) {
         self.choices_listed = Some(Instant::now());
+        self.listing = None;
         self.choices = list_skins(folder);
     }
 
