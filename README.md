@@ -124,7 +124,7 @@ getting started, everyday use, and how it connects to Spotify.
   once; Enter in the search adds to the first match straight away.
 - **Your listening.** A page of what you actually played: hours, plays,
   the songs, artists and albums you played most, a chart by day or month,
-  and your streak, by week, month, year or all time. A play is counted on
+  and your streak, over the last 7 days, 30 days, 12 months or all time. A play is counted on
   this computer once a song has run for half a minute, kept in a file you
   can clear, and nothing about it leaves the machine.
 - **Jump anywhere.** `Ctrl+K` opens a palette over the page that finds any

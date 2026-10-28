@@ -64,7 +64,8 @@ again on every frame. The play button in Liked Songs follows the sorted view.
 sums up what you played: time listened, plays, different songs and
 artists, the songs, artists and albums you played most, a chart of plays
 by day or by month, and how many days in a row you have listened. Chips
-switch between this week, this month, this year and all time. A play is
+switch between the last 7 days, the last 30 days, the last 12 months and
+all time, counted in this computer's time zone. A play is
 counted once a song has run for half a minute (half of a shorter song),
 on this computer, in a file under the state directory; the page's
 **Clear history** forgets it. Nothing about it is sent anywhere.

@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+use jiff::tz::TimeZone;
 use serde::{Deserialize, Serialize};
 
 /// How far into a song a play counts, in milliseconds.
@@ -85,9 +86,9 @@ impl Period {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Week => "This week",
-            Self::Month => "This month",
-            Self::Year => "This year",
+            Self::Week => "Last 7 days",
+            Self::Month => "Last 30 days",
+            Self::Year => "Last 12 months",
             Self::All => "All time",
         }
     }
@@ -157,6 +158,10 @@ const TOP: usize = 10;
 
 /// Sums the records in `period`, as of `now` (seconds since the epoch).
 pub fn summarize(records: &[PlayRecord], period: Period, now: u64) -> Summary {
+    summarize_in(records, period, now, &TimeZone::system())
+}
+
+fn summarize_in(records: &[PlayRecord], period: Period, now: u64, zone: &TimeZone) -> Summary {
     let since = period.span().map(|span| now.saturating_sub(span));
     let within: Vec<&PlayRecord> = records
         .iter()
@@ -169,7 +174,7 @@ pub fn summarize(records: &[PlayRecord], period: Period, now: u64) -> Summary {
     let mut listened_ms = 0u64;
     for record in &within {
         listened_ms += u64::from(record.duration_ms);
-        hours[((record.at % DAY) / 3_600) as usize] += 1;
+        hours[((local_seconds(zone, record.at) % DAY) / 3_600) as usize] += 1;
         let song = songs.entry(&record.uri).or_insert_with(|| TopSong {
             uri: record.uri.clone(),
             name: record.name.clone(),
@@ -228,20 +233,28 @@ pub fn summarize(records: &[PlayRecord], period: Period, now: u64) -> Summary {
         top_songs,
         top_artists,
         top_albums,
-        bars: bars(&within, period, now),
-        streak_days: streak(records, now),
+        bars: bars(&within, period, now, zone),
+        streak_days: streak(records, now, zone),
         peak_hour,
     }
 }
 
-fn bars(within: &[&PlayRecord], period: Period, now: u64) -> Vec<Bar> {
-    let today = now / DAY;
+fn local_seconds(zone: &TimeZone, at: u64) -> u64 {
+    let offset = i64::try_from(at)
+        .ok()
+        .and_then(|second| jiff::Timestamp::from_second(second).ok())
+        .map_or(0, |timestamp| zone.to_offset(timestamp).seconds());
+    at.saturating_add_signed(i64::from(offset))
+}
+
+fn bars(within: &[&PlayRecord], period: Period, now: u64, zone: &TimeZone) -> Vec<Bar> {
+    let today = local_seconds(zone, now) / DAY;
     match period {
         Period::Week | Period::Month => {
             let days = if period == Period::Week { 7 } else { 30 };
             let mut counts = vec![0u32; days];
             for record in within {
-                let day = record.at / DAY;
+                let day = local_seconds(zone, record.at) / DAY;
                 let back = today.saturating_sub(day) as usize;
                 if back < days {
                     counts[days - 1 - back] += 1;
@@ -268,7 +281,7 @@ fn bars(within: &[&PlayRecord], period: Period, now: u64) -> Vec<Bar> {
                 counts.insert(key, 0);
             }
             for record in within {
-                let key = year_month(record.at / DAY);
+                let key = year_month(local_seconds(zone, record.at) / DAY);
                 if let Some(count) = counts.get_mut(&key) {
                     *count += 1;
                 }
@@ -311,9 +324,12 @@ fn year_month(day: u64) -> (i32, u32) {
 
 /// Days in a row with at least one play, ending today or, if today has
 /// none yet, yesterday.
-fn streak(records: &[PlayRecord], now: u64) -> u32 {
-    let today = now / DAY;
-    let mut days: Vec<u64> = records.iter().map(|record| record.at / DAY).collect();
+fn streak(records: &[PlayRecord], now: u64, zone: &TimeZone) -> u32 {
+    let today = local_seconds(zone, now) / DAY;
+    let mut days: Vec<u64> = records
+        .iter()
+        .map(|record| local_seconds(zone, record.at) / DAY)
+        .collect();
     days.sort_unstable();
     days.dedup();
     let Some(&last) = days.last() else {
@@ -336,6 +352,10 @@ fn streak(records: &[PlayRecord], now: u64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn summarize(records: &[PlayRecord], period: Period, now: u64) -> Summary {
+        summarize_in(records, period, now, &TimeZone::UTC)
+    }
 
     fn play(at: u64, uri: &str, artist: &str, album: &str) -> PlayRecord {
         PlayRecord {
