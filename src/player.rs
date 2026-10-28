@@ -466,7 +466,9 @@ impl Engine {
                     .map(PlayingTrack::Uri)
                     .or_else(|| spec.offset_index.map(PlayingTrack::Index));
                 let context_options = Some(LoadContextOptions::Options(Options {
-                    shuffle: spec.shuffle.unwrap_or(false),
+                    shuffle: spec.shuffle.unwrap_or_else(|| {
+                        self.state.lock().unwrap_or_else(|p| p.into_inner()).shuffle
+                    }),
                     repeat: spec.repeat == RepeatMode::Context,
                     repeat_track: spec.repeat == RepeatMode::Track,
                 }));
