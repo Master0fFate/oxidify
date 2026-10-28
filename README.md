@@ -288,8 +288,9 @@ finishes. Alternate playback does not select Opus, WebM, or Ogg/Vorbis:
 YouTube's useful native alternative is WebM/Opus, and Opus is not decoded.
 Network stalls and transient HTTP errors retry with bounded backoff and
 resume from the ranges already received; expired media URLs are refreshed.
-A terminal transport or decode failure stops the current track instead of
-skipping it.
+A connection that brings no new bytes through several retries in a row
+counts as failed. A terminal transport or decode failure stops the current
+track instead of skipping it.
 
 ## Account safety
 

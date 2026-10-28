@@ -206,4 +206,5 @@ adds no useful YouTube startup path. If the UI already has title and artist,
 a track click does not wait on Spotify `/tracks/{id}`. A miss can skip to the
 next track if you enable that setting. Network stalls and transient HTTP
 errors retry with bounded backoff, keep received ranges, and refresh expired
-media URLs. A terminal transport or decode failure stops the current item.
+media URLs; several retries in a row without new bytes count as a terminal
+failure. A terminal transport or decode failure stops the current item.

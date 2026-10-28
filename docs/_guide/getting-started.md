@@ -93,8 +93,8 @@ for provider endpoints, binaries, and terms. Podcasts are not supported. A weak 
 can choose to skip to the next track instead. Playback starts after a short
 buffer. An M4A file with metadata at the end may wait until download
 finishes. Network stalls and transient HTTP errors retry and resume from
-received ranges. A terminal transport or decode failure stops instead of
-skipping.
+received ranges; several retries in a row without new bytes count as a
+failure. A terminal transport or decode failure stops instead of skipping.
 
 ## A few things worth knowing on day one
 
