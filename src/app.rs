@@ -4476,8 +4476,12 @@ impl App {
             return;
         };
         let current = playlist.snapshot_id.clone();
+        let cached_count = page.items.items.len() as u32;
+        let live_total = playlist.track_total();
         page.cache_provisional = false;
-        if current.is_some() && current == page.cache_snapshot {
+        let snapshot_holds = current.is_some() && current == page.cache_snapshot;
+        let count_holds = live_total > 0 && cached_count == live_total;
+        if snapshot_holds || count_holds {
             page.cache_complete = true;
             page.held_live.clear();
             return;
@@ -6904,6 +6908,30 @@ mod tests {
         assert!(page.held_live.is_empty());
         assert_eq!(page.items.items.len(), 120);
         assert!(page.items.is_complete());
+    }
+
+    /// A changed snapshot alone must not throw away a whole playlist when
+    /// the live track count still matches the cached rows.
+    #[test]
+    fn a_playlist_keeps_its_disk_rows_when_the_track_count_matches() {
+        let mut app = test_app();
+        app.user = Some(user_with_product("premium"));
+        let id = "p".to_string();
+        app.ensure_loaded(Page::Playlist(id.clone()));
+        let generation = app.playlist_pages[&id].generation;
+        let cached: Vec<_> = (0..120).map(playlist_item).collect();
+        app.adopt_playlist_cache("user", &id, generation, "snap".into(), cached);
+        let mut playlist = playlist_with_snapshot(&id, "other");
+        playlist.items_count = Some(crate::api::models::TrackCount { total: 120 });
+        app.handle_api(ApiResponse::Playlist {
+            id: id.clone(),
+            generation,
+            result: Ok(playlist),
+        });
+        let page = &app.playlist_pages[&id];
+        assert!(page.cache_complete);
+        assert_eq!(page.items.items.len(), 120);
+        assert!(page.held_live.is_empty());
     }
 
     /// When the snapshot has moved on, the rows from disk give way to the
