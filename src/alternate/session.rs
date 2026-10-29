@@ -261,6 +261,7 @@ impl Session {
         let limit = self
             .current()
             .map(|track| track.duration_ms)
+            .filter(|duration_ms| *duration_ms > 0)
             .unwrap_or(u32::MAX);
         self.position_ms = position_ms.min(limit);
         self.position_at = (self.playback == Playback::Playing).then(Instant::now);

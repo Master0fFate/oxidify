@@ -307,10 +307,6 @@ impl AudioOutput for DirectRodioOutput {
     }
 
     fn seek(&mut self, ms: u32) -> Result<()> {
-        if let Some(decode) = &self.decode {
-            decode.seek(ms);
-            return Ok(());
-        }
         self.sink
             .try_seek(Duration::from_millis(u64::from(ms)))
             .map_err(|error| anyhow!("{error}"))

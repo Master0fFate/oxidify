@@ -133,7 +133,7 @@ fn classify_playlist(account: &AccountId, playlist: &Playlist) -> PlaylistAccess
 struct Session {
     state: RwLock<SessionState>,
     client: Arc<ApiClient>,
-    generation: AtomicU64,
+    generation: Arc<AtomicU64>,
 }
 
 impl Session {
@@ -147,7 +147,7 @@ impl Session {
                 profile.artist_albums_limit,
                 profile.source,
             )),
-            generation: AtomicU64::new(0),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -237,6 +237,10 @@ impl ApiGateway {
         self.session(source).generation.load(Ordering::SeqCst)
     }
 
+    pub fn generation_arc(&self, source: ApiSource) -> Arc<AtomicU64> {
+        Arc::clone(&self.session(source).generation)
+    }
+
     pub fn clear_if_current(&self, source: ApiSource, generation: u64) -> bool {
         if self.generation(source) != generation {
             return false;
@@ -320,6 +324,7 @@ mod tests {
             crate::auth::StoredToken::default(),
             path,
             source,
+            Arc::new(AtomicU64::new(0)),
         ))
     }
 

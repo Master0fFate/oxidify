@@ -220,6 +220,7 @@ pub struct WebTokens {
     token: tokio::sync::Mutex<crate::auth::StoredToken>,
     path: std::path::PathBuf,
     source: ApiSource,
+    generation: Arc<AtomicU64>,
 }
 
 impl WebTokens {
@@ -228,12 +229,14 @@ impl WebTokens {
         token: crate::auth::StoredToken,
         path: std::path::PathBuf,
         source: ApiSource,
+        generation: Arc<AtomicU64>,
     ) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             http,
             token: tokio::sync::Mutex::new(token),
             path,
             source,
+            generation,
         })
     }
 
@@ -241,6 +244,7 @@ impl WebTokens {
     /// when `rejected` is still the current token after a 401.
     async fn access_token(&self, rejected: Option<&str>) -> Result<String> {
         let mut guard = self.token.lock().await;
+        let generation = self.generation.load(Ordering::SeqCst);
         let force = rejected.is_some_and(|rejected| guard.access_token == rejected);
         if force || guard.needs_refresh() {
             let client_id = guard.client_id.clone();
@@ -252,6 +256,11 @@ impl WebTokens {
                     Some(&refresh_token),
                 ) {
                     Ok(updated) => {
+                        if self.generation.load(Ordering::SeqCst) != generation {
+                            return Err(ApiError::SignInExpired {
+                                api_source: self.source,
+                            });
+                        }
                         if let Err(error) = updated.save(&self.path) {
                             log::warn!("unable to save the refreshed Spotify sign-in: {error}");
                         }
@@ -1519,6 +1528,7 @@ mod tests {
                 },
                 std::path::PathBuf::from("unused"),
                 ApiSource::Shared,
+                Arc::new(AtomicU64::new(0)),
             ),
         )));
         let batch = ["a", "b", "c", "d"].map(String::from);

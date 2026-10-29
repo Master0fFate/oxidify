@@ -462,6 +462,22 @@ impl Engine {
         self.play_generation
     }
 
+    fn keep_prefetch_job(&mut self, uri: &str) {
+        let mut kept = Vec::new();
+        for job in self.jobs.drain(..) {
+            if job.uri.as_deref() == Some(uri) {
+                kept.push(job);
+            } else {
+                job.handle.abort();
+            }
+        }
+        self.jobs = kept;
+        self.adopted = Some((self.play_generation, uri.to_owned()));
+        self.prefetch_inflight = None;
+        self.autoplay_for = None;
+        self.play_generation = self.play_generation.wrapping_add(1);
+    }
+
     fn playing_uri(&self) -> Option<String> {
         if matches!(
             self.session.playback(),
@@ -696,7 +712,7 @@ impl Engine {
                         .playable_ahead()
                         .is_some_and(|ahead| ahead.uri == prefetch.uri));
             if reached {
-                self.bump_jobs();
+                self.keep_prefetch_job(&prefetch.uri);
                 let _ = self.session.select_uri(&prefetch.uri, forward);
                 self.play_ready(prefetch, false);
                 return;

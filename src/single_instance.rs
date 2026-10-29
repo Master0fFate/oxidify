@@ -44,7 +44,10 @@
 //!
 //! Anything on the machine can reach the port, so the two verbs that carry
 //! free text (`play-uri`, `transfer`) validate their argument here rather
-//! than handing the app an arbitrary string.
+//! than handing the app an arbitrary string. Control verbs also carry the
+//! caller's user key and are only queued for the account that started the
+//! instance; the two reads answer anyone, since they reveal only the
+//! snapshots the app already publishes.
 
 /// The name held for the lifetime of the running instance.
 #[cfg(target_os = "linux")]
@@ -186,6 +189,16 @@ pub enum Reply {
 #[cfg(not(target_os = "linux"))]
 pub fn send(verb: &str) -> std::io::Result<Reply> {
     send_to(INSTANCE_PORT, verb)
+}
+
+/// A control verb with the caller's user key appended, so the running
+/// instance can tell one account from another on the shared machine.
+#[cfg(not(target_os = "linux"))]
+pub fn control(verb: &str) -> String {
+    match user_key() {
+        Some(key) => format!("{verb} {key}"),
+        None => verb.to_owned(),
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -355,7 +368,11 @@ fn answer(
                 let _ = stream.write_all(format!("{OTHER_USER_REPLY}\n").as_bytes());
             }
         }
-        Some(Request::Command(command)) => {
+        Some(Request::Command { command, key }) => {
+            if own_key.is_some() && key.as_deref() != own_key {
+                let _ = stream.write_all(format!("{OTHER_USER_REPLY}\n").as_bytes());
+                return;
+            }
             let _ = stream.write_all(format!("{OK_REPLY}\n").as_bytes());
             queue(command);
         }
@@ -386,7 +403,10 @@ fn answer(
 /// answers itself.
 #[cfg(not(target_os = "linux"))]
 enum Request {
-    Command(ControlCommand),
+    Command {
+        command: ControlCommand,
+        key: Option<String>,
+    },
     NowPlaying,
     Devices,
     ShowFor(String),
@@ -394,11 +414,28 @@ enum Request {
 
 #[cfg(not(target_os = "linux"))]
 fn parse(line: &str) -> Option<Request> {
-    let verb = line.trim_end().strip_prefix(PREFIX)?;
-    let (verb, argument) = match verb.split_once(' ') {
-        Some((verb, argument)) => (verb, Some(argument.trim())),
-        None => (verb, None),
-    };
+    let line = line.trim_end().strip_prefix(PREFIX)?;
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let verb = *tokens.first()?;
+    if verb == "show-for" {
+        return tokens
+            .get(1)
+            .and_then(|key| user_key_shaped(key))
+            .map(Request::ShowFor);
+    }
+    let key = tokens.last().and_then(|token| user_key_shaped(token));
+    let arg_span = tokens.len() - usize::from(key.is_some());
+    let argument = (arg_span == 2).then(|| tokens[1]);
+    if tokens.len() != 1 + usize::from(argument.is_some()) + usize::from(key.is_some()) {
+        return None;
+    }
+    if argument.is_none() && key.is_none() {
+        match verb {
+            "nowplaying" => return Some(Request::NowPlaying),
+            "devices" => return Some(Request::Devices),
+            _ => {}
+        }
+    }
     let command = match (verb, argument) {
         ("show", None) => ControlCommand::Show,
         ("quit", None) => ControlCommand::Quit,
@@ -429,12 +466,9 @@ fn parse(line: &str) -> Option<Request> {
         ("save-toggle", None) => ControlCommand::ToggleSaved,
         ("play-uri", Some(uri)) => ControlCommand::PlayUri(spotify_uri(uri)?),
         ("transfer", Some(id)) => ControlCommand::Transfer(device_id(id)?),
-        ("nowplaying", None) => return Some(Request::NowPlaying),
-        ("devices", None) => return Some(Request::Devices),
-        ("show-for", Some(key)) => return Some(Request::ShowFor(user_key_shaped(key)?)),
         _ => return None,
     };
-    Some(Request::Command(command))
+    Some(Request::Command { command, key })
 }
 
 /// A `spotify:` URI, as far as this side can tell. Anything on the machine
@@ -586,11 +620,13 @@ mod tests {
     use crate::player::RepeatMode;
 
     fn command(line: &str) -> Option<ControlCommand> {
-        match parse(line) {
-            Some(Request::Command(command)) => Some(command),
+        match parse(&format!("{line} {TEST_KEY}")) {
+            Some(Request::Command { command, .. }) => Some(command),
             _ => None,
         }
     }
+
+    const TEST_KEY: &str = "0123456789abcdef0123456789abcdef";
 
     #[test]
     fn parses_every_control_verb() {
@@ -723,9 +759,10 @@ mod tests {
         };
 
         // #when
-        let accepted = send_to(port, "next").expect("a reply");
-        let volume = send_to(port, "volume-by -5").expect("a reply");
-        let liked = send_to(port, "save-toggle").expect("a reply");
+        let key = user_key().unwrap_or_default();
+        let accepted = send_to(port, &format!("next {key}")).expect("a reply");
+        let volume = send_to(port, &format!("volume-by -5 {key}")).expect("a reply");
+        let liked = send_to(port, &format!("save-toggle {key}")).expect("a reply");
         let snapshot = send_to(port, "nowplaying").expect("a reply");
         let listed = send_to(port, "devices").expect("a reply");
         let refused = send_to(port, "frobnicate");

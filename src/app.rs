@@ -4790,6 +4790,8 @@ impl App {
                 self.backend.player(PlayerCommand::Repeat(mode));
             }
             Target::Remote(device_id) => {
+                self.repeat_wanted = mode;
+                self.session_dirty = true;
                 if let Some(remote) = self.remote.as_mut() {
                     remote.state.repeat_state = mode.api_name().to_string();
                 }

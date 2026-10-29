@@ -387,8 +387,12 @@ can pipe the output, as in `oxidify now-playing | more`.
 
 The channel is one per computer, not one per user. When several people
 are signed in at once (fast user switching or Remote Desktop), the first
-to start Oxidify holds it; the others' Oxidify still starts, without these
-verbs, and a verb any of them sends reaches the first one's player.
+to start Oxidify holds it; the others' Oxidify still starts, without
+control over the first one's player. A control verb carries the sender's
+user key and is obeyed only for the account that started the instance, so
+another account cannot drive its playback; `now-playing` and `devices`
+still answer any caller because they reveal only snapshots the app already
+publishes much like the key a launcher needs to draw its button.
 
 Launchers such as Raycast or Alfred can use these commands to control
 playback. The Stream Deck plugin speaks the same channel, which is why

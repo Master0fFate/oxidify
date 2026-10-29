@@ -146,6 +146,10 @@ fn run_control(control: Control) -> i32 {
         control,
         Control::NowPlaying { raw: true } | Control::Devices { raw: true }
     );
+    let is_read = matches!(
+        control,
+        Control::NowPlaying { .. } | Control::Devices { .. }
+    );
     let verb = match control {
         Control::PlayPause => "playpause".to_owned(),
         Control::Play => "play".to_owned(),
@@ -183,7 +187,12 @@ fn run_control(control: Control) -> i32 {
         Control::Show => "show".to_owned(),
         Control::Quit => "quit".to_owned(),
     };
-    match single_instance::send(&verb) {
+    let line = if is_read {
+        verb
+    } else {
+        single_instance::control(&verb)
+    };
+    match single_instance::send(&line) {
         Ok(single_instance::Reply::Ok) => 0,
         Ok(single_instance::Reply::NowPlaying(snapshot)) => {
             if raw {

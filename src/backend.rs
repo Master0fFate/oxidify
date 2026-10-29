@@ -1156,6 +1156,7 @@ impl Worker {
             token.clone(),
             self.token_path(source),
             source,
+            self.api.generation_arc(source),
         );
         self.api
             .begin_verification(source, TokenProvider::Web(tokens));
@@ -1211,10 +1212,17 @@ impl Worker {
     }
 
     fn on_web_verified(&mut self, source: ApiSource, token: crate::auth::StoredToken, user: User) {
-        if !matches!(self.api.state(source), SessionState::Authorizing)
-            || source == ApiSource::Personal
-                && self.web_client_id.as_deref() != Some(token.client_id.as_str())
+        if !matches!(self.api.state(source), SessionState::Authorizing) {
+            return;
+        }
+        if source == ApiSource::Personal
+            && self.web_client_id.as_deref() != Some(token.client_id.as_str())
         {
+            self.api.clear(source);
+            self.emit(Event::Error(
+                "the personal app authorization no longer matches the configured client id".into(),
+            ));
+            self.finish_authorization(source);
             return;
         }
         if let Err(error) = self.api.install(source, AccountId::new(user.id.clone())) {
