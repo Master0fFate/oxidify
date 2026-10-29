@@ -32,6 +32,11 @@ These instructions add implementation constraints for coding agents.
   atomically written. Never log credentials or authorization responses.
 - Prefer existing dependencies. Explain any new crate in `Cargo.toml` next to
   the dependency when the reason is not obvious.
+- Keep the vendored local-playback binary current first: before every build,
+  check for a newer yt-dlp release and, when one exists, bump
+  `third_party/yt-dlp/manifest` (tag, version, and each target's sha256) and
+  rerun `third_party/yt-dlp/vendor.sh --target <triple> --require`. A stale
+  yt-dlp is a functional regression for alternate playback.
 
 Read `docs/_reference/how-it-connects.md` before changing authentication,
 Spotify requests, Connect, credential storage, or network behaviour. Read the
