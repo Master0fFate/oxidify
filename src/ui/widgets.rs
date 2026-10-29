@@ -844,9 +844,9 @@ fn picker_row(
 pub fn liked_control(ui: &mut Ui, app: &mut App, item: &PlayableItem, size: f32, quiet: Color32) {
     let palette = app.palette;
     let uri = item.uri().to_string();
-    let saved = app.is_saved(&uri) == Some(true);
-    let response = theme::liked_button(ui, &palette, saved, size, quiet);
-    if saved {
+    let in_library = app.in_library(&uri);
+    let response = theme::liked_button(ui, &palette, in_library, size, quiet);
+    if in_library {
         egui::Popup::menu(&response)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .frame(menu_frame(&palette))
@@ -2595,7 +2595,12 @@ mod tests {
         with_app("liked-control", |app| {
             let ctx = egui::Context::default();
             theme::install(&ctx);
-            let item = PlayableItem::Track(app.track_cache["trk1"].clone());
+            let item = PlayableItem::Track(Track {
+                id: Some("isolated".into()),
+                name: "Isolated".into(),
+                uri: "spotify:track:isolated".into(),
+                ..Track::default()
+            });
             let frame = |app: &mut App, events: Vec<egui::Event>| {
                 app.actions.clear();
                 let mut rect = Rect::NOTHING;
@@ -2625,20 +2630,20 @@ mod tests {
                 output.textures_delta.clear();
                 (rect, painted)
             };
-            app.saved.insert("spotify:track:trk1".into(), false);
+            app.saved.insert("spotify:track:isolated".into(), false);
             let (rect, _) = frame(app, vec![]);
             let center = rect.center();
             for pressed in [true, false] {
                 frame(app, click(center, pressed));
             }
             assert!(
-                matches!(app.actions.as_slice(), [Action::ToggleSaved(uri)] if uri == "spotify:track:trk1"),
+                matches!(app.actions.as_slice(), [Action::ToggleSaved(uri)] if uri == "spotify:track:isolated"),
                 "the first press saves the song, got {:?}",
                 app.actions
             );
             assert!(!egui::Popup::is_any_open(&ctx));
 
-            app.saved.insert("spotify:track:trk1".into(), true);
+            app.saved.insert("spotify:track:isolated".into(), true);
             frame(app, vec![]);
             for pressed in [true, false] {
                 frame(app, click(center, pressed));

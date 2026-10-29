@@ -215,8 +215,8 @@ fn title_block(app: &mut App, ui: &mut egui::Ui, now: &NowPlaying, width: f32) {
                 match app.now_playing_item() {
                     Some(item) => widgets::liked_control(ui, app, &item, 20.0, palette.secondary),
                     None => {
-                        let saved = app.is_saved(&now.uri).unwrap_or(false);
-                        if theme::liked_button(ui, &palette, saved, 20.0, palette.secondary)
+                        let in_library = app.in_library(&now.uri);
+                        if theme::liked_button(ui, &palette, in_library, 20.0, palette.secondary)
                             .clicked()
                         {
                             app.actions.push(Action::ToggleSaved(now.uri.clone()));

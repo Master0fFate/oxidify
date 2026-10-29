@@ -878,7 +878,7 @@ pub fn liked_button(
         }
     }
     let tooltip = if saved {
-        "In Liked Songs. Add to a playlist, or remove"
+        "In your library. Add to a playlist, or remove"
     } else {
         "Add to Liked Songs"
     };

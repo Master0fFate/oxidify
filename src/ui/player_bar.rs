@@ -284,7 +284,7 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
     }
 
     if !now.is_episode {
-        let saved = app.is_saved(&now.uri).unwrap_or(false);
+        let in_library = app.in_library(&now.uri);
         // Sit the control just past the actual text, not at the region's
         // far edge, so it stays visually attached to the title.
         let natural = {
@@ -311,7 +311,7 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
             }
             // Before the track's details are in, the plain toggle still works.
             None => {
-                if theme::liked_button(&mut heart_ui, &palette, saved, 17.0, palette.secondary)
+                if theme::liked_button(&mut heart_ui, &palette, in_library, 17.0, palette.secondary)
                     .clicked()
                 {
                     app.actions.push(Action::ToggleSaved(now.uri.clone()));

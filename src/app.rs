@@ -704,6 +704,40 @@ impl App {
         self.saved.get(uri).copied()
     }
 
+    pub fn in_library(&self, uri: &str) -> bool {
+        self.is_saved(uri) == Some(true) || self.in_owned_playlist(uri)
+    }
+
+    fn in_owned_playlist(&self, uri: &str) -> bool {
+        let Some(user_id) = self.user_id() else {
+            return false;
+        };
+        let owned: std::collections::HashSet<&str> = self
+            .library
+            .playlists
+            .get()
+            .map(|playlists| {
+                playlists
+                    .iter()
+                    .filter(|playlist| playlist.owned_by(user_id))
+                    .map(|playlist| playlist.id.as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.playlist_pages.iter().any(|(id, page)| {
+            let owned = owned.contains(id.as_str())
+                || page
+                    .playlist
+                    .get()
+                    .is_some_and(|playlist| playlist.owned_by(user_id));
+            owned
+                && page.items.items.iter().any(|item| {
+                    item.playable()
+                        .is_some_and(|playable| playable.uri() == uri)
+                })
+        })
+    }
+
     fn remote_fresh(&self) -> Option<&RemoteSnapshot> {
         self.remote
             .as_ref()
