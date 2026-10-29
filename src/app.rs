@@ -4532,21 +4532,20 @@ impl App {
         let mut uris = Vec::new();
         let mut adders: Vec<String> = Vec::new();
         if let Some(page) = self.playlist_pages.get_mut(id) {
-            let Some(snapshot_now) = page
-                .playlist
-                .get()
-                .and_then(|playlist| playlist.snapshot_id.clone())
-            else {
-                return;
-            };
-            match &page.pending_cache {
-                Some((held, _)) if *held == snapshot_now => {}
-                Some(_) => {
-                    // The playlist changed since; the cache is history.
-                    page.pending_cache = None;
-                    return;
-                }
+            let playlist = page.playlist.get();
+            let snapshot_now = playlist.and_then(|playlist| playlist.snapshot_id.clone());
+            let live_total = playlist.map_or(0, |playlist| playlist.track_total());
+            let (snapshot_holds, count_holds) = match &page.pending_cache {
                 None => return,
+                Some((held, items)) => (
+                    snapshot_now.as_deref().is_some()
+                        && snapshot_now.as_deref() == Some(held.as_str()),
+                    live_total > 0 && items.len() as u32 == live_total,
+                ),
+            };
+            if !snapshot_holds && !count_holds {
+                page.pending_cache = None;
+                return;
             }
             if page.items.is_complete() || page.cache_complete {
                 page.pending_cache = None;
@@ -6932,6 +6931,30 @@ mod tests {
         assert!(page.cache_complete);
         assert_eq!(page.items.items.len(), 120);
         assert!(page.held_live.is_empty());
+    }
+
+    /// When the metadata is already here before the disk cache, the same
+    /// count match adopts it through the pending path instead of the
+    /// provisional one.
+    #[test]
+    fn a_pending_playlist_cache_adopts_when_the_track_count_matches() {
+        let mut app = test_app();
+        app.user = Some(user_with_product("premium"));
+        let id = "p".to_string();
+        app.ensure_loaded(Page::Playlist(id.clone()));
+        let generation = app.playlist_pages[&id].generation;
+        let mut playlist = playlist_with_snapshot(&id, "other");
+        playlist.items_count = Some(crate::api::models::TrackCount { total: 120 });
+        app.handle_api(ApiResponse::Playlist {
+            id: id.clone(),
+            generation,
+            result: Ok(playlist),
+        });
+        let cached: Vec<_> = (0..120).map(playlist_item).collect();
+        app.adopt_playlist_cache("user", &id, generation, "snap".into(), cached);
+        let page = &app.playlist_pages[&id];
+        assert!(page.cache_complete);
+        assert_eq!(page.items.items.len(), 120);
     }
 
     /// When the snapshot has moved on, the rows from disk give way to the
