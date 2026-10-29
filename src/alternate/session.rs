@@ -508,7 +508,7 @@ impl Session {
             loading: false,
             track: self.current().cloned(),
             position_ms: self.position_now(),
-            position_at: self.position_at,
+            position_at: self.clock_running().then(Instant::now),
             volume: self.volume,
             shuffle: self.shuffle,
             repeat: self.repeat,
@@ -879,6 +879,20 @@ mod tests {
         assert_eq!(snap.source_label.as_deref(), Some("Piped match"));
         assert_eq!(snap.queue[0].title, "b");
         assert!(snap.connected);
+    }
+
+    #[test]
+    fn snapshot_timestamps_playing_position_at_now() {
+        let mut session = session_with(&["a"], 0);
+        session.set_playing(None);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let snap = session.snapshot();
+        let elapsed = std::time::Instant::now()
+            .duration_since(snap.position_at.expect("a running clock is timestamped"));
+        assert!(
+            elapsed < std::time::Duration::from_millis(20),
+            "position_at must be the emit moment, not the stale start: {elapsed:?}"
+        );
     }
 
     #[test]
