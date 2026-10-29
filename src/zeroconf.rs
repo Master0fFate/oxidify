@@ -337,23 +337,24 @@ fn login_blob(
 /// mDNS escapes bytes in an instance name as `\\ddd`, so "House Spotify"
 /// arrives as "House\\032Spotify".
 fn unescape_instance(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
+    let mut bytes = Vec::with_capacity(name.len());
     let mut characters = name.chars();
     while let Some(character) = characters.next() {
         if character != '\\' {
-            out.push(character);
+            let mut buffer = [0u8; 4];
+            bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
             continue;
         }
         let digits: String = characters.clone().take(3).collect();
         match digits.parse::<u8>() {
             Ok(byte) if digits.len() == 3 => {
-                out.push(byte as char);
+                bytes.push(byte);
                 characters.nth(2);
             }
-            _ => out.push(character),
+            _ => bytes.push(b'\\'),
         }
     }
-    out
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Spotify's variable-length integer.
@@ -422,6 +423,7 @@ mod tests {
         assert_eq!(unescape_instance("House\\032Spotify"), "House Spotify");
         assert_eq!(unescape_instance("Kitchen"), "Kitchen");
         assert_eq!(unescape_instance("odd\\x"), "odd\\x");
+        assert_eq!(unescape_instance("Caf\\195\\169"), "Café");
     }
 
     #[test]

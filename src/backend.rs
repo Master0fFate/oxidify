@@ -1386,6 +1386,7 @@ impl Worker {
 
     async fn sign_out(&mut self) {
         self.signed_in = false;
+        self.premium = None;
         self.stop_all_engines().await;
         if let Some(cancel) = self.cancel_signin.take() {
             let _ = cancel.send(true);

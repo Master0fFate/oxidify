@@ -320,6 +320,12 @@ async fn token_request(
         .map_err(|error| TokenEndpointError::Unreachable(error.to_string()))?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
+    let secrets: Vec<&str> = form
+        .iter()
+        .filter(|(key, _)| matches!(*key, "code" | "code_verifier" | "refresh_token"))
+        .map(|(_, value)| *value)
+        .filter(|value| !value.is_empty())
+        .collect();
     if matches!(status.as_u16(), 400 | 401) {
         let detail = serde_json::from_str::<serde_json::Value>(&text)
             .ok()
@@ -329,7 +335,7 @@ async fn token_request(
                     .or(value["error"].as_str())
                     .map(str::to_string)
             })
-            .unwrap_or_else(|| redact(&text));
+            .unwrap_or_else(|| redact(&text, &secrets));
         return Err(TokenEndpointError::Rejected {
             status: status.as_u16(),
             detail,
@@ -338,7 +344,7 @@ async fn token_request(
     if !status.is_success() {
         return Err(TokenEndpointError::Unreachable(format!(
             "Spotify answered {status}: {}",
-            redact(&text)
+            redact(&text, &secrets)
         )));
     }
     serde_json::from_str(&text).map_err(|error| {
@@ -346,8 +352,12 @@ async fn token_request(
     })
 }
 
-fn redact(text: &str) -> String {
-    text.chars().take(200).collect()
+fn redact(text: &str, secrets: &[&str]) -> String {
+    let mut redacted = text.to_owned();
+    for secret in secrets {
+        redacted = redacted.replace(secret, "***");
+    }
+    redacted.chars().take(200).collect()
 }
 
 /// The Web API grant as kept on disk between runs.
