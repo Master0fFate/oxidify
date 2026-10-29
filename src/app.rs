@@ -4654,6 +4654,10 @@ impl App {
         match self.target() {
             Target::Local => self.backend.player(PlayerCommand::Seek(position_ms)),
             Target::Remote(device_id) => {
+                if device_id.is_none() && self.remote_fresh().is_none() {
+                    self.toast("Nothing is playing. Pick something first");
+                    return;
+                }
                 self.pending_remote_position = Some((position_ms, Instant::now()));
                 self.backend.api(ApiRequest::Remote {
                     action: RemoteAction::Seek,
@@ -4735,6 +4739,10 @@ impl App {
             }
             Target::Remote(_) if !settle || !self.can_set_volume() => {}
             Target::Remote(device_id) => {
+                if device_id.is_none() && self.remote_fresh().is_none() {
+                    self.toast("Nothing is playing. Pick something first");
+                    return;
+                }
                 self.pending_remote_volume = Some((percent, Instant::now()));
                 self.backend.api(ApiRequest::Remote {
                     action: RemoteAction::Volume,

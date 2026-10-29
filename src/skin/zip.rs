@@ -81,7 +81,7 @@ impl<'a> Archive<'a> {
         let end = find_end_record(data).ok_or(ZipError::NotAnArchive)?;
         let count = usize::from(u16_at(data, end + 10)?);
         let mut cursor = u32_at(data, end + 16)? as usize;
-        let mut entries = Vec::with_capacity(count);
+        let mut entries = Vec::with_capacity(count.min(data.len() / 46));
         for _ in 0..count {
             if u32_at(data, cursor)? != CENTRAL_HEADER {
                 return Err(ZipError::NotAnArchive);
