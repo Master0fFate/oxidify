@@ -203,7 +203,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.target }}
+          name: release-build-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.zip
@@ -337,7 +337,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: macos-universal
+          name: release-build-macos-universal
           path: |
             dist/*.dmg
             dist/*.build.json
@@ -365,6 +365,7 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           path: dist
+          pattern: release-build-*
           merge-multiple: true
       - name: Verify complete artifacts, source provenance, contents, and checksums
         env:
@@ -394,4 +395,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
-        run: python packaging/prepare_release.py uploaded --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"
+        run: python packaging/prepare_release.py uploaded --tag "$RELEASE_TAG" --sha "$SOURCE_SHA" --manifest "$RUNNER_TEMP/publish-manifest.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: publish-manifest-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/publish-manifest.json
+          if-no-files-found: error

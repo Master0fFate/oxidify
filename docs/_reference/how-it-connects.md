@@ -15,7 +15,8 @@ personal acceleration, and local playback:
    without using the shared app's quota. Complete playlist-library views and
    playlist-bearing search stay on the shared app so Spotify-owned results are
    not filtered out. Both Web API grants must verify as the same Spotify
-   account.
+   account. Requests and their cache writes belong to that sign-in session;
+   responses from a retired session cannot populate another account's views.
 3. **Streaming** is actually playing audio on this computer, through
    [librespot](https://github.com/librespot-org/librespot). This runs the
    same browser flow once against Spotify's streaming client identity, after
@@ -27,7 +28,11 @@ Oxidify opens either browser flow, it starts the loopback receiver that accepts
 the redirect. The main sign-in waiting screen can also reopen or copy its URL.
 If another app holds the port (8989 for the Web API, 8898 for playback), the
 browser stays closed and the error stays on screen or in Settings until you
-close that app and try again. A saved playback approval is kept.
+close that app and try again. A saved playback approval is kept if Web API
+sign-in fails or is cancelled. A successful fresh shared Web API sign-in
+retires that playback approval, so an earlier account's approval is not
+reused; enable playback again afterwards. Restoring saved Web API grants
+at startup and authorizing a personal app do not retire playback approval.
 
 By default the Web API uses the shared public application also used by
 spotify-player, ncspot, and Omarchy Spotify, whose allowance Spotify
@@ -46,7 +51,11 @@ no playback request to Spotify.
 ## What the client stores
 
 - The shared and personal Web API refresh tokens and librespot's reusable credential, owner-only,
-  in the state directory ([where](/settings-and-files/)).
+  in the state directory ([where](/settings-and-files/)). Playback connections
+  stage reusable credentials in a separate `.playback-*` directory under the
+  credentials directory, removed when the attempt ends. Only a result from
+  the current sign-in can replace the saved playback credential; sign-out
+  also prevents an old Web API refresh from restoring a deleted grant.
 - Downloaded audio, in the cache directory, within the budget you set.
 - Artwork, in the cache directory, trimmed to 256 MiB at each start by
   removing the oldest covers first.
@@ -84,7 +93,8 @@ no playback request to Spotify.
   These searches run concurrently with short timeouts. A strong result cancels
   slower work. Matches are remembered in a bounded file on this computer,
   `bin/alternate-matches.json` under the state directory: search results for
-  seven days (one with no confident match for 15 minutes, and a match is
+  seven days (a completed search with no confident match for 15 minutes;
+  failed or timed-out searches are not remembered as misses, and a match is
   forgotten when its video fails to play) and resolved stream URLs until the
   URL's own expiry less five minutes, so a song played again starts without a lookup. It holds
   the search keys made from a track's artists, title and length, video ids and
@@ -106,13 +116,16 @@ live request even if an older load is still running; older responses cannot
 replace the refreshed view or overwrite a newer cache write. Playlist refresh requests both current metadata
 and items instead of restoring snapshot-cached items, and ignores cache reads
 from before the refresh. Opening a playlist still shows a matching disk copy
-first, then updates it if Spotify's snapshot changed. Successful loads can update those metadata caches.
+first, then updates it if Spotify's snapshot changed, even when the track
+count is unchanged. Positional edits wait for rows from the confirmed
+snapshot. Successful loads can update those metadata caches.
 Audio, artwork, lyrics, and credentials are untouched. Other pages reuse their
 existing reload behaviour. Search repeats the current query; refresh is disabled
 in Settings, which has no page data to reload.
 
 Refresh uses the normal API gateway and honours its concurrency limits and
-`Retry-After` cooldowns. It does not bypass Spotify's rate limits.
+`Retry-After` cooldowns. It does not bypass Spotify's rate limits. Older
+membership checks and library pages cannot undo a completed save or removal.
 
 ## When Spotify pushes back
 
@@ -173,6 +186,8 @@ session drops, the engine reconnects with the stored credential; the
 interface never blocks on any of it. Replacement engines preserve the last volume heard during an automatic
 reconnect, while an explicit settings change remains authoritative. This
 applies to the local Spotify engine and does not change account eligibility.
+Settings applied during a pending connection replace that attempt; once it
+retires, one replacement starts with the latest settings.
 
 A connection that fails for any reason other than Spotify rejecting the
 credential, such as a reset after the computer wakes, is tried again with the
@@ -207,7 +222,10 @@ stream selection rejects Opus, WebM, and Ogg/Vorbis. YouTube's useful
 native alternative is WebM/Opus, Opus is not decoded, and enabling Ogg
 adds no useful YouTube startup path. If the UI already has title and artist,
 a track click does not wait on Spotify `/tracks/{id}`. A miss can skip to the
-next track if you enable that setting. Network stalls and transient HTTP
+next track if you enable that setting. Loading a playlist preserves newer
+pause/play intent and each manually queued occurrence, even when its URI
+also appears in the arriving context. Network stalls and transient HTTP
 errors retry with bounded backoff, keep received ranges, and refresh expired
-media URLs; several retries in a row without new bytes count as a terminal
-failure. A terminal transport or decode failure stops the current item.
+media URLs. Media rate limits respect the server's `Retry-After` cooldown;
+stopping cancels the wait. A seek can interrupt a stalled response body. Several retries in a row without new
+bytes count as a terminal failure. A terminal transport or decode failure stops the current item.

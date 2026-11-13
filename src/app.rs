@@ -246,7 +246,10 @@ pub struct App {
     pub history_index: usize,
 
     pub saved: HashMap<String, bool>,
-    saved_pending: HashSet<String>,
+    saved_pending: HashMap<String, u64>,
+    saved_revision: u64,
+    saved_revisions: HashMap<String, u64>,
+    saved_previous: HashMap<String, Option<bool>>,
     pub accents: HashMap<String, Color32>,
     accent_pending: HashSet<String>,
 
@@ -255,6 +258,9 @@ pub struct App {
     /// The plays counted on this computer, oldest first.
     pub plays: Vec<crate::history::PlayRecord>,
     history_loaded: bool,
+    history_request_id: u64,
+    history_revision: u64,
+    history_clear: Option<(u64, usize)>,
     pub stats_period: crate::history::Period,
     /// The summary shown, for the period, the number of plays and the
     /// local day it was built from.
@@ -518,13 +524,19 @@ impl App {
             history: vec![first_page],
             history_index: 0,
             saved: HashMap::new(),
-            saved_pending: HashSet::new(),
+            saved_pending: HashMap::new(),
+            saved_revision: 0,
+            saved_revisions: HashMap::new(),
+            saved_previous: HashMap::new(),
             accents: HashMap::new(),
             accent_pending: HashSet::new(),
             dialog: None,
             jump: JumpState::default(),
             plays: Vec::new(),
             history_loaded: false,
+            history_request_id: 0,
+            history_revision: 0,
+            history_clear: None,
             stats_period: crate::history::Period::default(),
             stats_cache: None,
             play_clock: None,
@@ -1249,7 +1261,11 @@ impl App {
     // ---- frame ---------------------------------------------------------------
 
     fn handle_events(&mut self, ctx: &egui::Context) {
+        let epoch = self.backend.session_epoch();
         for event in self.backend.poll() {
+            if self.backend.session_epoch() != epoch {
+                break;
+            }
             if self.offline {
                 continue;
             }
@@ -1344,12 +1360,43 @@ impl App {
                 }
                 Event::History {
                     account_id,
+                    request_id,
+                    revision,
                     records,
                 } => {
-                    if self.user_id() == Some(account_id.as_str()) {
+                    if self.user_id() == Some(account_id.as_str())
+                        && request_id == self.history_request_id
+                        && revision == self.history_revision
+                        && self.history_clear.is_none()
+                    {
                         self.plays = records;
                         self.history_loaded = true;
                         self.stats_cache = None;
+                    }
+                }
+                Event::HistoryCleared {
+                    account_id,
+                    revision,
+                    result,
+                } => {
+                    if self.user_id() == Some(account_id.as_str())
+                        && self
+                            .history_clear
+                            .is_some_and(|(pending, _)| pending == revision)
+                    {
+                        let (_, count) = self.history_clear.take().unwrap();
+                        match result {
+                            Ok(()) => {
+                                self.plays.drain(..count.min(self.plays.len()));
+                                self.stats_cache = None;
+                                self.toast("Listening history cleared");
+                            }
+                            Err(error) => self
+                                .toast_error(format!("Couldn't clear listening history: {error}")),
+                        }
+                        if !self.history_loaded {
+                            self.load_history();
+                        }
                     }
                 }
                 Event::UserName { id, name } => {
@@ -1414,6 +1461,10 @@ impl App {
                 self.remote = None;
                 self.plays.clear();
                 self.history_loaded = false;
+                self.history_request_id = 0;
+                self.history_revision = 0;
+                self.history_clear = None;
+                self.saved_revisions.clear();
                 self.stats_cache = None;
                 self.play_clock = None;
                 self.selected_device = None;
@@ -1501,9 +1552,17 @@ impl App {
         self.album_pages.clear();
         self.artist_pages.clear();
         self.show_pages.clear();
+        self.liked_rows = None;
+        self.track_cache.clear();
+        self.track_requests.clear();
+        self.user_names.clear();
         self.saved.clear();
         self.saved_pending.clear();
+        self.saved_previous.clear();
         self.queue = Loadable::NotLoaded;
+        self.queue_fetched_at = None;
+        self.remote_poll_pending = false;
+        self.devices_loading = false;
         self.devices.clear();
         self.control_devices_stale = true;
         self.devices_fetched_at = None;
@@ -2225,22 +2284,34 @@ impl App {
         match page {
             Page::LikedSongs => {
                 for offset in self.library.liked.fill_ahead(PAGE_WINDOW, limit) {
-                    self.backend.api(ApiRequest::SavedTracks { offset });
+                    self.backend.api(ApiRequest::SavedTracks {
+                        offset,
+                        revision: self.saved_revision,
+                    });
                 }
             }
             Page::Albums => {
                 for offset in self.library.albums.fill_ahead(PAGE_WINDOW, limit) {
-                    self.backend.api(ApiRequest::SavedAlbums { offset });
+                    self.backend.api(ApiRequest::SavedAlbums {
+                        offset,
+                        revision: self.saved_revision,
+                    });
                 }
             }
             Page::Podcasts => {
                 for offset in self.library.shows.fill_ahead(PAGE_WINDOW, limit) {
-                    self.backend.api(ApiRequest::SavedShows { offset });
+                    self.backend.api(ApiRequest::SavedShows {
+                        offset,
+                        revision: self.saved_revision,
+                    });
                 }
             }
             Page::Episodes => {
                 for offset in self.library.episodes.fill_ahead(PAGE_WINDOW, limit) {
-                    self.backend.api(ApiRequest::SavedEpisodes { offset });
+                    self.backend.api(ApiRequest::SavedEpisodes {
+                        offset,
+                        revision: self.saved_revision,
+                    });
                 }
             }
             Page::Playlist(id) => {
@@ -2287,6 +2358,7 @@ impl App {
                     self.backend.api(ApiRequest::MyPlaylists {
                         offset,
                         generation: self.library.playlists_generation,
+                        revision: self.saved_revision,
                     });
                 }
             }
@@ -2304,7 +2376,7 @@ impl App {
             return;
         }
         for playlist in &playlists {
-            self.saved.insert(playlist.uri.clone(), true);
+            self.adopt_saved(&playlist.uri, 0);
         }
         self.library.playlists = Loadable::Loaded(playlists);
         self.library.playlists_cached = true;
@@ -2317,7 +2389,7 @@ impl App {
             return;
         }
         for item in &items {
-            self.saved.insert(item.track.uri.clone(), true);
+            self.adopt_saved(&item.track.uri, 0);
         }
         self.library.liked.set_cached(items);
         self.library.liked_cached = true;
@@ -2430,11 +2502,20 @@ impl App {
             Page::Queue => self.refresh_queue(true),
             Page::Settings => {}
             Page::Stats => {
-                if !self.history_loaded {
-                    self.backend.send(Command::LoadHistory);
+                if !self.history_loaded && self.history_clear.is_none() && self.user_id().is_some()
+                {
+                    self.load_history();
                 }
             }
         }
+    }
+
+    fn load_history(&mut self) {
+        self.history_request_id += 1;
+        self.backend.send(Command::LoadHistory {
+            request_id: self.history_request_id,
+            revision: self.history_revision,
+        });
     }
 
     /// The listening summary for the chosen period, rebuilt only when the
@@ -2522,11 +2603,18 @@ impl App {
             image: now.art_small.clone().or_else(|| now.art_url.clone()),
             duration_ms: now.duration_ms,
         };
+        self.history_revision += 1;
         if !self.offline {
-            self.backend
-                .send(Command::RecordPlay(Box::new(record.clone())));
+            self.backend.send(Command::RecordPlay {
+                record: Box::new(record.clone()),
+                revision: self.history_revision,
+            });
         }
         self.plays.push(record);
+        self.stats_cache = None;
+        if !self.history_loaded && self.history_clear.is_none() && self.user_id().is_some() {
+            self.load_history();
+        }
     }
 
     fn load_artist_albums(&mut self, id: &str, filter: DiscographyFilter) {
@@ -2624,6 +2712,7 @@ impl App {
                     list.loading = true;
                     self.backend.api(ApiRequest::FollowedArtists {
                         after: list.after.clone(),
+                        revision: self.saved_revision,
                     });
                 }
             }
@@ -2862,24 +2951,31 @@ impl App {
 
     pub fn request_contains(&mut self, uris: Vec<String>) {
         let mut batch = Vec::new();
+        let mut revisions = Vec::new();
         for uri in uris {
             if uri.is_empty()
                 || self.saved.contains_key(&uri)
-                || self.saved_pending.contains(&uri)
+                || self.saved_pending.contains_key(&uri)
                 || uri.starts_with("spotify:local")
             {
                 continue;
             }
-            self.saved_pending.insert(uri.clone());
+            let revision = self.saved_revisions.get(&uri).copied().unwrap_or(0);
+            self.saved_pending.insert(uri.clone(), revision);
             batch.push(uri);
+            revisions.push(revision);
             if batch.len() == CONTAINS_BATCH {
                 self.backend.api(ApiRequest::Contains {
                     uris: std::mem::take(&mut batch),
+                    revisions: std::mem::take(&mut revisions),
                 });
             }
         }
         if !batch.is_empty() {
-            self.backend.api(ApiRequest::Contains { uris: batch });
+            self.backend.api(ApiRequest::Contains {
+                uris: batch,
+                revisions,
+            });
         }
     }
 
@@ -3218,10 +3314,15 @@ impl App {
                 offset, generation, ..
             } if generation != self.library.playlists_generation
                 || !self.library.playlist_fetch.pending.contains(&offset) => {}
-            ApiResponse::MyPlaylists { offset, result, .. } => match result {
+            ApiResponse::MyPlaylists {
+                offset,
+                revision,
+                result,
+                ..
+            } => match result {
                 Ok(page) => {
                     for playlist in &page.items {
-                        self.saved.insert(playlist.uri.clone(), true);
+                        self.adopt_saved(&playlist.uri, revision);
                     }
                     self.library.playlist_fetch.absorb(offset, page);
                     self.fill_ahead(Page::Home, false);
@@ -3486,32 +3587,43 @@ impl App {
             ApiResponse::PlaylistFollowChanged {
                 id,
                 followed,
+                revision,
                 result,
-            } => match result {
-                Ok(()) => {
-                    self.saved
-                        .insert(format!("spotify:playlist:{id}"), followed);
-                    self.toast(if followed {
-                        "Added to Your Library"
-                    } else {
-                        "Removed from Your Library"
-                    });
-                    self.load_playlists();
-                    if !followed && matches!(self.page(), Page::Playlist(current) if *current == id)
-                    {
-                        self.open(Page::Home);
-                    }
+            } => {
+                let uri = format!("spotify:playlist:{id}");
+                if !self.finish_saved_mutation(&uri, revision) {
+                    return;
                 }
-                Err(error) => {
-                    self.saved
-                        .insert(format!("spotify:playlist:{id}"), !followed);
-                    self.toast_error(format!("Couldn't update the playlist: {error}"));
-                    if !followed {
+                match result {
+                    Ok(()) => {
+                        self.saved_previous.remove(&uri);
+                        self.saved.insert(uri, followed);
+                        self.toast(if followed {
+                            "Added to Your Library"
+                        } else {
+                            "Removed from Your Library"
+                        });
                         self.load_playlists();
+                        if !followed
+                            && matches!(self.page(), Page::Playlist(current) if *current == id)
+                        {
+                            self.open(Page::Home);
+                        }
+                    }
+                    Err(error) => {
+                        self.rollback_saved(vec![uri]);
+                        self.toast_error(format!("Couldn't update the playlist: {error}"));
+                        if !followed {
+                            self.load_playlists();
+                        }
                     }
                 }
-            },
-            ApiResponse::SavedTracks { offset, result } => {
+            }
+            ApiResponse::SavedTracks {
+                offset,
+                revision,
+                result,
+            } => {
                 if !self.library.liked.pending.contains(&offset)
                     && !(self.library.liked_cached && offset == 0)
                 {
@@ -3520,7 +3632,7 @@ impl App {
                 match result {
                     Ok(page) => {
                         for item in &page.items {
-                            self.saved.insert(item.track.uri.clone(), true);
+                            self.adopt_saved(&item.track.uri, revision);
                         }
                         if self.library.liked_cached && offset == 0 {
                             // Songs are liked onto the front of the list, so
@@ -3558,52 +3670,68 @@ impl App {
                     self.fill_ahead(Page::LikedSongs, false);
                 }
             }
-            ApiResponse::SavedAlbums { offset, result } => match result {
+            ApiResponse::SavedAlbums {
+                offset,
+                revision,
+                result,
+            } => match result {
                 Ok(page) => {
                     for item in &page.items {
-                        self.saved.insert(item.album.uri.clone(), true);
+                        self.adopt_saved(&item.album.uri, revision);
                     }
                     self.library.albums.absorb(offset, page);
                     self.fill_ahead(Page::Albums, true);
                 }
                 Err(error) => self.library.albums.fail_page(offset, error.to_string()),
             },
-            ApiResponse::FollowedArtists { after, result } => {
-                let list = &mut self.library.artists;
-                list.loading = false;
-                list.loaded_once = true;
+            ApiResponse::FollowedArtists {
+                after,
+                revision,
+                result,
+            } => {
+                self.library.artists.loading = false;
+                self.library.artists.loaded_once = true;
                 match result {
                     Ok(page) => {
+                        for artist in &page.items {
+                            self.adopt_saved(&artist.uri, revision);
+                        }
+                        let list = &mut self.library.artists;
                         if after.is_none() {
                             list.items.clear();
                         }
                         let received = page.items.len();
-                        for artist in &page.items {
-                            self.saved.insert(artist.uri.clone(), true);
-                        }
                         list.items.extend(page.items);
                         let next = page.cursors.and_then(|cursors| cursors.after);
                         list.complete = next.is_none() || received == 0;
                         list.after = next;
                         list.error = None;
                     }
-                    Err(error) => list.error = Some(error.to_string()),
+                    Err(error) => self.library.artists.error = Some(error.to_string()),
                 }
             }
-            ApiResponse::SavedShows { offset, result } => match result {
+            ApiResponse::SavedShows {
+                offset,
+                revision,
+                result,
+            } => match result {
                 Ok(page) => {
                     for item in &page.items {
-                        self.saved.insert(item.show.uri.clone(), true);
+                        self.adopt_saved(&item.show.uri, revision);
                     }
                     self.library.shows.absorb(offset, page);
                     self.fill_ahead(Page::Podcasts, true);
                 }
                 Err(error) => self.library.shows.fail_page(offset, error.to_string()),
             },
-            ApiResponse::SavedEpisodes { offset, result } => match result {
+            ApiResponse::SavedEpisodes {
+                offset,
+                revision,
+                result,
+            } => match result {
                 Ok(page) => {
                     for item in &page.items {
-                        self.saved.insert(item.episode.uri.clone(), true);
+                        self.adopt_saved(&item.episode.uri, revision);
                     }
                     self.library.episodes.absorb(offset, page);
                     self.fill_ahead(Page::Episodes, true);
@@ -3612,65 +3740,89 @@ impl App {
             },
             ApiResponse::SavedChanged {
                 uris,
+                revisions,
                 saved,
                 result,
-            } => match result {
-                Ok(()) => {
-                    for uri in &uris {
-                        self.saved.insert(uri.clone(), saved);
-                        match util::uri_kind(uri) {
-                            Some("track") => {
-                                if self.library.liked.loaded_once {
-                                    if saved {
-                                        let total = self
-                                            .library
-                                            .liked
-                                            .total
-                                            .map(|total| total.saturating_add(1));
-                                        self.library.liked.reset();
-                                        self.library.liked.total = total;
-                                        if matches!(self.page(), Page::LikedSongs) {
-                                            self.load_more(Page::LikedSongs);
-                                        }
-                                    } else {
-                                        self.library.liked.retain(|item| item.track.uri != *uri);
-                                        if let Some(total) = self.library.liked.total.as_mut() {
-                                            *total = total.saturating_sub(1);
+            } => {
+                let uris: Vec<_> = uris
+                    .into_iter()
+                    .zip(revisions)
+                    .filter_map(|(uri, revision)| {
+                        self.finish_saved_mutation(&uri, revision).then_some(uri)
+                    })
+                    .collect();
+                if uris.is_empty() {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        for uri in &uris {
+                            self.saved_previous.remove(uri);
+                            self.saved.insert(uri.clone(), saved);
+                            match util::uri_kind(uri) {
+                                Some("track") => {
+                                    if self.library.liked.loaded_once {
+                                        if saved {
+                                            let total = self
+                                                .library
+                                                .liked
+                                                .total
+                                                .map(|total| total.saturating_add(1));
+                                            self.library.liked.reset();
+                                            self.library.liked.total = total;
+                                            if matches!(self.page(), Page::LikedSongs) {
+                                                self.load_more(Page::LikedSongs);
+                                            }
+                                        } else {
+                                            self.library
+                                                .liked
+                                                .retain(|item| item.track.uri != *uri);
+                                            if let Some(total) = self.library.liked.total.as_mut() {
+                                                *total = total.saturating_sub(1);
+                                            }
                                         }
                                     }
                                 }
+                                Some("album") => self.library.albums.reset(),
+                                Some("artist") => self.library.artists.reset(),
+                                Some("show") => self.library.shows.reset(),
+                                Some("episode") => self.library.episodes.reset(),
+                                _ => {}
                             }
-                            Some("album") => self.library.albums.reset(),
-                            Some("artist") => self.library.artists.reset(),
-                            Some("show") => self.library.shows.reset(),
-                            Some("episode") => self.library.episodes.reset(),
-                            _ => {}
                         }
+                        let message =
+                            match (uris.first().and_then(|uri| util::uri_kind(uri)), saved) {
+                                (Some("track"), true) => "Added to Liked Songs",
+                                (Some("track"), false) => "Removed from Liked Songs",
+                                (Some("artist"), true) => "Following artist",
+                                (Some("artist"), false) => "Unfollowed artist",
+                                (_, true) => "Saved to Your Library",
+                                (_, false) => "Removed from Your Library",
+                            };
+                        self.toast(message);
                     }
-                    let message = match (uris.first().and_then(|uri| util::uri_kind(uri)), saved) {
-                        (Some("track"), true) => "Added to Liked Songs",
-                        (Some("track"), false) => "Removed from Liked Songs",
-                        (Some("artist"), true) => "Following artist",
-                        (Some("artist"), false) => "Unfollowed artist",
-                        (_, true) => "Saved to Your Library",
-                        (_, false) => "Removed from Your Library",
-                    };
-                    self.toast(message);
-                }
-                Err(error) => {
-                    for uri in &uris {
-                        self.saved.insert(uri.clone(), !saved);
+                    Err(error) => {
+                        self.rollback_saved(uris);
+                        self.toast_error(format!("Couldn't update your library: {error}"));
                     }
-                    self.toast_error(format!("Couldn't update your library: {error}"));
                 }
-            },
-            ApiResponse::Contains { uris, result } => {
-                for uri in &uris {
-                    self.saved_pending.remove(uri);
-                }
-                if let Ok(flags) = result {
-                    for (uri, flag) in uris.into_iter().zip(flags) {
-                        self.saved.insert(uri, flag);
+            }
+            ApiResponse::Contains {
+                uris,
+                revisions,
+                result,
+            } => {
+                let flags = result.ok();
+                for (index, (uri, revision)) in uris.into_iter().zip(revisions).enumerate() {
+                    if self.saved_pending.get(&uri) != Some(&revision) {
+                        continue;
+                    }
+                    self.saved_pending.remove(&uri);
+                    if self.saved_revisions.get(&uri).copied().unwrap_or(0) == revision
+                        && !self.saved_previous.contains_key(&uri)
+                        && let Some(flag) = flags.as_ref().and_then(|flags| flags.get(index))
+                    {
+                        self.saved.insert(uri, *flag);
                     }
                 }
             }
@@ -4500,22 +4652,26 @@ impl App {
         let Some(page) = self.playlist_pages.get_mut(id) else {
             return;
         };
+        if page.cache_complete
+            && let Some(snapshot) = page
+                .playlist
+                .get()
+                .and_then(|playlist| playlist.snapshot_id.as_ref())
+            && page.cache_snapshot.as_ref() != Some(snapshot)
+        {
+            page.cache_complete = false;
+            page.cache_provisional = true;
+        }
         if !page.cache_provisional {
             return;
         }
         let Some(playlist) = page.playlist.get() else {
-            // The metadata failed; the rows from disk are better than none.
-            page.cache_provisional = false;
-            page.held_live.clear();
             return;
         };
         let current = playlist.snapshot_id.clone();
-        let cached_count = page.items.items.len() as u32;
-        let live_total = playlist.track_total();
         page.cache_provisional = false;
         let snapshot_holds = current.is_some() && current == page.cache_snapshot;
-        let count_holds = live_total > 0 && cached_count == live_total;
-        if snapshot_holds || count_holds {
+        if snapshot_holds {
             page.cache_complete = true;
             page.held_live.clear();
             return;
@@ -4566,18 +4722,15 @@ impl App {
         let mut uris = Vec::new();
         let mut adders: Vec<String> = Vec::new();
         if let Some(page) = self.playlist_pages.get_mut(id) {
-            let playlist = page.playlist.get();
-            let snapshot_now = playlist.and_then(|playlist| playlist.snapshot_id.clone());
-            let live_total = playlist.map_or(0, |playlist| playlist.track_total());
-            let (snapshot_holds, count_holds) = match &page.pending_cache {
+            let snapshot_now = page
+                .playlist
+                .get()
+                .and_then(|playlist| playlist.snapshot_id.as_deref());
+            let snapshot_holds = match &page.pending_cache {
                 None => return,
-                Some((held, items)) => (
-                    snapshot_now.as_deref().is_some()
-                        && snapshot_now.as_deref() == Some(held.as_str()),
-                    live_total > 0 && items.len() as u32 == live_total,
-                ),
+                Some((held, _)) => snapshot_now == Some(held.as_str()),
             };
-            if !snapshot_holds && !count_holds {
+            if !snapshot_holds {
                 page.pending_cache = None;
                 return;
             }
@@ -4585,9 +4738,10 @@ impl App {
                 page.pending_cache = None;
                 return;
             }
-            let Some((_, items)) = page.pending_cache.take() else {
+            let Some((snapshot, items)) = page.pending_cache.take() else {
                 return;
             };
+            page.cache_snapshot = Some(snapshot);
             uris = items
                 .iter()
                 .filter_map(|item| item.playable())
@@ -5042,16 +5196,65 @@ impl App {
         }
     }
 
+    fn adopt_saved(&mut self, uri: &str, revision: u64) {
+        if !self.saved_previous.contains_key(uri)
+            && self.saved_revisions.get(uri).copied().unwrap_or(0) <= revision
+        {
+            self.saved.insert(uri.to_string(), true);
+        }
+    }
+
+    fn advance_saved_revision(&mut self, uri: &str) -> u64 {
+        self.saved_revision += 1;
+        self.saved_revisions
+            .insert(uri.to_string(), self.saved_revision);
+        self.saved_revision
+    }
+
+    fn finish_saved_mutation(&mut self, uri: &str, revision: u64) -> bool {
+        if self.saved_revisions.get(uri) != Some(&revision)
+            || !self.saved_previous.contains_key(uri)
+        {
+            return false;
+        }
+        self.advance_saved_revision(uri);
+        self.saved_pending.remove(uri);
+        true
+    }
+
+    fn rollback_saved(&mut self, uris: Vec<String>) {
+        let previous: Vec<_> = uris
+            .iter()
+            .map(|uri| {
+                self.saved.remove(uri);
+                self.saved_previous.remove(uri).flatten()
+            })
+            .collect();
+        self.request_contains(uris.clone());
+        for (uri, value) in uris.into_iter().zip(previous) {
+            if let Some(value) = value {
+                self.saved.insert(uri, value);
+            }
+        }
+    }
+
     fn set_saved(&mut self, uri: String, saved: bool) {
-        self.saved.insert(uri.clone(), saved);
+        let revision = self.advance_saved_revision(&uri);
+        self.saved_pending.remove(&uri);
+        let previous = self.saved.insert(uri.clone(), saved);
+        self.saved_previous.insert(uri.clone(), previous);
         if uri.starts_with("spotify:playlist:") {
             let id = util::uri_id(&uri).unwrap_or_default().to_string();
-            self.backend
-                .api(ApiRequest::FollowPlaylist { id, follow: saved });
+            self.backend.api(ApiRequest::FollowPlaylist {
+                id,
+                follow: saved,
+                revision,
+            });
             return;
         }
         self.backend.api(ApiRequest::SetSaved {
             uris: vec![uri],
+            revisions: vec![revision],
             saved,
         });
     }
@@ -5313,6 +5516,10 @@ impl App {
                 from,
                 to,
             } => {
+                if self.playlist_rows_stale(&playlist_id) {
+                    self.toast_error("Wait for the playlist to update");
+                    return;
+                }
                 let snapshot_id = self
                     .playlist_pages
                     .get(&playlist_id)
@@ -5345,10 +5552,13 @@ impl App {
             }
             Action::SetStatsPeriod(period) => self.stats_period = period,
             Action::ClearHistory => {
-                self.plays.clear();
-                self.stats_cache = None;
-                self.backend.send(Command::ClearHistory);
-                self.toast("Listening history cleared");
+                if self.history_clear.is_none() && self.user_id().is_some() {
+                    self.history_revision += 1;
+                    self.history_clear = Some((self.history_revision, self.plays.len()));
+                    self.backend.send(Command::ClearHistory {
+                        revision: self.history_revision,
+                    });
+                }
             }
             Action::CreatePlaylist {
                 name,
@@ -5395,12 +5605,10 @@ impl App {
             }
             Action::DeletePlaylist(id) => {
                 self.dialog = None;
-                self.saved.insert(format!("spotify:playlist:{id}"), false);
                 if let Some(playlists) = self.library.playlists.get_mut() {
                     playlists.retain(|playlist| playlist.id != id);
                 }
-                self.backend
-                    .api(ApiRequest::FollowPlaylist { id, follow: false });
+                self.set_saved(format!("spotify:playlist:{id}"), false);
             }
             Action::Transfer(device_id) => self.transfer(device_id),
             Action::ActivateReceiver(receiver) => {
@@ -5481,7 +5689,11 @@ impl App {
                 }
             }
             Action::Reload(page) => self.reload(page),
-            Action::SignIn => self.backend.send(Command::SignIn),
+            Action::SignIn => {
+                self.backend.send(Command::SignIn);
+                self.handle_auth(AuthStatus::SignedOut);
+                self.auth = AuthStatus::Connecting;
+            }
             Action::CancelSignIn => {
                 self.backend.send(Command::CancelSignIn);
                 self.sign_in_url = None;
@@ -5496,6 +5708,7 @@ impl App {
             }
             Action::SignOut => {
                 self.backend.send(Command::SignOut);
+                self.handle_auth(AuthStatus::SignedOut);
                 self.history = vec![Page::Home];
                 self.history_index = 0;
             }
@@ -5923,6 +6136,18 @@ impl App {
         })
     }
 
+    fn playlist_rows_stale(&self, playlist_id: &str) -> bool {
+        self.playlist_pages.get(playlist_id).is_some_and(|page| {
+            page.cache_provisional
+                || (page.cache_complete
+                    && page
+                        .playlist
+                        .get()
+                        .and_then(|playlist| playlist.snapshot_id.as_ref())
+                        != page.cache_snapshot.as_ref())
+        })
+    }
+
     fn add_to_playlist(
         &mut self,
         playlist_id: String,
@@ -5931,6 +6156,10 @@ impl App {
         position: Option<u32>,
         confirmed: bool,
     ) {
+        if position.is_some() && self.playlist_rows_stale(&playlist_id) {
+            self.toast_error("Wait for the playlist to update");
+            return;
+        }
         if !confirmed && self.playlist_contains_any(&playlist_id, &uris) {
             let title = uris
                 .first()
@@ -6943,10 +7172,8 @@ mod tests {
         assert!(page.items.is_complete());
     }
 
-    /// A changed snapshot alone must not throw away a whole playlist when
-    /// the live track count still matches the cached rows.
     #[test]
-    fn a_playlist_keeps_its_disk_rows_when_the_track_count_matches() {
+    fn a_playlist_discards_disk_rows_when_the_snapshot_differs() {
         let mut app = test_app();
         app.user = Some(user_with_product("premium"));
         let id = "p".to_string();
@@ -6962,16 +7189,13 @@ mod tests {
             result: Ok(playlist),
         });
         let page = &app.playlist_pages[&id];
-        assert!(page.cache_complete);
-        assert_eq!(page.items.items.len(), 120);
+        assert!(!page.cache_complete);
+        assert!(page.items.items.is_empty());
         assert!(page.held_live.is_empty());
     }
 
-    /// When the metadata is already here before the disk cache, the same
-    /// count match adopts it through the pending path instead of the
-    /// provisional one.
     #[test]
-    fn a_pending_playlist_cache_adopts_when_the_track_count_matches() {
+    fn a_pending_playlist_cache_is_rejected_when_the_snapshot_differs() {
         let mut app = test_app();
         app.user = Some(user_with_product("premium"));
         let id = "p".to_string();
@@ -6987,8 +7211,8 @@ mod tests {
         let cached: Vec<_> = (0..120).map(playlist_item).collect();
         app.adopt_playlist_cache("user", &id, generation, "snap".into(), cached);
         let page = &app.playlist_pages[&id];
-        assert!(page.cache_complete);
-        assert_eq!(page.items.items.len(), 120);
+        assert!(!page.cache_complete);
+        assert!(page.items.items.is_empty());
     }
 
     /// When the snapshot has moved on, the rows from disk give way to the
@@ -7100,6 +7324,7 @@ mod tests {
         assert!(app.library.liked_cached);
         app.handle_api(ApiResponse::SavedTracks {
             offset: 0,
+            revision: 0,
             result: Ok(live_page(0, 120, 0)),
         });
         assert_eq!(
@@ -7117,6 +7342,7 @@ mod tests {
         app.adopt_liked_cache("user", (1..121).map(saved).collect());
         app.handle_api(ApiResponse::SavedTracks {
             offset: 0,
+            revision: 0,
             result: Ok(live_page(0, 121, 0)),
         });
         assert_eq!(app.library.liked.items.len(), 50);
@@ -7149,6 +7375,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            revision: 0,
             result: Ok(list_page(0, 80)),
         });
         assert_eq!(
@@ -7159,6 +7386,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 50,
             generation: app.library.playlists_generation,
+            revision: 0,
             result: Ok(list_page(50, 80)),
         });
         assert_eq!(app.library.playlists.get().map(Vec::len), Some(80));

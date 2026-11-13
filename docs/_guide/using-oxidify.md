@@ -68,7 +68,9 @@ switch between the last 7 days, the last 30 days, the last 12 months and
 all time, counted in this computer's time zone. A play is
 counted once a song has run for half a minute (half of a shorter song),
 on this computer, in a file under the state directory; the page's
-**Clear history** forgets it. Nothing about it is sent anywhere.
+**Clear history** forgets it after deletion succeeds; a disk error is shown
+instead of a success message. Plays and clears are saved in order, and a
+damaged line does not hide the other records. Nothing about it is sent anywhere.
 
 ## Jump
 

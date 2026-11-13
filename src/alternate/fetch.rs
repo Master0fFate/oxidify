@@ -1,9 +1,11 @@
 //! HTTP fetch: prefix Range, sparse follow-up, sequential fallback.
 
+use std::future::{Future, poll_fn};
+use std::task::Poll;
 use std::time::Duration;
 
 use reqwest::StatusCode;
-use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE};
+use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, RETRY_AFTER};
 
 use super::buffer::{ByteRange, DEMAND_WINDOW, MAX_BYTES, SharedAudio};
 use super::decode::FormatHint;
@@ -62,7 +64,7 @@ impl FetchPolicy {
 enum FetchErr {
     Cancelled,
     Permanent(String),
-    Transient(String),
+    Transient(String, Option<Duration>),
     Expired,
 }
 
@@ -70,7 +72,7 @@ impl FetchErr {
     fn into_string(self) -> String {
         match self {
             Self::Cancelled => "cancelled".into(),
-            Self::Permanent(message) | Self::Transient(message) => message,
+            Self::Permanent(message) | Self::Transient(message, _) => message,
             Self::Expired => "Matched audio host refused the request.".into(),
         }
     }
@@ -81,7 +83,7 @@ fn permanent(message: impl Into<String>) -> FetchErr {
 }
 
 fn transient(message: impl Into<String>) -> FetchErr {
-    FetchErr::Transient(message.into())
+    FetchErr::Transient(message.into(), None)
 }
 
 pub fn header_allowed(name: &str) -> bool {
@@ -374,15 +376,18 @@ async fn fetch_inner(
                     end_exclusive,
                     ctx.buffer,
                     Some(&mut prefix),
-                    None,
+                    ByteRange::new(start, end_exclusive),
                     on_ready,
                     ctx.policy,
                 )
                 .await
                 {
+                    Ok(StreamDone::Retarget) => {
+                        return range_followup(&mut ctx, prefix, on_ready).await;
+                    }
                     Ok(_) => {}
-                    Err(FetchErr::Transient(message)) => {
-                        ctx.retry_transient(message).await?;
+                    Err(FetchErr::Transient(message, retry_after)) => {
+                        ctx.retry_transient(message, retry_after).await?;
                         if ctx.buffer.filled_bytes() > 0 && ctx.buffer.is_random_access() {
                             if ctx.buffer.is_cancelled() {
                                 return Err(FetchErr::Cancelled);
@@ -427,10 +432,10 @@ enum StreamDone {
 }
 
 impl FetchCtx<'_> {
-    async fn wait_backoff(&mut self) -> Result<(), FetchErr> {
-        let delay = self.backoff;
+    async fn wait_backoff(&mut self, retry_after: Option<Duration>) -> Result<(), FetchErr> {
+        let delay = self.backoff.max(retry_after.unwrap_or_default());
         self.backoff = self.backoff.saturating_mul(2).min(self.policy.retry_cap);
-        backoff_wait(self.buffer, delay).await
+        backoff_wait(self.buffer, delay, retry_after.is_none()).await
     }
 
     fn reset_backoff(&mut self) {
@@ -457,24 +462,30 @@ impl FetchCtx<'_> {
                 return Err(permanent("Couldn't read matched audio."));
             }
         }
-        self.wait_backoff().await
+        self.wait_backoff(None).await
     }
 
-    async fn retry_transient(&mut self, message: String) -> Result<(), FetchErr> {
+    async fn retry_transient(
+        &mut self,
+        message: String,
+        retry_after: Option<Duration>,
+    ) -> Result<(), FetchErr> {
         self.note_progress();
         self.failures = self.failures.saturating_add(1);
         if self.failures > self.policy.transient_retries {
             self.buffer.fail(message.clone());
             return Err(permanent(message));
         }
-        self.wait_backoff().await
+        self.wait_backoff(retry_after).await
     }
 
     async fn on_request_err(&mut self, error: FetchErr) -> Result<(), FetchErr> {
         match error {
             FetchErr::Cancelled => Err(FetchErr::Cancelled),
             FetchErr::Permanent(message) => Err(FetchErr::Permanent(message)),
-            FetchErr::Transient(message) => self.retry_transient(message).await,
+            FetchErr::Transient(message, retry_after) => {
+                self.retry_transient(message, retry_after).await
+            }
             FetchErr::Expired => self.refresh_url().await,
         }
     }
@@ -491,38 +502,30 @@ impl FetchCtx<'_> {
             }
             Err(FetchErr::Permanent(message)) => return Err(FetchErr::Permanent(message)),
             Err(FetchErr::Cancelled) => return Err(FetchErr::Cancelled),
-            Err(FetchErr::Expired | FetchErr::Transient(_)) => {}
+            Err(FetchErr::Expired | FetchErr::Transient(_, _)) => {}
         }
-        self.wait_backoff().await
+        self.wait_backoff(None).await
     }
 }
 
-async fn backoff_wait(buffer: &SharedAudio, delay: Duration) -> Result<(), FetchErr> {
-    if buffer.is_cancelled() {
-        return Err(FetchErr::Cancelled);
-    }
-    if delay.is_zero() {
-        return Ok(());
-    }
-    let notified = buffer.notified();
-    if buffer.is_cancelled() {
-        return Err(FetchErr::Cancelled);
-    }
+async fn backoff_wait(
+    buffer: &SharedAudio,
+    delay: Duration,
+    retargetable: bool,
+) -> Result<(), FetchErr> {
+    let demand = buffer.current_demand();
     tokio::select! {
-        _ = tokio::time::sleep(delay) => {
-            if buffer.is_cancelled() {
-                Err(FetchErr::Cancelled)
-            } else {
-                Ok(())
-            }
-        }
-        _ = notified => {
-            if buffer.is_cancelled() {
-                Err(FetchErr::Cancelled)
-            } else {
-                Ok(())
-            }
-        }
+        _ = tokio::time::sleep(delay) => {}
+        _ = wait_buffer(buffer, || {
+            !buffer.is_open() || (retargetable && buffer.current_demand() != demand)
+        }) => {}
+    }
+    if buffer.is_cancelled() {
+        Err(FetchErr::Cancelled)
+    } else if let Some(message) = buffer.error() {
+        Err(permanent(message))
+    } else {
+        Ok(())
     }
 }
 
@@ -857,8 +860,15 @@ async fn request_range(
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::GONE => {
             Err(FetchErr::Expired)
         }
+        StatusCode::TOO_MANY_REQUESTS => Err(FetchErr::Transient(
+            "Matched audio host refused the request.".into(),
+            response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_retry_after),
+        )),
         StatusCode::REQUEST_TIMEOUT
-        | StatusCode::TOO_MANY_REQUESTS
         | StatusCode::SERVICE_UNAVAILABLE
         | StatusCode::BAD_GATEWAY
         | StatusCode::GATEWAY_TIMEOUT => Err(transient("Matched audio host refused the request.")),
@@ -869,17 +879,49 @@ async fn request_range(
     }
 }
 
-async fn wait_retarget(buffer: &SharedAudio, flight: Option<ByteRange>) {
-    loop {
-        if should_retarget(buffer, flight) || !buffer.is_open() {
-            return;
-        }
-        let notified = buffer.notified();
-        if should_retarget(buffer, flight) || !buffer.is_open() {
-            return;
-        }
-        notified.await;
+fn parse_retry_after(raw: &str) -> Option<Duration> {
+    let raw = raw.trim();
+    if !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return raw.parse::<u64>().ok().map(Duration::from_secs);
     }
+    let mut date = [
+        "%a, %d %b %Y %T GMT",
+        "%A, %d-%b-%y %T GMT",
+        "%a %b %e %T %Y",
+    ]
+    .into_iter()
+    .find_map(|format| jiff::fmt::strtime::parse(format, raw).ok())?;
+    date.set_offset(Some(jiff::tz::Offset::UTC));
+    let delay = date
+        .to_timestamp()
+        .ok()?
+        .duration_since(jiff::Timestamp::now());
+    Some(Duration::try_from(delay).unwrap_or_default())
+}
+
+async fn wait_buffer(buffer: &SharedAudio, ready: impl Fn() -> bool) {
+    loop {
+        let notified = buffer.notified();
+        tokio::pin!(notified);
+        let done = poll_fn(|cx| {
+            let changed = notified.as_mut().poll(cx).is_ready();
+            if ready() {
+                Poll::Ready(true)
+            } else if changed {
+                Poll::Ready(false)
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        if done {
+            return;
+        }
+    }
+}
+
+async fn wait_retarget(buffer: &SharedAudio, flight: Option<ByteRange>) {
+    wait_buffer(buffer, || should_retarget(buffer, flight)).await;
 }
 
 fn should_retarget(buffer: &SharedAudio, flight: Option<ByteRange>) -> bool {
@@ -949,8 +991,23 @@ async fn stream_from_zero(
         }
     }
     let mut offset = 0u64;
+    let demand = buffer.current_demand();
     loop {
-        let chunk = match tokio::time::timeout(policy.stall_timeout, response.chunk()).await {
+        let flight = ByteRange::new(offset, offset.saturating_add(DEMAND_WINDOW));
+        let next = tokio::select! {
+            result = tokio::time::timeout(policy.stall_timeout, response.chunk()) => result,
+            _ = wait_buffer(buffer, || {
+                !buffer.is_open()
+                    || (buffer.current_demand() != demand && should_retarget(buffer, flight))
+            }) => {
+                return if buffer.is_cancelled() {
+                    Err(FetchErr::Cancelled)
+                } else {
+                    Ok(StreamDone::Retarget)
+                };
+            }
+        };
+        let chunk = match next {
             Ok(Ok(Some(chunk))) => chunk,
             Ok(Ok(None)) => break,
             Ok(Err(_)) => return Err(transient("Couldn't read matched audio.")),
@@ -994,7 +1051,17 @@ async fn stream_range(
         if offset >= limit {
             return Ok(StreamDone::Complete);
         }
-        let chunk = match tokio::time::timeout(policy.stall_timeout, response.chunk()).await {
+        let next = tokio::select! {
+            result = tokio::time::timeout(policy.stall_timeout, response.chunk()) => result,
+            _ = wait_retarget(buffer, flight) => {
+                return if buffer.is_cancelled() {
+                    Err(FetchErr::Cancelled)
+                } else {
+                    Ok(StreamDone::Retarget)
+                };
+            }
+        };
+        let chunk = match next {
             Ok(Ok(Some(chunk))) => chunk,
             Ok(Ok(None)) => break,
             Ok(Err(_)) => return Err(transient("Couldn't read matched audio.")),

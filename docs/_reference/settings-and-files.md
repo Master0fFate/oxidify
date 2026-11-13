@@ -45,6 +45,13 @@ On macOS, settings, state, and the logs are in
 `%LOCALAPPDATA%\master0ffate\oxidify\data`, and the caches in
 `%LOCALAPPDATA%\master0ffate\oxidify\cache`.
 
+Windows remote control keeps a random secret in the current logon session's
+Credential Manager entry `Oxidify/remote-control`, replaced whenever the
+player starts its listener. Other logon sessions cannot use it. macOS
+control uses `/private/tmp/oxidify-control-<uid>.sock` and checks the OS
+identity of both socket peers; a stale socket is replaced only when owned by
+that user. Neither mechanism stores a Spotify credential.
+
 Fastpotify, the project Oxidify is derived from, kept its files in
 `fastpotify` directories next to these. The first run after switching
 imports settings, sign-ins, skins, and playback credentials from there,

@@ -41,11 +41,12 @@ pub struct PlayRecord {
 /// Reads every whole line; a line cut short or from another version is
 /// skipped rather than failing the file.
 pub fn read(path: &Path) -> Vec<PlayRecord> {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(bytes) = std::fs::read(path) else {
         return Vec::new();
     };
-    text.lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
+    bytes
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| serde_json::from_slice(line).ok())
         .collect()
 }
 

@@ -18,20 +18,6 @@
 //! driven. The blocking API owns that problem, and a check that runs once
 //! before the window exists has no reason to be asynchronous anyway.
 //!
-//! macOS and Windows have no session bus, so there the same two jobs are done
-//! by a listening socket bound to loopback: binding is exclusive, so whoever
-//! binds is the running instance, and a later launch by the same user
-//! connects to say "show yourself" before exiting. It is bound to 127.0.0.1
-//! so no firewall has an opinion about it, it speaks only to itself, and the
-//! operating system releases the port when the process ends.
-//!
-//! On those platforms the socket doubles as the remote-control channel:
-//! `oxidify next` (or a Raycast script running it) connects, sends one
-//! `oxidify:<verb>` line, and reads one reply line. Playback verbs are
-//! acknowledged with `oxidify:ok` and land in the same action queue the
-//! tray and the media keys feed; the two read verbs, `nowplaying` and
-//! `devices`, are answered from snapshots the app keeps fresh, so the
-//! listener thread never touches app state.
 //! Linux needs none of this: MPRIS already gives `playerctl` the same verbs,
 //! so the D-Bus name stays a pure instance guard there.
 //!
@@ -42,12 +28,6 @@
 //! now-playing snapshot carries the artwork URL and the saved flag a key
 //! needs to draw itself. A client polls; nothing is pushed.
 //!
-//! Anything on the machine can reach the port, so the two verbs that carry
-//! free text (`play-uri`, `transfer`) validate their argument here rather
-//! than handing the app an arbitrary string. Control verbs also carry the
-//! caller's user key and are only queued for the account that started the
-//! instance; the two reads answer anyone, since they reveal only the
-//! snapshots the app already publishes.
 
 /// The name held for the lifetime of the running instance.
 #[cfg(target_os = "linux")]
@@ -188,27 +168,50 @@ pub enum Reply {
 /// Sends one verb to the running instance and reads its reply.
 #[cfg(not(target_os = "linux"))]
 pub fn send(verb: &str) -> std::io::Result<Reply> {
+    #[cfg(target_os = "macos")]
+    if !matches!(verb, "nowplaying" | "devices") {
+        let mut stream = std::os::unix::net::UnixStream::connect(control_socket_path())?;
+        if !same_user(&stream) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "control socket belongs to another user",
+            ));
+        }
+        stream.set_read_timeout(Some(READ_DEADLINE))?;
+        return exchange(&mut stream, verb);
+    }
     send_to(INSTANCE_PORT, verb)
 }
 
-/// A control verb with the caller's user key appended, so the running
-/// instance can tell one account from another on the shared machine.
 #[cfg(not(target_os = "linux"))]
 pub fn control(verb: &str) -> String {
-    match user_key() {
-        Some(key) => format!("{verb} {key}"),
-        None => verb.to_owned(),
+    #[cfg(target_os = "macos")]
+    {
+        verb.to_owned()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        match user_key() {
+            Some(key) => format!("{verb} {key}"),
+            None => "authentication-unavailable".to_owned(),
+        }
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 fn send_to(port: u16, verb: &str) -> std::io::Result<Reply> {
-    use std::io::{Read, Write};
     use std::net::{Ipv4Addr, TcpStream};
-    use std::time::Duration;
 
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_read_timeout(Some(READ_DEADLINE))?;
+    exchange(&mut stream, verb)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn exchange(
+    stream: &mut (impl std::io::Read + std::io::Write),
+    verb: &str,
+) -> std::io::Result<Reply> {
     stream.write_all(format!("{PREFIX}{verb}\n").as_bytes())?;
     // The listener writes one line and closes, so read to end and keep the
     // line. An instance predating the control channel ignores unknown verbs
@@ -251,7 +254,9 @@ pub fn acquire(waker: &crate::backend::Waker) -> Outcome {
         Err(_) => {
             // Someone holds the port. Ask them to show themselves, and only
             // stand down if they answer as Oxidify.
-            let show = || send("show").is_ok_and(|reply| matches!(reply, Reply::Ok));
+            #[cfg(target_os = "macos")]
+            let answered = send("show").is_ok_and(|reply| matches!(reply, Reply::Ok));
+            #[cfg(not(target_os = "macos"))]
             let answered = match user_key() {
                 Some(key) => match send(&format!("show-for {key}")) {
                     Ok(reply) => matches!(reply, Reply::Ok),
@@ -261,10 +266,9 @@ pub fn acquire(waker: &crate::backend::Waker) -> Outcome {
                         );
                         return Outcome::Only(unguarded());
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => show(),
                     Err(_) => false,
                 },
-                None => show(),
+                None => false,
             };
             if answered {
                 return Outcome::Surfaced;
@@ -275,13 +279,27 @@ pub fn acquire(waker: &crate::backend::Waker) -> Outcome {
     };
 
     let guard = unguarded();
+    #[cfg(target_os = "macos")]
+    start_local_control(&guard, waker);
+    #[cfg(target_os = "windows")]
+    let own_key = {
+        let key = create_user_key();
+        if key.is_none() {
+            log::warn!("cannot secure remote control; control commands are disabled");
+        }
+        key
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let own_key: Option<String> = None;
+    #[cfg(target_os = "macos")]
+    let own_key: Option<String> = None;
     let commands = Arc::clone(&guard.commands);
     let now_playing = Arc::clone(&guard.now_playing);
     let devices = Arc::clone(&guard.devices);
     let waker = waker.clone();
     let spawned = std::thread::Builder::new()
         .name("oxidify-instance".to_owned())
-        .spawn(move || serve(listener, &commands, &now_playing, &devices, &waker));
+        .spawn(move || serve(listener, own_key, &commands, &now_playing, &devices, &waker));
     if let Err(error) = spawned {
         log::warn!("cannot listen for other launches: {error}");
     }
@@ -293,6 +311,7 @@ pub fn acquire(waker: &crate::backend::Waker) -> Outcome {
 #[cfg(not(target_os = "linux"))]
 fn serve(
     listener: std::net::TcpListener,
+    own_key: Option<String>,
     commands: &std::sync::Mutex<Vec<ControlCommand>>,
     now_playing: &std::sync::Mutex<String>,
     devices: &std::sync::Mutex<String>,
@@ -301,7 +320,6 @@ fn serve(
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    let own_key = user_key();
     let active = AtomicUsize::new(0);
     let mut accept_failing = false;
     std::thread::scope(|scope| {
@@ -327,7 +345,15 @@ fn serve(
             let spawned = std::thread::Builder::new()
                 .name("oxidify-control".to_owned())
                 .spawn_scoped(scope, move || {
-                    answer(&mut stream, own_key, commands, now_playing, devices, waker);
+                    answer(
+                        &mut stream,
+                        own_key,
+                        false,
+                        commands,
+                        now_playing,
+                        devices,
+                        waker,
+                    );
                     active.fetch_sub(1, Ordering::SeqCst);
                 });
             if spawned.is_err() {
@@ -339,15 +365,14 @@ fn serve(
 
 #[cfg(not(target_os = "linux"))]
 fn answer(
-    stream: &mut std::net::TcpStream,
+    stream: &mut impl ControlStream,
     own_key: Option<&str>,
+    authenticated: bool,
     commands: &std::sync::Mutex<Vec<ControlCommand>>,
     now_playing: &std::sync::Mutex<String>,
     devices: &std::sync::Mutex<String>,
     waker: &crate::backend::Waker,
 ) {
-    use std::io::Write;
-
     let queue = |command| {
         commands
             .lock()
@@ -359,9 +384,9 @@ fn answer(
     let Some(line) = read_line(stream) else {
         return;
     };
-    match parse(&line) {
+    match parse(&line, authenticated) {
         Some(Request::ShowFor(key)) => {
-            if own_key.is_none_or(|own| own == key) {
+            if authenticated || own_key.is_some_and(|own| own == key) {
                 let _ = stream.write_all(format!("{OK_REPLY}\n").as_bytes());
                 queue(ControlCommand::Show);
             } else {
@@ -369,7 +394,7 @@ fn answer(
             }
         }
         Some(Request::Command { command, key }) => {
-            if own_key.is_some() && key.as_deref() != own_key {
+            if !authenticated && (own_key.is_none() || key.as_deref() != own_key) {
                 let _ = stream.write_all(format!("{OTHER_USER_REPLY}\n").as_bytes());
                 return;
             }
@@ -413,7 +438,7 @@ enum Request {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn parse(line: &str) -> Option<Request> {
+fn parse(line: &str, authenticated: bool) -> Option<Request> {
     let line = line.trim_end().strip_prefix(PREFIX)?;
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let verb = *tokens.first()?;
@@ -423,7 +448,11 @@ fn parse(line: &str) -> Option<Request> {
             .and_then(|key| user_key_shaped(key))
             .map(Request::ShowFor);
     }
-    let key = tokens.last().and_then(|token| user_key_shaped(token));
+    let key = if authenticated {
+        None
+    } else {
+        tokens.last().and_then(|token| user_key_shaped(token))
+    };
     let arg_span = tokens.len() - usize::from(key.is_some());
     let argument = (arg_span == 2).then(|| tokens[1]);
     if tokens.len() != 1 + usize::from(argument.is_some()) + usize::from(key.is_some()) {
@@ -504,24 +533,182 @@ fn user_key_shaped(text: &str) -> Option<String> {
     shaped.then(|| text.to_owned())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+fn create_user_key() -> Option<String> {
+    use rand::{TryRngCore, rand_core::OsRng};
+    use windows_sys::Win32::Security::Credentials::{
+        CRED_PERSIST_SESSION, CRED_TYPE_GENERIC, CREDENTIALW, CredWriteW,
+    };
+
+    let mut bytes = [0u8; 32];
+    OsRng.try_fill_bytes(&mut bytes).ok()?;
+    let key: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let credential = CREDENTIALW {
+        Type: CRED_TYPE_GENERIC,
+        TargetName: windows_sys::core::w!("Oxidify/remote-control").cast_mut(),
+        CredentialBlobSize: u32::try_from(key.len()).ok()?,
+        CredentialBlob: key.as_ptr().cast_mut(),
+        Persist: CRED_PERSIST_SESSION,
+        ..Default::default()
+    };
+    (unsafe { CredWriteW(&credential, 0) } != 0).then_some(key)
+}
+
+#[cfg(target_os = "windows")]
 fn user_key() -> Option<String> {
-    use sha2::{Digest, Sha256};
-    let dirs = directories::BaseDirs::new()?;
-    let digest = Sha256::digest(dirs.home_dir().as_os_str().as_encoded_bytes());
-    Some(
-        digest[..16]
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
-    )
+    use windows_sys::Win32::Security::Credentials::{
+        CRED_TYPE_GENERIC, CREDENTIALW, CredFree, CredReadW,
+    };
+
+    let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
+    if unsafe {
+        CredReadW(
+            windows_sys::core::w!("Oxidify/remote-control"),
+            CRED_TYPE_GENERIC,
+            0,
+            &mut credential,
+        )
+    } == 0
+    {
+        return None;
+    }
+    let key = unsafe {
+        let credential = &*credential;
+        if credential.CredentialBlobSize == 64 && !credential.CredentialBlob.is_null() {
+            std::str::from_utf8(std::slice::from_raw_parts(credential.CredentialBlob, 64))
+                .ok()
+                .and_then(user_key_shaped)
+        } else {
+            None
+        }
+    };
+    unsafe { CredFree(credential.cast()) };
+    key
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn user_key() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn control_socket_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("/private/tmp/oxidify-control-{}.sock", unsafe {
+        geteuid()
+    }))
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn geteuid() -> u32;
+    fn getpeereid(socket: std::os::raw::c_int, uid: *mut u32, gid: *mut u32)
+    -> std::os::raw::c_int;
+}
+
+#[cfg(target_os = "macos")]
+fn same_user(stream: &std::os::unix::net::UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut uid = 0;
+    let mut gid = 0;
+    unsafe { getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) == 0 && uid == geteuid() }
+}
+
+#[cfg(target_os = "macos")]
+fn start_local_control(guard: &Guard, waker: &crate::backend::Waker) {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use std::os::unix::net::UnixListener;
+    use std::sync::Arc;
+
+    let path = control_socket_path();
+    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+        if !metadata.file_type().is_socket()
+            || metadata.uid() != unsafe { geteuid() }
+            || std::fs::remove_file(&path).is_err()
+        {
+            log::warn!("cannot prepare local control socket");
+            return;
+        }
+    }
+    let listener = match UnixListener::bind(path) {
+        Ok(listener) => listener,
+        Err(error) => {
+            log::warn!("cannot bind local control socket: {error}");
+            return;
+        }
+    };
+    let commands = Arc::clone(&guard.commands);
+    let now_playing = Arc::clone(&guard.now_playing);
+    let devices = Arc::clone(&guard.devices);
+    let waker = waker.clone();
+    let result = std::thread::Builder::new()
+        .name("oxidify-local-control".to_owned())
+        .spawn(move || {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let active = AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    if !same_user(&stream) {
+                        continue;
+                    }
+                    if active.fetch_add(1, Ordering::SeqCst) >= MAX_CLIENTS {
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        continue;
+                    }
+                    let active = &active;
+                    let commands = &commands;
+                    let now_playing = &now_playing;
+                    let devices = &devices;
+                    let waker = &waker;
+                    if std::thread::Builder::new()
+                        .name("oxidify-control".to_owned())
+                        .spawn_scoped(scope, move || {
+                            answer(
+                                &mut stream,
+                                None,
+                                true,
+                                commands,
+                                now_playing,
+                                devices,
+                                waker,
+                            );
+                            active.fetch_sub(1, Ordering::SeqCst);
+                        })
+                        .is_err()
+                    {
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }
+            });
+        });
+    if let Err(error) = result {
+        log::warn!("cannot listen for local controls: {error}");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+trait ControlStream: std::io::Read + std::io::Write {
+    fn set_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()>;
+}
+
+#[cfg(not(target_os = "linux"))]
+impl ControlStream for std::net::TcpStream {
+    fn set_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()> {
+        self.set_read_timeout(Some(timeout))
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl ControlStream for std::os::unix::net::UnixStream {
+    fn set_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()> {
+        self.set_read_timeout(Some(timeout))
+    }
 }
 
 /// Reads up to the first newline. A line too long to be one of ours, or any
 /// read error, disqualifies the client.
 #[cfg(not(target_os = "linux"))]
-fn read_line(stream: &mut std::net::TcpStream) -> Option<String> {
-    use std::io::Read;
+fn read_line(stream: &mut impl ControlStream) -> Option<String> {
     let deadline = std::time::Instant::now() + READ_DEADLINE;
     let mut buffer = [0u8; 256];
     let mut filled = 0;
@@ -533,7 +720,7 @@ fn read_line(stream: &mut std::net::TcpStream) -> Option<String> {
         if remaining.is_zero() {
             return None;
         }
-        stream.set_read_timeout(Some(remaining)).ok()?;
+        stream.set_timeout(remaining).ok()?;
         match stream.read(&mut buffer[filled..]) {
             Ok(0) => break,
             Ok(read) => {
@@ -620,7 +807,7 @@ mod tests {
     use crate::player::RepeatMode;
 
     fn command(line: &str) -> Option<ControlCommand> {
-        match parse(&format!("{line} {TEST_KEY}")) {
+        match parse(&format!("{line} {TEST_KEY}"), false) {
             Some(Request::Command { command, .. }) => Some(command),
             _ => None,
         }
@@ -698,20 +885,23 @@ mod tests {
             Some(ControlCommand::Transfer("a1b2c3d4e5".to_owned()))
         );
         assert!(matches!(
-            parse("oxidify:nowplaying"),
+            parse("oxidify:nowplaying", false),
             Some(Request::NowPlaying)
         ));
-        assert!(matches!(parse("oxidify:devices"), Some(Request::Devices)));
+        assert!(matches!(
+            parse("oxidify:devices", false),
+            Some(Request::Devices)
+        ));
     }
 
     #[test]
     fn rejects_lines_that_are_not_ours() {
-        assert!(parse("GET / HTTP/1.1").is_none());
-        assert!(parse("oxidify:frobnicate").is_none());
-        assert!(parse("oxidify:seek-by soon").is_none());
-        assert!(parse("oxidify:volume-set 999").is_none());
-        assert!(parse("oxidify:next please").is_none());
-        assert!(parse("").is_none());
+        assert!(parse("GET / HTTP/1.1", false).is_none());
+        assert!(parse("oxidify:frobnicate", false).is_none());
+        assert!(parse("oxidify:seek-by soon", false).is_none());
+        assert!(parse("oxidify:volume-set 999", false).is_none());
+        assert!(parse("oxidify:next please", false).is_none());
+        assert!(parse("", false).is_none());
     }
 
     /// The two verbs that carry free text are the ones a hostile local
@@ -755,11 +945,20 @@ mod tests {
             let now_playing = Arc::clone(&now_playing);
             let devices = Arc::clone(&devices);
             let waker = crate::backend::Waker::default();
-            std::thread::spawn(move || serve(listener, &commands, &now_playing, &devices, &waker))
+            std::thread::spawn(move || {
+                serve(
+                    listener,
+                    Some(TEST_KEY.to_owned()),
+                    &commands,
+                    &now_playing,
+                    &devices,
+                    &waker,
+                )
+            })
         };
 
         // #when
-        let key = user_key().unwrap_or_default();
+        let key = TEST_KEY;
         let accepted = send_to(port, &format!("next {key}")).expect("a reply");
         let volume = send_to(port, &format!("volume-by -5 {key}")).expect("a reply");
         let liked = send_to(port, &format!("save-toggle {key}")).expect("a reply");

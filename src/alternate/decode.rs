@@ -86,6 +86,7 @@ struct DecodeState {
     /// The media's own length once its headers have been read; 0 until then.
     duration_ms: AtomicU32,
     epoch: AtomicU64,
+    ended_epoch: AtomicU64,
     target_ms: AtomicU32,
     error: Mutex<Option<String>>,
     last_pcm: Mutex<Instant>,
@@ -102,6 +103,7 @@ impl DecodeState {
             sample_rate: AtomicU32::new(0),
             duration_ms: AtomicU32::new(0),
             epoch: AtomicU64::new(0),
+            ended_epoch: AtomicU64::new(0),
             target_ms: AtomicU32::new(start_ms),
             error: Mutex::new(None),
             last_pcm: Mutex::new(Instant::now()),
@@ -153,7 +155,8 @@ impl DecodeState {
         }
     }
 
-    fn end(&self) {
+    fn end(&self, epoch: u64) {
+        self.ended_epoch.store(epoch, Ordering::SeqCst);
         let _ =
             self.phase
                 .compare_exchange(PHASE_RUN, PHASE_ENDED, Ordering::SeqCst, Ordering::SeqCst);
@@ -213,6 +216,7 @@ impl DecodeHandle {
     pub fn seek(&self, ms: u32) {
         self.state.target_ms.store(ms, Ordering::SeqCst);
         self.state.epoch.fetch_add(1, Ordering::SeqCst);
+        self.state.resume_run();
         let _ = self.cmd.send(DecodeCmd::Seek);
         self.audio.abandon_reads();
     }
@@ -236,6 +240,12 @@ impl DecodeHandle {
     pub fn status(&self) -> DecodeStatus {
         match self.state.phase.load(Ordering::SeqCst) {
             PHASE_RUN => DecodeStatus::Running,
+            PHASE_ENDED
+                if self.state.ended_epoch.load(Ordering::SeqCst)
+                    != self.state.epoch.load(Ordering::SeqCst) =>
+            {
+                DecodeStatus::Running
+            }
             PHASE_ENDED => DecodeStatus::Ended,
             PHASE_FAILED => DecodeStatus::Failed,
             PHASE_CANCEL => DecodeStatus::Cancelled,
@@ -337,7 +347,10 @@ impl PcmSource {
                 }
                 Err(TryRecvError::Empty) => {
                     return match self.state.phase.load(Ordering::SeqCst) {
-                        PHASE_ENDED | PHASE_CANCEL => None,
+                        PHASE_ENDED if self.state.ended_epoch.load(Ordering::SeqCst) == epoch => {
+                            None
+                        }
+                        PHASE_CANCEL => None,
                         PHASE_FAILED => Some(0.0),
                         _ => Some(0.0),
                     };
@@ -381,12 +394,23 @@ impl Source for PcmSource {
     }
 
     fn try_seek(&mut self, pos: Duration) -> std::result::Result<(), SeekError> {
+        if matches!(
+            self.state.phase.load(Ordering::SeqCst),
+            PHASE_FAILED | PHASE_CANCEL
+        ) {
+            return Err(SeekError::Other(Box::new(std::io::Error::other(
+                "Audio decoder stopped.",
+            ))));
+        }
         let ms = pos.as_millis().min(u128::from(u32::MAX)) as u32;
         self.state.target_ms.store(ms, Ordering::SeqCst);
         self.state.epoch.fetch_add(1, Ordering::SeqCst);
+        self.state.resume_run();
         self.buf.clear();
         self.idx = 0;
-        let _ = self.cmd.send(DecodeCmd::Seek);
+        self.cmd.send(DecodeCmd::Seek).map_err(|_| {
+            SeekError::Other(Box::new(std::io::Error::other("Audio decoder stopped.")))
+        })?;
         self.audio.abandon_reads();
         Ok(())
     }
@@ -612,8 +636,9 @@ fn decode_loop(
                     want_seek = true;
                     continue 'rebuild;
                 }
-                match wait_out_eof(&buffer, &state, &cmd_rx, samples, start_ms, rate, channels) {
-                    EofNext::Stop | EofNext::Done => return,
+                let resume_ms = start_ms.saturating_add(position_ms(samples, rate, channels));
+                match wait_out_eof(&buffer, &state, &cmd_rx, resume_ms, epoch) {
+                    EofNext::Stop => return,
                     EofNext::Seek => {
                         want_seek = true;
                         continue 'rebuild;
@@ -630,7 +655,6 @@ fn decode_loop(
 
 enum EofNext {
     Stop,
-    Done,
     Seek,
     Rebuild { start_ms: u32 },
 }
@@ -639,10 +663,8 @@ fn wait_out_eof(
     buffer: &SharedAudio,
     state: &Arc<DecodeState>,
     cmd_rx: &Receiver<DecodeCmd>,
-    samples: u64,
-    start_ms: u32,
-    rate: u32,
-    channels: u16,
+    resume_ms: u32,
+    epoch: u64,
 ) -> EofNext {
     if buffer.is_cancelled() {
         state.cancel();
@@ -662,29 +684,7 @@ fn wait_out_eof(
         }
     }
     if buffer.is_closed() || buffer.is_random_access() {
-        state.end();
-        loop {
-            if buffer.is_cancelled() {
-                state.cancel();
-                return EofNext::Stop;
-            }
-            match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(DecodeCmd::Stop) => {
-                    state.cancel();
-                    return EofNext::Stop;
-                }
-                Ok(DecodeCmd::Seek) => {
-                    state.resume_run();
-                    return EofNext::Seek;
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    if state.phase.load(Ordering::SeqCst) == PHASE_CANCEL {
-                        return EofNext::Stop;
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => return EofNext::Stop,
-            }
-        }
+        return wait_for_seek(buffer, state, cmd_rx, epoch);
     }
     let mut seen = buffer.len();
     loop {
@@ -710,18 +710,45 @@ fn wait_out_eof(
                 );
                 return EofNext::Stop;
             }
-            BufferWait::Closed(_) => {
-                state.end();
-                return EofNext::Done;
-            }
+            BufferWait::Closed(_) => return wait_for_seek(buffer, state, cmd_rx, epoch),
             BufferWait::Grew(len) if len > seen => {
                 return EofNext::Rebuild {
-                    start_ms: start_ms.saturating_add(position_ms(samples, rate, channels)),
+                    start_ms: resume_ms,
                 };
             }
             BufferWait::Grew(_) | BufferWait::Unchanged(_) => {
                 seen = buffer.len();
             }
+        }
+    }
+}
+
+fn wait_for_seek(
+    buffer: &SharedAudio,
+    state: &DecodeState,
+    cmd_rx: &Receiver<DecodeCmd>,
+    epoch: u64,
+) -> EofNext {
+    state.end(epoch);
+    loop {
+        if buffer.is_cancelled() {
+            state.cancel();
+            return EofNext::Stop;
+        }
+        if state.phase.load(Ordering::SeqCst) == PHASE_CANCEL {
+            return EofNext::Stop;
+        }
+        match cmd_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(DecodeCmd::Stop) => {
+                state.cancel();
+                return EofNext::Stop;
+            }
+            Ok(DecodeCmd::Seek) => {
+                state.resume_run();
+                return EofNext::Seek;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return EofNext::Stop,
         }
     }
 }

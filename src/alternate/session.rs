@@ -94,43 +94,87 @@ impl Session {
         };
     }
 
+    pub fn finish_load(&mut self, tracks: Vec<LocalTrack>, offset: usize) {
+        let play = matches!(self.playback, Playback::Playing | Playback::Loading);
+        let position_ms = self.position_now();
+        let queued: Vec<LocalTrack> = self
+            .order
+            .iter()
+            .skip(self.index_in_order)
+            .filter(|index| self.manual.contains(index))
+            .map(|&index| self.tracks[index].clone())
+            .collect();
+        self.load(tracks, offset, play, None, position_ms);
+        let first = self.tracks.len();
+        self.tracks.extend(queued);
+        self.manual.extend(first..self.tracks.len());
+        let insert_at = (self.index_in_order + 1).min(self.order.len());
+        self.order
+            .splice(insert_at..insert_at, first..self.tracks.len());
+    }
+
     /// Replace the context list without restarting the current item.
     pub fn adopt_tracks(&mut self, tracks: Vec<LocalTrack>, offset: usize) {
         if tracks.is_empty() {
             return;
         }
+        let current_index = self.current_index();
         let current_uri = self.current().map(|track| track.uri.clone());
-        let queued_uris: Vec<String> = self
-            .queued()
-            .into_iter()
-            .filter_map(|index| self.tracks.get(index))
-            .map(|track| track.uri.clone())
-            .collect();
-        let mut manual: Vec<usize> = self.manual.iter().copied().collect();
-        manual.sort_unstable();
-        let extras: Vec<LocalTrack> = manual
-            .into_iter()
-            .filter_map(|index| self.tracks.get(index).cloned())
-            .filter(|track| !tracks.iter().any(|known| known.uri == track.uri))
-            .collect();
-        let extra_count = extras.len();
-        let mut tracks = tracks;
-        tracks.extend(extras);
-        let current = current_uri
-            .and_then(|uri| tracks.iter().position(|track| track.uri == uri))
-            .unwrap_or_else(|| offset.min(tracks.len() - 1));
-        self.tracks = tracks;
-        let n = self.tracks.len();
-        self.manual = ((n - extra_count)..n).collect();
-        let mut queued = Vec::new();
-        for uri in queued_uris {
-            if let Some(index) = ((n - extra_count)..n).find(|index| {
-                *index != current && !queued.contains(index) && self.tracks[*index].uri == uri
-            }) {
-                queued.push(index);
-            }
+        let anchor_uri = self.order[..self.index_in_order]
+            .iter()
+            .rev()
+            .find(|index| !self.manual.contains(index))
+            .map(|&index| self.tracks[index].uri.clone());
+        let queued = self.queued();
+        let mut manual = queued.clone();
+        if let Some(index) = current_index.filter(|index| self.manual.contains(index)) {
+            manual.push(index);
         }
-        self.rebuild_order(current, &queued);
+        manual.sort_unstable();
+        let context_len = tracks.len();
+        let mut tracks = tracks;
+        tracks.extend(manual.iter().map(|&index| self.tracks[index].clone()));
+        let mapped = |index| manual.binary_search(&index).ok().map(|i| context_len + i);
+        let manual_current = current_index.and_then(mapped);
+        let current = manual_current.unwrap_or_else(|| {
+            current_uri
+                .as_deref()
+                .and_then(|uri| {
+                    tracks[..context_len]
+                        .iter()
+                        .position(|track| track.uri == uri)
+                })
+                .unwrap_or_else(|| offset.min(context_len - 1))
+        });
+        let anchor = anchor_uri
+            .and_then(|uri| {
+                tracks[..context_len]
+                    .iter()
+                    .position(|track| track.uri == uri)
+            })
+            .unwrap_or_else(|| offset.min(context_len - 1));
+        let queued: Vec<usize> = queued.into_iter().filter_map(mapped).collect();
+        self.tracks = tracks;
+        self.manual = (context_len..self.tracks.len()).collect();
+        if manual_current.is_some() && !self.shuffle {
+            self.rebuild_order(anchor, &queued);
+            self.order.retain(|&index| index != current);
+            self.index_in_order = self
+                .order
+                .iter()
+                .position(|&index| index == anchor)
+                .unwrap()
+                + 1;
+            self.order.insert(self.index_in_order, current);
+        } else {
+            self.rebuild_order(current, &queued);
+        }
+        if self.current().map(|track| track.uri.as_str()) != current_uri.as_deref() {
+            self.position_ms = 0;
+            self.position_at = None;
+            self.source_label = None;
+            self.audio_ready = false;
+        }
     }
 
     pub fn append(&mut self, tracks: Vec<LocalTrack>) -> usize {
@@ -458,6 +502,10 @@ impl Session {
 
     pub fn playback(&self) -> Playback {
         self.playback
+    }
+
+    pub(super) fn can_seek_audio(&self) -> bool {
+        self.audio_ready && matches!(self.playback, Playback::Playing | Playback::Paused)
     }
 
     pub fn source_label(&self) -> Option<&str> {

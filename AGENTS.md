@@ -70,8 +70,11 @@ A release is not the tag alone. Every one of these moves together:
 - The `v*` tag, which runs CI and builds the release into a draft. Write
   its notes in `packaging/release-notes/<tag>.md` before tagging, and publish
   only after the checks and the complete installer/archive set pass: the
-  Publish release workflow, dispatched with the tag and its commit, checks
-  both again before taking the draft public. A release that has to come
+  Publish release workflow, dispatched with the tag, its commit, and the
+  successful Release run ID, checks the current draft against that run's
+  checked asset manifest before taking it public. If the manifest is missing
+  or expired, rerun Release first; older runs without a manifest cannot be
+  published through this guard. A release that has to come
   back is pulled with the Retract release workflow, dispatched with the
   same tag and commit, which deletes the release and the tag together; the
   tag is then cut again from the corrected commit.

@@ -107,7 +107,7 @@ class PrepareReleaseTests(unittest.TestCase):
     def test_uploaded_assets_are_complete_and_match_server_digests(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            names = [f"oxidify-{TAG}-{index}" for index in range(7)] + ["checksums.txt", "provenance.json"]
+            names = prepare.expected_asset_names(TAG)
             assets = []
             for name in names:
                 (directory / name).write_bytes(b"payload")
@@ -126,7 +126,10 @@ class PrepareReleaseTests(unittest.TestCase):
 
     def test_publish_takes_only_a_complete_draft_public(self):
         draft = {"id": 42, "tag_name": TAG, "draft": True}
-        assets = [{"name": name, "size": 7, "state": "uploaded"} for name in prepare.expected_asset_names(TAG)]
+        digest = "sha256:" + hashlib.sha256(b"payload").hexdigest()
+        assets = [{"name": name, "size": 7, "state": "uploaded", "digest": digest} for name in prepare.expected_asset_names(TAG)]
+        run = {"workflow_id": 7}
+        manifest = {"release_id": 42, "assets": {asset["name"]: {"size": 7, "digest": digest} for asset in assets}}
         writes = []
         state = {"draft": True}
 
@@ -145,26 +148,26 @@ class PrepareReleaseTests(unittest.TestCase):
                 return {"id": 42, "tag_name": TAG, "draft": state["draft"]}
             self.fail(f"Unexpected API call: {endpoint}")
 
-        with patch.object(prepare, "api", side_effect=api):
+        with patch.object(prepare, "api", side_effect=api), patch.object(prepare, "trusted_manifest", return_value=(run, manifest)), patch.object(prepare, "release_run", return_value=run):
             self.assertEqual(len(assets), 9)
             missing = assets.pop()
             with self.assertRaisesRegex(ValueError, "incomplete"):
-                prepare.publish(REPO, TAG, SHA)
+                prepare.publish(REPO, TAG, SHA, "123")
             assets.append(missing)
             assets[0]["state"] = "pending"
-            with self.assertRaisesRegex(ValueError, "not fully uploaded"):
-                prepare.publish(REPO, TAG, SHA)
+            with self.assertRaisesRegex(ValueError, "differs"):
+                prepare.publish(REPO, TAG, SHA, "123")
             assets[0]["state"] = "uploaded"
             with self.assertRaisesRegex(ValueError, "differs"):
-                prepare.publish(REPO, TAG, "2" * 40)
+                prepare.publish(REPO, TAG, "2" * 40, "123")
             self.assertEqual(writes, [], "a failed check must not touch the release")
-            prepare.publish(REPO, TAG, SHA)
+            prepare.publish(REPO, TAG, SHA, "123")
             self.assertEqual(writes, [("PATCH", f"repos/{REPO}/releases/42",
                                        {"draft": False, "make_latest": "true", "tag_name": TAG, "target_commitish": SHA})])
             # Once public, the same command refuses rather than touching it again.
             draft["draft"] = False
             with self.assertRaisesRegex(ValueError, "already published"):
-                prepare.publish(REPO, TAG, SHA)
+                prepare.publish(REPO, TAG, SHA, "123")
             self.assertEqual(len(writes), 1)
 
     def test_retract_removes_release_and_tag_only_for_the_exact_pair(self):

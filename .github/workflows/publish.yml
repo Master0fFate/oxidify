@@ -18,9 +18,14 @@ on:
         description: Full commit SHA the tag points at
         required: true
         type: string
+      release_run_id:
+        description: Successful Release workflow run ID
+        required: true
+        type: string
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: release-${{ inputs.tag }}
@@ -29,6 +34,7 @@ concurrency:
 env:
   RELEASE_TAG: ${{ inputs.tag }}
   SOURCE_SHA: ${{ inputs.source_sha }}
+  RELEASE_RUN_ID: ${{ inputs.release_run_id }}
 
 jobs:
   publish:
@@ -45,6 +51,8 @@ jobs:
               raise SystemExit("Expected a stable vX.Y.Z tag")
           if not re.fullmatch(r"[0-9a-f]{40}", os.environ["SOURCE_SHA"]):
               raise SystemExit("source_sha must be a full lowercase 40-character commit SHA")
+          if not re.fullmatch(r"[1-9][0-9]*", os.environ["RELEASE_RUN_ID"]):
+              raise SystemExit("release_run_id must be a positive numeric run ID")
       # The scripts come from the ref this workflow was dispatched on; the
       # release's own source is checked out beside them, so a release cut
       # before a script existed can still be published with it.
@@ -63,4 +71,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
-        run: python packaging/prepare_release.py publish --tag "$RELEASE_TAG" --sha "$SOURCE_SHA"
+        run: python packaging/prepare_release.py publish --tag "$RELEASE_TAG" --sha "$SOURCE_SHA" --run-id "$RELEASE_RUN_ID"

@@ -38,7 +38,10 @@ pub enum ApiError {
     #[error("Spotify's Development Mode quota is exhausted; try again after the quota resets")]
     QuotaExhausted,
     #[error("your Spotify sign-in expired; please sign in again")]
-    SignInExpired { api_source: ApiSource },
+    SignInExpired {
+        api_source: ApiSource,
+        generation: u64,
+    },
     #[error("network error: {0}")]
     Network(String),
     #[error("unexpected response from Spotify: {0}")]
@@ -202,6 +205,32 @@ pub enum TokenProvider {
 }
 
 impl TokenProvider {
+    pub(super) fn bind(
+        self,
+        generation: Arc<GrantGeneration>,
+        mine: u64,
+        epoch: Option<Arc<SessionEpoch>>,
+    ) -> Self {
+        let Self::Web(tokens) = self;
+        Self::Web(Arc::new(WebTokens {
+            http: tokens.http.clone(),
+            token: Arc::clone(&tokens.token),
+            path: tokens.path.clone(),
+            source: tokens.source,
+            generation,
+            mine,
+            epoch: epoch.map(|epoch| {
+                let mine = epoch.current.load(Ordering::SeqCst);
+                (epoch, mine)
+            }),
+        }))
+    }
+
+    fn ensure_current(&self) -> Result<()> {
+        let Self::Web(tokens) = self;
+        tokens.ensure_current()
+    }
+
     async fn access_token(&self) -> Result<String> {
         match self {
             Self::Web(tokens) => tokens.access_token(None).await,
@@ -214,13 +243,27 @@ impl TokenProvider {
     }
 }
 
+#[derive(Default)]
+pub struct SessionEpoch {
+    pub(crate) current: AtomicU64,
+    pub(crate) publication: Mutex<()>,
+}
+
+#[derive(Default)]
+pub struct GrantGeneration {
+    pub(super) value: AtomicU64,
+    pub(super) publication: Mutex<()>,
+}
+
 /// The Web API grant, refreshed and persisted as it ages.
 pub struct WebTokens {
     http: reqwest::Client,
-    token: tokio::sync::Mutex<crate::auth::StoredToken>,
+    token: Arc<tokio::sync::Mutex<crate::auth::StoredToken>>,
     path: std::path::PathBuf,
     source: ApiSource,
-    generation: Arc<AtomicU64>,
+    generation: Arc<GrantGeneration>,
+    mine: u64,
+    epoch: Option<(Arc<SessionEpoch>, u64)>,
 }
 
 impl WebTokens {
@@ -229,22 +272,39 @@ impl WebTokens {
         token: crate::auth::StoredToken,
         path: std::path::PathBuf,
         source: ApiSource,
-        generation: Arc<AtomicU64>,
+        generation: Arc<GrantGeneration>,
     ) -> std::sync::Arc<Self> {
+        let mine = generation.value.load(Ordering::SeqCst);
         std::sync::Arc::new(Self {
             http,
-            token: tokio::sync::Mutex::new(token),
+            token: Arc::new(tokio::sync::Mutex::new(token)),
             path,
             source,
             generation,
+            mine,
+            epoch: None,
         })
+    }
+
+    fn ensure_current(&self) -> Result<()> {
+        if self.generation.value.load(Ordering::SeqCst) == self.mine
+            && self
+                .epoch
+                .as_ref()
+                .is_none_or(|(epoch, mine)| epoch.current.load(Ordering::SeqCst) == *mine)
+        {
+            Ok(())
+        } else {
+            Err(ApiError::NotSignedIn)
+        }
     }
 
     /// A valid access token, refreshing first when it is close to expiry or
     /// when `rejected` is still the current token after a 401.
     async fn access_token(&self, rejected: Option<&str>) -> Result<String> {
+        self.ensure_current()?;
         let mut guard = self.token.lock().await;
-        let generation = self.generation.load(Ordering::SeqCst);
+        self.ensure_current()?;
         let force = rejected.is_some_and(|rejected| guard.access_token == rejected);
         if force || guard.needs_refresh() {
             let client_id = guard.client_id.clone();
@@ -256,11 +316,18 @@ impl WebTokens {
                     Some(&refresh_token),
                 ) {
                     Ok(updated) => {
-                        if self.generation.load(Ordering::SeqCst) != generation {
-                            return Err(ApiError::SignInExpired {
-                                api_source: self.source,
-                            });
-                        }
+                        let _epoch_publication = self.epoch.as_ref().map(|(epoch, _)| {
+                            epoch
+                                .publication
+                                .lock()
+                                .unwrap_or_else(|lock| lock.into_inner())
+                        });
+                        let _publication = self
+                            .generation
+                            .publication
+                            .lock()
+                            .unwrap_or_else(|lock| lock.into_inner());
+                        self.ensure_current()?;
                         if let Err(error) = updated.save(&self.path) {
                             log::warn!("unable to save the refreshed Spotify sign-in: {error}");
                         }
@@ -271,8 +338,10 @@ impl WebTokens {
                     }
                 },
                 Err(crate::auth::TokenEndpointError::Rejected { .. }) => {
+                    self.ensure_current()?;
                     return Err(ApiError::SignInExpired {
                         api_source: self.source,
+                        generation: self.mine,
                     });
                 }
                 Err(crate::auth::TokenEndpointError::Unreachable(detail)) => {
@@ -283,6 +352,7 @@ impl WebTokens {
                 }
             }
         }
+        self.ensure_current()?;
         Ok(guard.access_token.clone())
     }
 }
@@ -449,6 +519,16 @@ impl ApiClient {
         }
     }
 
+    pub fn is_current(&self) -> bool {
+        self.provider()
+            .is_ok_and(|provider| provider.ensure_current().is_ok())
+    }
+
+    pub fn identity(&self) -> Option<(ApiSource, u64)> {
+        let TokenProvider::Web(tokens) = self.provider().ok()?;
+        Some((self.source, tokens.mine))
+    }
+
     pub fn set_token_provider(&self, provider: Option<TokenProvider>) {
         *self.tokens.lock().unwrap_or_else(|p| p.into_inner()) = provider;
     }
@@ -532,6 +612,7 @@ impl ApiClient {
             } else if matches!(method, Method::PUT | Method::POST | Method::DELETE) {
                 request = request.header(reqwest::header::CONTENT_LENGTH, "0");
             }
+            provider.ensure_current()?;
             let response = request.send().await?;
             let status = response.status();
 
@@ -1528,7 +1609,7 @@ mod tests {
                 },
                 std::path::PathBuf::from("unused"),
                 ApiSource::Shared,
-                Arc::new(AtomicU64::new(0)),
+                Arc::default(),
             ),
         )));
         let batch = ["a", "b", "c", "d"].map(String::from);

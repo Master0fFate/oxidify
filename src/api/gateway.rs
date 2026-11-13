@@ -1,9 +1,11 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 
 use super::ApiSource;
-use super::client::{ApiClient, ApiError, NetActivity, TokenProvider};
+use super::client::{
+    ApiClient, ApiError, GrantGeneration, NetActivity, SessionEpoch, TokenProvider,
+};
 use super::models::Playlist;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -132,22 +134,28 @@ fn classify_playlist(account: &AccountId, playlist: &Playlist) -> PlaylistAccess
 
 struct Session {
     state: RwLock<SessionState>,
-    client: Arc<ApiClient>,
-    generation: Arc<AtomicU64>,
+    client: RwLock<Arc<ApiClient>>,
+    generation: Arc<GrantGeneration>,
+    http: reqwest::Client,
+    activity: Arc<NetActivity>,
+    profile: ApiProfile,
 }
 
 impl Session {
     fn new(http: reqwest::Client, activity: Arc<NetActivity>, profile: ApiProfile) -> Self {
         Self {
             state: RwLock::new(SessionState::Unavailable),
-            client: Arc::new(ApiClient::new(
-                http,
-                activity,
+            client: RwLock::new(Arc::new(ApiClient::new(
+                http.clone(),
+                activity.clone(),
                 profile.search_limit,
                 profile.artist_albums_limit,
                 profile.source,
-            )),
-            generation: Arc::new(AtomicU64::new(0)),
+            ))),
+            generation: Arc::default(),
+            http,
+            activity,
+            profile,
         }
     }
 
@@ -167,14 +175,24 @@ pub struct ApiGateway {
     shared: Session,
     personal: Session,
     playlist_access: Mutex<HashMap<PlaylistId, PlaylistAccess>>,
+    epoch: Option<Arc<SessionEpoch>>,
 }
 
 impl ApiGateway {
     pub fn new(http: reqwest::Client, activity: Arc<NetActivity>) -> Self {
+        Self::with_epoch(http, activity, None)
+    }
+
+    pub fn with_epoch(
+        http: reqwest::Client,
+        activity: Arc<NetActivity>,
+        epoch: Option<Arc<SessionEpoch>>,
+    ) -> Self {
         Self {
             shared: Session::new(http.clone(), activity.clone(), ApiProfile::SHARED),
             personal: Session::new(http, activity, ApiProfile::PERSONAL),
             playlist_access: Mutex::new(HashMap::new()),
+            epoch,
         }
     }
 
@@ -196,6 +214,24 @@ impl ApiGateway {
     /// Marks a verified session ready, keeping the token provider that
     /// `begin_verification` installed.
     pub fn install(&self, source: ApiSource, account: AccountId) -> Result<(), ApiError> {
+        self.install_if_current(source, self.generation(source), account)
+    }
+
+    pub fn install_if_current(
+        &self,
+        source: ApiSource,
+        generation: u64,
+        account: AccountId,
+    ) -> Result<(), ApiError> {
+        let session = self.session(source);
+        let _publication = session
+            .generation
+            .publication
+            .lock()
+            .unwrap_or_else(|lock| lock.into_inner());
+        if session.generation.value.load(Ordering::SeqCst) != generation {
+            return Err(ApiError::NotSignedIn);
+        }
         let other = match source {
             ApiSource::Shared => ApiSource::Personal,
             ApiSource::Personal => ApiSource::Shared,
@@ -215,37 +251,107 @@ impl ApiGateway {
         Ok(())
     }
 
-    pub fn begin_verification(&self, source: ApiSource, provider: TokenProvider) {
+    pub fn begin_verification(&self, source: ApiSource, provider: TokenProvider) -> u64 {
         let session = self.session(source);
-        session.generation.fetch_add(1, Ordering::SeqCst);
-        session.client.set_token_provider(Some(provider));
+        let _publication = session
+            .generation
+            .publication
+            .lock()
+            .unwrap_or_else(|lock| lock.into_inner());
+        let generation = session.generation.value.fetch_add(1, Ordering::SeqCst) + 1;
+        let client = Arc::new(ApiClient::new(
+            session.http.clone(),
+            Arc::clone(&session.activity),
+            session.profile.search_limit,
+            session.profile.artist_albums_limit,
+            source,
+        ));
+        client.set_token_provider(Some(provider.bind(
+            Arc::clone(&session.generation),
+            generation,
+            self.epoch.clone(),
+        )));
+        *session
+            .client
+            .write()
+            .unwrap_or_else(|lock| lock.into_inner()) = client;
         session.set_state(SessionState::Authorizing);
+        generation
+    }
+
+    pub(crate) fn persist_token(
+        &self,
+        source: ApiSource,
+        generation: u64,
+        token: &crate::auth::StoredToken,
+        path: &std::path::Path,
+    ) -> anyhow::Result<bool> {
+        let session = self.session(source);
+        let _publication = session
+            .generation
+            .publication
+            .lock()
+            .unwrap_or_else(|lock| lock.into_inner());
+        if session.generation.value.load(Ordering::SeqCst) != generation {
+            return Ok(false);
+        }
+        token.save(path)?;
+        Ok(true)
     }
 
     pub fn verification_client(&self, source: ApiSource) -> Arc<ApiClient> {
-        Arc::clone(&self.session(source).client)
+        Arc::clone(
+            &self
+                .session(source)
+                .client
+                .read()
+                .unwrap_or_else(|lock| lock.into_inner()),
+        )
     }
 
     pub fn clear(&self, source: ApiSource) {
         let session = self.session(source);
-        session.generation.fetch_add(1, Ordering::SeqCst);
-        session.client.set_token_provider(None);
+        let _publication = session
+            .generation
+            .publication
+            .lock()
+            .unwrap_or_else(|lock| lock.into_inner());
+        session.generation.value.fetch_add(1, Ordering::SeqCst);
         session.set_state(SessionState::Unavailable);
     }
 
-    pub fn generation(&self, source: ApiSource) -> u64 {
-        self.session(source).generation.load(Ordering::SeqCst)
+    pub fn clear_and_remove(&self, source: ApiSource, path: &std::path::Path) {
+        let session = self.session(source);
+        let _publication = session
+            .generation
+            .publication
+            .lock()
+            .unwrap_or_else(|lock| lock.into_inner());
+        session.generation.value.fetch_add(1, Ordering::SeqCst);
+        session.set_state(SessionState::Unavailable);
+        crate::auth::StoredToken::remove(path);
     }
 
-    pub fn generation_arc(&self, source: ApiSource) -> Arc<AtomicU64> {
+    pub fn generation(&self, source: ApiSource) -> u64 {
+        self.session(source).generation.value.load(Ordering::SeqCst)
+    }
+
+    pub fn generation_arc(&self, source: ApiSource) -> Arc<GrantGeneration> {
         Arc::clone(&self.session(source).generation)
     }
 
     pub fn clear_if_current(&self, source: ApiSource, generation: u64) -> bool {
-        if self.generation(source) != generation {
+        let session = self.session(source);
+        let _publication = session
+            .generation
+            .publication
+            .lock()
+            .unwrap_or_else(|lock| lock.into_inner());
+        if session.generation.value.load(Ordering::SeqCst) != generation {
             return false;
         }
-        self.clear(source);
+        session.generation.value.fetch_add(1, Ordering::SeqCst);
+        session.set_state(SessionState::Unavailable);
         true
     }
 
@@ -259,24 +365,38 @@ impl ApiGateway {
     }
 
     pub fn account(&self) -> Option<AccountId> {
-        self.state(ApiSource::Shared)
-            .account()
-            .cloned()
-            .or_else(|| self.state(ApiSource::Personal).account().cloned())
+        [ApiSource::Shared, ApiSource::Personal]
+            .into_iter()
+            .find_map(|source| {
+                self.verification_client(source)
+                    .is_current()
+                    .then(|| self.state(source).account().cloned())
+                    .flatten()
+            })
     }
 
     pub fn personal_ready(&self) -> bool {
         matches!(self.state(ApiSource::Personal), SessionState::Ready { .. })
     }
 
+    pub fn source_for(&self, operation: Operation) -> ApiSource {
+        plan(operation, self.personal_ready())
+    }
+
     pub fn client_for(&self, operation: Operation) -> Result<Arc<ApiClient>, ApiError> {
-        let source = plan(operation, self.personal_ready());
+        let source = self.source_for(operation);
         let session = self.session(source);
-        if !matches!(session.state(), SessionState::Ready { .. }) {
+        let _publication = session
+            .generation
+            .publication
+            .lock()
+            .unwrap_or_else(|lock| lock.into_inner());
+        let client = self.verification_client(source);
+        if !matches!(session.state(), SessionState::Ready { .. }) || !client.is_current() {
             return Err(ApiError::NotSignedIn);
         }
         log::debug!("Spotify route operation={operation:?} source={source}");
-        Ok(Arc::clone(&session.client))
+        Ok(client)
     }
 
     pub fn playlist_access(&self, id: &str) -> PlaylistAccess {
@@ -324,7 +444,7 @@ mod tests {
             crate::auth::StoredToken::default(),
             path,
             source,
-            Arc::new(AtomicU64::new(0)),
+            Arc::default(),
         ))
     }
 

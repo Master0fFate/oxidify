@@ -490,7 +490,21 @@ impl Engine {
     }
 
     fn handle_command(&mut self, command: PlayerCommand) {
+        if self.hydrating
+            && !self.seeded_play
+            && matches!(command, PlayerCommand::Next | PlayerCommand::Previous)
+        {
+            self.cancel_hydrate();
+        }
         match command {
+            PlayerCommand::Toggle if self.hydrating && !self.seeded_play => {
+                if self.session.playback() == Playback::Loading {
+                    self.session.set_paused();
+                } else {
+                    self.session.set_loading();
+                }
+                self.emit();
+            }
             PlayerCommand::Toggle => match self.session.toggle() {
                 Advance::Stay => {
                     match self.session.playback() {
@@ -514,7 +528,7 @@ impl Engine {
             PlayerCommand::Previous => {
                 if self.overlap_uri.is_none() && self.session.position_now() > 3_000 {
                     self.session.seek(0);
-                    let _ = self.output.seek(0);
+                    self.seek_output(0);
                     self.emit();
                     return;
                 }
@@ -522,14 +536,7 @@ impl Engine {
             }
             PlayerCommand::Seek(position_ms) => {
                 self.session.seek(position_ms);
-                if let Some(pending) = &mut self.pending {
-                    pending.start_ms = position_ms;
-                    if let Some(decode) = &pending.decode {
-                        decode.seek(position_ms);
-                    }
-                } else {
-                    let _ = self.output.seek(position_ms);
-                }
+                self.seek_output(self.session.position_now());
                 self.emit();
             }
             PlayerCommand::Volume(volume) | PlayerCommand::VolumePreview(volume) => {
@@ -569,11 +576,35 @@ impl Engine {
         }
     }
 
+    fn seek_output(&mut self, ms: u32) {
+        if self.session.playback() == Playback::Stopped {
+            return;
+        }
+        if let Some(pending) = &mut self.pending {
+            pending.start_ms = ms;
+            if let Some(decode) = &pending.decode {
+                decode.seek(ms);
+            }
+            return;
+        }
+        if !self.session.can_seek_audio() {
+            return;
+        }
+        let seek_failed = self.output.seek(ms).is_err();
+        if (seek_failed || self.output.status() == OutputStatus::Ended)
+            && self.active_buffer.is_some()
+            && self.active_hint.is_some()
+            && let Err(error) = self.reattach_pcm()
+        {
+            self.fail_transport(error);
+        }
+    }
+
     fn follow(&mut self, advance: Advance) {
         match advance {
             Advance::Stay => self.emit(),
             Advance::SeekZero => {
-                let _ = self.output.seek(0);
+                self.seek_output(0);
                 self.emit();
             }
             Advance::Stop => {
@@ -629,7 +660,14 @@ impl Engine {
         self.truncated = spec.truncated;
         let seed = seed_queue(&spec);
         if seed.is_empty() {
-            self.session.set_loading();
+            self.output.stop();
+            self.session.load(seed, 0, false, spec.shuffle, 0);
+            self.session.seek(spec.position_ms);
+            if spec.play {
+                self.session.set_loading();
+            } else {
+                self.session.set_paused();
+            }
             self.emit();
         } else {
             let offset = offset_index(&spec, &seed);
@@ -964,19 +1002,18 @@ impl Engine {
             let prev = self.session.current().map(|track| track.uri.clone());
             self.session.adopt_tracks(tracks, offset);
             let now = self.session.current().map(|track| track.uri.clone());
-            if spec.play && now != prev {
-                let _ = self.bump();
-                self.start_resolve();
-            } else if spec.play && now.is_some() && self.session.playback() == Playback::Stopped {
-                let advance = self.session.skip_forward();
-                self.follow(advance);
-            } else if spec.play
-                && self.config.skip_on_miss
-                && self.session.playback() == Playback::Paused
-                && self.current_is_unplayable()
-            {
-                let advance = self.session.fail_next();
-                self.follow(advance);
+            if now != prev {
+                let play = matches!(
+                    self.session.playback(),
+                    Playback::Playing | Playback::Loading
+                );
+                self.bump();
+                self.output.stop();
+                if play {
+                    self.start_resolve();
+                } else {
+                    self.emit();
+                }
             } else {
                 self.emit();
                 // The clicked track may already be playing with
@@ -985,9 +1022,8 @@ impl Engine {
                 self.extend_queue();
             }
         } else {
-            self.session
-                .load(tracks, offset, spec.play, spec.shuffle, spec.position_ms);
-            if spec.play {
+            self.session.finish_load(tracks, offset);
+            if self.session.playback() == Playback::Loading {
                 self.start_resolve();
             } else {
                 self.output.stop();

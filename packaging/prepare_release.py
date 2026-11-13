@@ -12,11 +12,13 @@ release and its tag together when the maintainer pulls one back.
 
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import zipfile
 
 
 def require(condition, message):
@@ -82,7 +84,7 @@ def guard(repository, tag, sha, allow_missing=False, create=False):
         assert_draft_only(repository, tag)
 
 
-def verify_uploaded(repository, tag, sha, directory):
+def verify_uploaded(repository, tag, sha, directory, manifest_path=None):
     validate_inputs(repository, tag, sha)
     require(remote_tag_sha(repository, tag) == sha, "Uploaded release tag differs from checked source")
     draft = assert_draft_only(repository, tag)
@@ -91,15 +93,32 @@ def verify_uploaded(repository, tag, sha, directory):
     assets = [asset for page in pages for asset in page]
     files = {path.name: path for path in directory.iterdir()
              if path.name.startswith(f"oxidify-{tag}-") or path.name in ("checksums.txt", "provenance.json")}
-    require(len(files) == 9, "Expected seven payloads, provenance, and checksums")
+    require(set(files) == expected_asset_names(tag), "Expected seven payloads, provenance, and checksums")
     require(len(assets) == len(files) and {a["name"] for a in assets} == set(files),
             "Uploaded draft assets differ from the complete local set")
     for asset in assets:
         path = files[asset["name"]]
         with path.open("rb") as file:
             digest = "sha256:" + hashlib.file_digest(file, "sha256").hexdigest()
-        require(asset.get("state") == "uploaded" and asset.get("size") == path.stat().st_size
+        require(asset.get("state") == "uploaded" and asset.get("size") == path.stat().st_size > 0
                 and asset.get("digest") == digest, f"Uploaded draft asset differs: {path.name}")
+    if manifest_path is not None:
+        run_id = os.environ.get("GITHUB_RUN_ID", "")
+        attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+        event = os.environ.get("GITHUB_EVENT_NAME", "")
+        head_sha = os.environ.get("GITHUB_SHA", "")
+        require(os.environ.get("GITHUB_REPOSITORY") == repository, "Workflow repository differs")
+        require(re.fullmatch(r"[1-9][0-9]*", run_id) and re.fullmatch(r"[1-9][0-9]*", attempt),
+                "Missing workflow run identity")
+        require(event in ("push", "workflow_dispatch") and re.fullmatch(r"[0-9a-f]{40}", head_sha),
+                "Missing workflow event or head SHA")
+        manifest = {
+            "schema_version": 1, "repository": repository, "tag": tag, "source_sha": sha,
+            "run_id": int(run_id), "run_attempt": int(attempt), "event": event, "head_sha": head_sha,
+            "release_id": draft["id"],
+            "assets": {asset["name"]: {"size": asset["size"], "digest": asset["digest"]} for asset in assets},
+        }
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def expected_asset_names(tag):
@@ -113,21 +132,93 @@ def expected_asset_names(tag):
     return names
 
 
-def publish(repository, tag, sha):
-    """Take the draft for `tag` public, once its tag still points at the checked
-    source and every expected asset is uploaded. Nothing else here publishes."""
+def release_run(repository, run_id, workflow_id):
+    run = api(f"repos/{repository}/actions/runs/{run_id}")
+    require(run.get("id") == run_id and run.get("workflow_id") == workflow_id
+            and run.get("path") == ".github/workflows/release.yml", "Unrelated Release workflow run")
+    require(run.get("repository", {}).get("full_name") == repository
+            and run.get("head_repository", {}).get("full_name") == repository,
+            "Release workflow repository differs")
+    require(run.get("status") == "completed" and run.get("conclusion") == "success",
+            "Release workflow run is not successful and completed")
+    require(run.get("event") in ("push", "workflow_dispatch")
+            and type(run.get("run_attempt")) is int and run["run_attempt"] > 0
+            and re.fullmatch(r"[0-9a-f]{40}", run.get("head_sha", "")),
+            "Invalid Release workflow run identity")
+    return run
+
+
+def trusted_manifest(repository, tag, sha, run_id):
+    workflow = api(f"repos/{repository}/actions/workflows/release.yml")
+    require(type(workflow.get("id")) is int and workflow.get("path") == ".github/workflows/release.yml",
+            "Release workflow identity differs")
+    run = release_run(repository, run_id, workflow["id"])
+    if run["event"] == "push":
+        require(run.get("head_branch") == tag and run["head_sha"] == sha,
+                "Release push tag or source differs")
+    pages = api(f"repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100", paginate=True)
+    name = f"publish-manifest-{run['run_attempt']}"
+    matches = [item for page in pages for item in page["artifacts"] if item.get("name") == name]
+    require(len(matches) == 1, "Current Release attempt manifest is missing or ambiguous")
+    artifact = matches[0]
+    provenance = artifact.get("workflow_run", {})
+    require(type(run.get("repository", {}).get("id")) is int
+            and type(run.get("head_repository", {}).get("id")) is int,
+            "Release workflow repository identity is missing")
+    require(artifact.get("expired") is False and type(artifact.get("id")) is int
+            and type(artifact.get("size_in_bytes")) is int and 0 < artifact["size_in_bytes"] <= 1048576
+            and provenance.get("id") == run_id and provenance.get("head_sha") == run["head_sha"]
+            and provenance.get("repository_id") == run.get("repository", {}).get("id")
+            and provenance.get("head_repository_id") == run.get("head_repository", {}).get("id"),
+            "Release manifest artifact provenance is invalid or expired")
+    digest = artifact.get("digest")
+    require(isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest),
+            "Release manifest artifact digest is missing")
+    archive = subprocess.check_output(["gh", "api", f"repos/{repository}/actions/artifacts/{artifact['id']}/zip"])
+    require(len(archive) <= 1048576 and "sha256:" + hashlib.sha256(archive).hexdigest() == digest,
+            "Release manifest artifact digest differs")
+    with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+        entries = zipped.infolist()
+        require(len(entries) == 1 and entries[0].filename == "publish-manifest.json"
+                and 0 < entries[0].file_size <= 65536, "Release manifest archive is invalid")
+        manifest = json.loads(zipped.read(entries[0]))
+    require(isinstance(manifest, dict) and manifest.get("schema_version") == 1
+            and manifest.get("repository") == repository and manifest.get("tag") == tag
+            and manifest.get("source_sha") == sha and manifest.get("run_id") == run_id
+            and manifest.get("run_attempt") == run["run_attempt"]
+            and manifest.get("event") == run["event"] and manifest.get("head_sha") == run["head_sha"]
+            and type(manifest.get("release_id")) is int and manifest["release_id"] > 0,
+            "Release manifest identity differs")
+    assets = manifest.get("assets")
+    require(isinstance(assets, dict) and set(assets) == expected_asset_names(tag),
+            "Release manifest asset names differ")
+    require(all(isinstance(asset, dict) and type(asset.get("size")) is int and asset["size"] > 0
+                and isinstance(asset.get("digest"), str)
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", asset["digest"]) for asset in assets.values()),
+            "Release manifest asset sizes or digests are invalid")
+    return run, manifest
+
+
+def publish(repository, tag, sha, run_id):
     validate_inputs(repository, tag, sha)
+    require(isinstance(run_id, str) and re.fullmatch(r"[1-9][0-9]*", run_id), "Expected a Release run ID")
+    run_id = int(run_id)
+    run, manifest = trusted_manifest(repository, tag, sha, run_id)
     require(remote_tag_sha(repository, tag) == sha, "Release tag differs from the checked source SHA")
     draft = assert_draft_only(repository, tag)
-    require(draft is not None, "No draft release to publish")
+    require(draft is not None and draft.get("id") == manifest.get("release_id"),
+            "Draft release differs from the validated release")
+    require(release_run(repository, run_id, run["workflow_id"]) == run,
+            "Release workflow run changed before publication")
     pages = api(f"repos/{repository}/releases/{draft['id']}/assets?per_page=100", paginate=True)
     assets = [asset for page in pages for asset in page]
     names = {asset["name"] for asset in assets}
     expected = expected_asset_names(tag)
-    require(names == expected,
+    require(len(assets) == len(expected) and names == expected,
             f"Draft assets are incomplete: missing {sorted(expected - names)}, unexpected {sorted(names - expected)}")
-    require(all(asset.get("state") == "uploaded" and asset.get("size", 0) > 0 for asset in assets),
-            "A draft asset is not fully uploaded")
+    require(all(asset.get("state") == "uploaded" and asset.get("size") == manifest["assets"][asset["name"]]["size"]
+                and asset.get("digest") == manifest["assets"][asset["name"]]["digest"] for asset in assets),
+            "A draft asset differs from the validated upload")
     api(f"repos/{repository}/releases/{draft['id']}",
         payload={"draft": False, "make_latest": "true", "tag_name": tag, "target_commitish": sha},
         method="PATCH")
@@ -159,11 +250,13 @@ def main():
     parser.add_argument("--sha", required=True)
     parser.add_argument("--allow-missing", action="store_true")
     parser.add_argument("--directory", type=Path, default=Path("dist"))
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--run-id", default="")
     args = parser.parse_args()
     if args.command == "uploaded":
-        verify_uploaded(args.repository, args.tag, args.sha, args.directory)
+        verify_uploaded(args.repository, args.tag, args.sha, args.directory, args.manifest)
     elif args.command == "publish":
-        publish(args.repository, args.tag, args.sha)
+        publish(args.repository, args.tag, args.sha, args.run_id)
     elif args.command == "retract":
         retract(args.repository, args.tag, args.sha)
     else:

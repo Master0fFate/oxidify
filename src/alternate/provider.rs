@@ -445,6 +445,7 @@ impl Resolver {
             collect_search_results(&mut tasks, query, min_score.max(STRONG_MATCH_SCORE)).await;
         let mut candidates = race.candidates;
         let mut answered = race.answered;
+        let mut complete = race.complete;
 
         if rank_candidates(query, &candidates, min_score).is_none()
             && let Some(ytdlp) = &self.ytdlp
@@ -455,8 +456,14 @@ impl Resolver {
                     candidates.extend(items);
                     deduplicate(&mut candidates);
                 }
-                Ok(Err(error)) => log::warn!("yt-dlp fallback search failed: {error}"),
-                Err(_) => log::warn!("yt-dlp fallback search timed out"),
+                Ok(Err(error)) => {
+                    complete = false;
+                    log::warn!("yt-dlp fallback search failed: {error}");
+                }
+                Err(_) => {
+                    complete = false;
+                    log::warn!("yt-dlp fallback search timed out");
+                }
             }
         }
 
@@ -465,7 +472,7 @@ impl Resolver {
         }
         if rank_candidates(query, &candidates, min_score).is_some() {
             self.remember_search(cache_key, candidates.clone());
-        } else {
+        } else if complete {
             self.remember_miss(cache_key, candidates.clone());
         }
         Ok(candidates)
@@ -595,6 +602,7 @@ impl MediaLookup for Resolver {
 struct SearchRace {
     candidates: Vec<Candidate>,
     answered: bool,
+    complete: bool,
 }
 
 type SearchTaskResult = (ProviderKind, Result<Vec<Candidate>, String>);
@@ -606,6 +614,7 @@ async fn collect_search_results(
 ) -> SearchRace {
     let mut candidates = Vec::new();
     let mut answered = false;
+    let mut complete = true;
     while let Some(joined) = tasks.join_next().await {
         match joined {
             Ok((provider, Ok(items))) => {
@@ -619,20 +628,29 @@ async fn collect_search_results(
                         while let Some(Ok((_provider, Ok(items)))) = tasks.try_join_next() {
                             candidates.extend(items);
                         }
+                        complete &= tasks.is_empty();
                         tasks.abort_all();
                         deduplicate(&mut candidates);
                         break;
                     }
                 }
             }
-            Ok((provider, Err(error))) => log::warn!("{provider:?} search failed: {error}"),
-            Err(error) if error.is_cancelled() => {}
-            Err(error) => log::warn!("alternate search task failed: {error}"),
+            Ok((provider, Err(error))) => {
+                complete = false;
+                log::warn!("{provider:?} search failed: {error}");
+            }
+            Err(error) => {
+                complete = false;
+                if !error.is_cancelled() {
+                    log::warn!("alternate search task failed: {error}");
+                }
+            }
         }
     }
     SearchRace {
         candidates,
         answered,
+        complete,
     }
 }
 

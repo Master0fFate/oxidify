@@ -388,15 +388,17 @@ can pipe the output, as in `oxidify now-playing | more`.
 The channel is one per computer, not one per user. When several people
 are signed in at once (fast user switching or Remote Desktop), the first
 to start Oxidify holds it; the others' Oxidify still starts, without
-control over the first one's player. A control verb carries the sender's
-user key and is obeyed only for the account that started the instance, so
-another account cannot drive its playback; `now-playing` and `devices`
-still answer any caller because they reveal only snapshots the app already
-publishes much like the key a launcher needs to draw its button.
+control over the first one's player. On Windows, control verbs carry a random
+256-bit secret held in the current user's session Credential Manager. On
+macOS, control uses a Unix-domain socket whose peer identity must match the
+player's OS user. If authentication is unavailable, control is refused.
+`now-playing` and `devices` still answer any local caller over TCP; these
+snapshots are not private.
 
 Launchers such as Raycast or Alfred can use these commands to control
-playback. The Stream Deck plugin speaks the same channel, which is why
-the verbs cover more than a media key can ask for.
+playback. Integrations should invoke the CLI commands above. Older clients
+that send a home-directory hash over TCP cannot authenticate and must be
+updated.
 
 ## Settings
 
