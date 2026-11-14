@@ -4373,6 +4373,7 @@ impl App {
         uris.extend(spec.uris.iter().cloned());
         let mut seen = HashSet::new();
         uris.retain(|uri| seen.insert(uri.clone()));
+        seen.retain(|uri| !util::uri_id(uri).is_some_and(|id| self.track_cache.contains_key(id)));
         let mut loaded = self.loaded_local_tracks(&seen);
         uris.into_iter()
             .filter_map(|uri| {
@@ -4387,41 +4388,56 @@ impl App {
 
     fn loaded_local_tracks(&self, wanted: &HashSet<String>) -> HashMap<String, LocalTrack> {
         let mut found = HashMap::new();
-        let mut keep = |track: &Track, album: Option<&Album>| {
-            if found.len() < wanted.len()
-                && wanted.contains(&track.uri)
-                && !found.contains_key(&track.uri)
-            {
-                found.insert(track.uri.clone(), local_with_album(track, album));
-            }
-        };
-        for page in self.playlist_pages.values() {
-            for item in &page.items.items {
-                if let Some(PlayableItem::Track(track)) = item.playable() {
-                    keep(track, None);
-                }
-            }
+        if wanted.is_empty() {
+            return found;
         }
-        for page in self.album_pages.values() {
-            for track in &page.tracks.items {
-                keep(track, page.album.get());
-            }
-        }
-        for saved in &self.library.liked.items {
-            keep(&saved.track, None);
-        }
-        for page in self.artist_pages.values() {
-            for track in page.top_tracks.get().into_iter().flatten() {
-                keep(track, None);
-            }
-        }
+        let playlists = self.playlist_pages.values().flat_map(|page| {
+            page.items
+                .items
+                .iter()
+                .filter_map(|item| match item.playable() {
+                    Some(PlayableItem::Track(track)) => Some((track, None)),
+                    _ => None,
+                })
+        });
+        let albums = self.album_pages.values().flat_map(|page| {
+            page.tracks
+                .items
+                .iter()
+                .map(|track| (track, page.album.get()))
+        });
+        let liked = self
+            .library
+            .liked
+            .items
+            .iter()
+            .map(|saved| (&saved.track, None));
+        let artists = self.artist_pages.values().flat_map(|page| {
+            page.top_tracks
+                .get()
+                .into_iter()
+                .flatten()
+                .map(|track| (track, None))
+        });
         let searched = self
             .search
             .results
             .get()
-            .and_then(|results| results.tracks.as_ref());
-        for track in searched.into_iter().flat_map(|page| &page.items) {
-            keep(track, None);
+            .and_then(|results| results.tracks.as_ref())
+            .into_iter()
+            .flat_map(|page| page.items.iter().map(|track| (track, None)));
+        for (track, album) in playlists
+            .chain(albums)
+            .chain(liked)
+            .chain(artists)
+            .chain(searched)
+        {
+            if wanted.contains(&track.uri) && !found.contains_key(&track.uri) {
+                found.insert(track.uri.clone(), local_with_album(track, album));
+                if found.len() == wanted.len() {
+                    break;
+                }
+            }
         }
         found
     }
