@@ -33,7 +33,8 @@ struct Cli {
     demo_page: Option<String>,
 
     /// Extra demo surfaces: a comma-separated list of `queue`, `devices`,
-    /// `shortcuts`, `create`, `light`, `focus`, `login`.
+    /// `shortcuts`, `create`, `light`, `focus`, `login`, `update`,
+    /// `update-downloading`, `update-ready`.
     #[cfg(feature = "demo")]
     #[arg(long)]
     demo_show: Option<String>,
@@ -474,8 +475,15 @@ fn main() -> eframe::Result<()> {
         }
     }
 
-    if let Some(mut app) = slot.lock().unwrap_or_else(|p| p.into_inner()).take() {
-        app.shutdown();
+    let prepared = slot
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+        .and_then(|mut app| app.shutdown());
+    if let Some(prepared) = prepared
+        && let Err(error) = prepared.install_on_exit()
+    {
+        log::error!("Couldn't install the update: {error:#}");
     }
     Ok(())
 }

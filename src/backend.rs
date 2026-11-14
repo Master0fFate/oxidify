@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use librespot_core::authentication::Credentials;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::alternate::{self, AlternateConfig, AlternateHandle};
 use crate::api::client::SessionEpoch;
@@ -30,8 +30,10 @@ use crate::player::{
     RepeatMode,
 };
 use crate::settings::{PlaybackBackend, ProxySetting};
+use crate::updates::{self, InstallTarget, Release};
 
 pub type ApiResult<T> = Result<T, ApiError>;
+pub type UpdateDownload = Result<updates::PreparedUpdate, String>;
 
 const PREMIUM_NEEDED: &str = "Local playback needs Spotify Premium.";
 const REJECTED_GRANT: &str = "Spotify rejected the saved sign-in. Please sign in again.";
@@ -540,6 +542,11 @@ pub enum Command {
     CheckForUpdates {
         manual: bool,
     },
+    /// Fetch and verify the package the listener chose to install.
+    DownloadUpdate {
+        release: Box<Release>,
+        finished: oneshot::Sender<UpdateDownload>,
+    },
     /// The words of a track, from LRCLIB.
     Lyrics(Box<LyricsRequest>),
     /// Add, replace, or remove the optional personal Web API application.
@@ -615,7 +622,7 @@ pub enum Event {
     /// The result of a GitHub update check, including failures.
     UpdateChecked {
         manual: bool,
-        result: Result<Option<crate::updates::Release>, String>,
+        result: Result<Option<Release>, String>,
     },
     /// The words of a track, or `None` when nobody has transcribed it.
     Lyrics {
@@ -1104,6 +1111,7 @@ struct Worker {
     /// The halves of the search in flight, aborted when a newer one starts
     /// so stale answers never queue behind the request that matters.
     search_tasks: Vec<tokio::task::AbortHandle>,
+    update_download: Option<tokio::task::JoinHandle<()>>,
     top_tracks_writes: Arc<top_tracks_cache::Writes>,
     art: ArtLoader,
     events: EventSender,
@@ -1182,6 +1190,7 @@ impl Worker {
             api,
             background_api: Arc::new(tokio::sync::Semaphore::new(4)),
             search_tasks: Vec::new(),
+            update_download: None,
             top_tracks_writes: Arc::default(),
             http,
             art,
@@ -1258,6 +1267,7 @@ impl Worker {
                         | Command::Accent { .. }
                         | Command::ClearArtCache
                         | Command::CheckForUpdates { .. }
+                        | Command::DownloadUpdate { .. }
                         | Command::ImportYoutubeCookies(_)
                         | Command::RemoveYoutubeCookies
                 )
@@ -1509,6 +1519,9 @@ impl Worker {
                 Command::DiscoverReceivers => self.discover_receivers(),
                 Command::ActivateReceiver(receiver) => self.activate_receiver(*receiver),
                 Command::CheckForUpdates { manual } => self.check_for_updates(manual),
+                Command::DownloadUpdate { release, finished } => {
+                    self.download_update(*release, finished);
+                }
                 Command::Lyrics(request) => self.fetch_lyrics(*request),
                 Command::LoadPlaylistCache { id, generation } => {
                     self.load_playlist_cache(account, id, generation)
@@ -1550,6 +1563,10 @@ impl Worker {
             let _ = finished.send(());
         }));
         let _ = drained.await;
+        // An approved update can finish after the listener closes the window.
+        if let Some(download) = self.update_download.take() {
+            let _ = download.await;
+        }
     }
 
     fn player_command(&self, command: PlayerCommand) {
@@ -2498,12 +2515,33 @@ impl Worker {
         let events = self.events.clone();
         let waker = self.waker.clone();
         tokio::spawn(async move {
-            let result = crate::updates::newer_release(&http)
+            let target = tokio::task::spawn_blocking(InstallTarget::detect)
+                .await
+                .ok()
+                .flatten();
+            let result = updates::newer_release(&http, target)
                 .await
                 .map_err(|error| format!("{error:#}"));
             let _ = events.send(Event::UpdateChecked { manual, result });
             waker.wake();
         });
+    }
+
+    fn download_update(&mut self, release: Release, finished: oneshot::Sender<UpdateDownload>) {
+        let http = self.http.clone();
+        let waker = self.waker.clone();
+        self.update_download = Some(tokio::spawn(async move {
+            let result = async {
+                let target = tokio::task::spawn_blocking(InstallTarget::detect)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("This installation needs a manual update"))?;
+                updates::download(&http, &release, target).await
+            }
+            .await
+            .map_err(|error| format!("{error:#}"));
+            let _ = finished.send(result);
+            waker.wake();
+        }));
     }
 
     fn fetch_lyrics(&self, request: LyricsRequest) {

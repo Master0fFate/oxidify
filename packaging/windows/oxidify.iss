@@ -29,10 +29,11 @@
 
 #define AppName "Oxidify"
 #define AppExeName "oxidify.exe"
+#define OxidifyAppGuid "7E9C4B61-3A28-4E75-9C0D-6F1B2A48D915"
 
 [Setup]
 ; Never change: this is how Windows tells an update from a new program.
-AppId={{7E9C4B61-3A28-4E75-9C0D-6F1B2A48D915}
+AppId={{{#OxidifyAppGuid}}
 AppName={#AppName}
 AppVersion={#Version}
 AppVerName={#AppName} {#Version}
@@ -40,6 +41,7 @@ AppPublisher=Master0fFate
 AppPublisherURL=https://github.com/Master0fFate/oxidify
 AppSupportURL=https://github.com/Master0fFate/oxidify/issues
 AppUpdatesURL=https://github.com/Master0fFate/oxidify/releases
+SetupMutex=OxidifySetup-{#OxidifyAppGuid}
 DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -78,10 +80,78 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Code]
+const
+  UninstallKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{{#OxidifyAppGuid}}_is1';
+  ProcessSynchronizeAccess = $00100000;
+  ProcessNotFound = 87; { ERROR_INVALID_PARAMETER }
+  WaitObjectSignaled = 0; { WAIT_OBJECT_0 }
+
+function OpenProcess(DesiredAccess: DWORD; InheritHandle: BOOL; ProcessId: DWORD): THandle;
+  external 'OpenProcess@kernel32.dll stdcall';
+function WaitForSingleObject(ObjectHandle: THandle; Milliseconds: DWORD): DWORD;
+  external 'WaitForSingleObject@kernel32.dll stdcall';
+function CloseHandle(ObjectHandle: THandle): BOOL;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+function WaitForOxidifyExit(ProcessId: DWORD): Boolean;
+var
+  ProcessHandle: THandle;
+begin
+  ProcessHandle := OpenProcess(ProcessSynchronizeAccess, False, ProcessId);
+  if ProcessHandle = 0 then
+  begin
+    { The app usually exits while Setup is unpacking its startup files. }
+    Result := DLLGetLastError = ProcessNotFound;
+    Exit;
+  end;
+  try
+    Result := WaitForSingleObject(ProcessHandle, 30000) = WaitObjectSignaled;
+  finally
+    CloseHandle(ProcessHandle);
+  end;
+end;
+
+function CheckAutomaticUpdate(const Pid, FromVersion: String): String;
+var
+  ProcessId: Int64;
+  InstalledDirectory, RegisteredVersion: String;
+  ExpectedVersion, InstalledVersion, NewVersion: Int64;
+begin
+  Result := 'Oxidify setup could not verify the installation to update.';
+  ProcessId := StrToInt64Def(Pid, 0);
+  if (ProcessId <= 0) or (ProcessId > 4294967295) or
+    (FromVersion = '') or not StrToVersion(FromVersion, ExpectedVersion) then
+    Exit;
+  if not WaitForOxidifyExit(DWORD(ProcessId)) then
+  begin
+    Result := 'Oxidify did not exit in time for the update.';
+    Exit;
+  end;
+  if not RegQueryStringValue(HKCU, UninstallKey, 'Inno Setup: App Path', InstalledDirectory) or
+    (CompareText(InstalledDirectory, WizardDirValue) <> 0) or
+    not RegQueryStringValue(HKCU, UninstallKey, 'DisplayVersion', RegisteredVersion) or
+    (RegisteredVersion <> FromVersion) or
+    not GetPackedVersion(AddBackslash(WizardDirValue) + '{#AppExeName}', InstalledVersion) or
+    (InstalledVersion <> ExpectedVersion) or
+    not StrToVersion('{#Version}', NewVersion) or
+    (ComparePackedVersion(NewVersion, InstalledVersion) <= 0) then
+    Exit;
+  Result := '';
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
+  UpdatePid, FromVersion: String;
 begin
+  UpdatePid := ExpandConstant('{param:OXIDIFYUPDATEPID|}');
+  FromVersion := ExpandConstant('{param:OXIDIFYFROMVERSION|}');
+  if (UpdatePid <> '') or (FromVersion <> '') then
+  begin
+    { The old process chose to quit. Do not close a newly opened copy. }
+    Result := CheckAutomaticUpdate(UpdatePid, FromVersion);
+    Exit;
+  end;
   { New releases acknowledge `quit` and finish their own audio teardown.
     Older releases reject it; CloseApplications=force below is the fallback. }
   if FileExists(ExpandConstant('{app}\{#AppExeName}')) then

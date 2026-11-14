@@ -128,6 +128,8 @@ jobs:
         run: bash third_party/yt-dlp/vendor.sh --target ${{ matrix.target }} --require
 
       - run: cargo build --locked --release --target ${{ matrix.target }}
+        env:
+          OXIDIFY_RELEASE_BUILD: '1'
 
       - name: Check Linux binary version
         if: runner.os == 'Linux'
@@ -182,7 +184,7 @@ jobs:
         shell: pwsh
         run: |
           $version = $env:RELEASE_TAG.TrimStart("v")
-          $destination = Join-Path $env:RUNNER_TEMP 'oxidify-install-test'
+          $destination = Join-Path $env:RUNNER_TEMP 'oxidify install test'
           $setup = Join-Path $PWD "dist/oxidify-v$version-x86_64-pc-windows-msvc-setup.exe"
           $install = Start-Process $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$destination`"") -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
@@ -191,6 +193,30 @@ jobs:
           if ($actual -notmatch "^$([regex]::Escape($version))(\.0)?$") { throw "Installed version is $actual, expected $version" }
           python packaging/verify_release.py installed --tag $env:RELEASE_TAG --directory $destination --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { throw 'Installed payload verification failed' }
+          # Simulate the app having exited before Setup's Preparing to Install step.
+          $exited = Start-Process $env:ComSpec -ArgumentList @('/d', '/c', 'exit') -NoNewWindow -PassThru -Wait
+          $updateFlags = @('/SP-', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS', "/OXIDIFYUPDATEPID=$($exited.Id)", "/OXIDIFYFROMVERSION=$version")
+          $installDirArg = "/DIR=`"$destination`""
+          $reject = Start-Process $setup -ArgumentList ($updateFlags + @($installDirArg)) -Wait -PassThru
+          if ($reject.ExitCode -ne 7) { throw "Expected Setup to reject an automatic reinstall, got $($reject.ExitCode)" }
+          # Use a test-only payload to exercise a successful upgrade in place.
+          $fixture = Join-Path $env:RUNNER_TEMP 'oxidify-update-test'
+          New-Item -Path $fixture -ItemType Directory | Out-Null
+          $replacement = Join-Path $fixture 'oxidify.exe'
+          Copy-Item $env:ComSpec $replacement
+          $old = [version]$version
+          $new = "$($old.Major).$($old.Minor).$($old.Build + 1)"
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DVersion=$new" '/DArch=x86_64' "/DBinary=$replacement" "/DOutputDir=$fixture" packaging\windows\oxidify.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Test upgrade installer compilation failed' }
+          $upgrade = Join-Path $fixture "oxidify-v$new-x86_64-pc-windows-msvc-setup.exe"
+          $wrongDir = Join-Path $env:RUNNER_TEMP 'oxidify wrong destination'
+          $reject = Start-Process $upgrade -ArgumentList ($updateFlags + @("/DIR=`"$wrongDir`"")) -Wait -PassThru
+          if ($reject.ExitCode -ne 7 -or (Test-Path $wrongDir)) { throw 'Automatic setup did not reject an unregistered destination' }
+          $updated = Start-Process $upgrade -ArgumentList ($updateFlags + @($installDirArg)) -Wait -PassThru
+          if ($updated.ExitCode -ne 0) { throw "Automatic upgrade failed: $($updated.ExitCode)" }
+          if ((Get-FileHash $binary).Hash -ne (Get-FileHash $replacement).Hash) { throw 'Automatic upgrade did not replace the installed executable' }
           $uninstall = Start-Process (Join-Path $destination 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
           if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstall.ExitCode)" }
           if (Test-Path $binary) { throw 'Uninstaller left the binary behind' }
@@ -252,6 +278,8 @@ jobs:
           bash third_party/yt-dlp/vendor.sh --target x86_64-apple-darwin --require
 
       - name: Build both architectures
+        env:
+          OXIDIFY_RELEASE_BUILD: '1'
         run: |
           cargo build --locked --release --target aarch64-apple-darwin
           cargo build --locked --release --target x86_64-apple-darwin

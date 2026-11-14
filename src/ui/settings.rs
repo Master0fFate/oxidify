@@ -3,7 +3,7 @@
 use egui::{Align, CornerRadius, Frame, Layout, Margin, Stroke, Vec2};
 
 use crate::api::models::pick_image;
-use crate::app::App;
+use crate::app::{App, UpdateStatus};
 use crate::model::{Action, Dialog};
 use crate::settings::{self, PlaybackBackend, ProxyMode, ThemeChoice};
 use crate::theme::{self, Icon, Palette};
@@ -1427,7 +1427,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     "Check for updates"
                 };
                 if ui
-                    .add_enabled_ui(!app.update_checking && !app.offline, |ui| {
+                    .add_enabled_ui(app.can_check_for_updates(), |ui| {
                         theme::soft_button(ui, &palette, Some(Icon::Refresh), check_label, false)
                     })
                     .inner
@@ -1435,17 +1435,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 {
                     app.actions.push(Action::CheckForUpdates);
                 }
-                if let Some(update) = &app.update
-                    && theme::soft_button(
-                        ui,
-                        &palette,
-                        Some(Icon::ExternalLink),
-                        "Download update",
-                        false,
-                    )
-                    .clicked()
-                {
-                    app.actions.push(Action::OpenUrl(update.url.clone()));
+                match app.update_status() {
+                    Some(status @ (UpdateStatus::Manual | UpdateStatus::Available)) => {
+                        let (icon, label) = if status == UpdateStatus::Available {
+                            (None, "Download update")
+                        } else {
+                            (Some(Icon::ExternalLink), "Open release downloads")
+                        };
+                        if theme::soft_button(ui, &palette, icon, label, false).clicked() {
+                            app.actions.push(Action::DownloadUpdate);
+                        }
+                    }
+                    Some(UpdateStatus::Downloading) => {
+                        ui.label("Downloading the update…");
+                    }
+                    Some(UpdateStatus::Ready) => {
+                        ui.label("Update ready. Quit Oxidify to install it.");
+                    }
+                    None => {}
                 }
                 if theme::soft_button(
                     ui,

@@ -5,7 +5,7 @@ use egui::text::{LayoutJob, TextFormat};
 use egui::{Align, CornerRadius, Frame, Layout, Margin, Rect, Sense, UiBuilder, Vec2, pos2, vec2};
 
 use crate::api::models::pick_image;
-use crate::app::App;
+use crate::app::{App, UpdateStatus};
 use crate::backend::LocalPlayback;
 use crate::model::{Action, Page};
 use crate::settings::PlaybackBackend;
@@ -168,14 +168,12 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     // account would otherwise be covered.
     let nav_width = topbar_nav_width(sidebar_hidden);
     let caption = super::caption_width(ui.ctx());
-    let right_reserved =
-        topbar_right_reserved(spinner, app.update.is_some(), remote_label.is_some());
+    let has_update = app.update_status().is_some();
+    let right_reserved = topbar_right_reserved(spinner, has_update, remote_label.is_some());
     let min_width = nav_width + right_reserved + 2.0 * CLUSTER_GAP + HOME_SIZE + 8.0 + 96.0;
     if bar.width() - caption < min_width {
         let right_reserved = right_reserved
-            + 20.0
-                * (spinner as u8 + app.update.is_some() as u8 + remote_label.is_some() as u8)
-                    as f32;
+            + 20.0 * (spinner as u8 + has_update as u8 + remote_label.is_some() as u8) as f32;
         let min_width = nav_width + right_reserved + 2.0 * CLUSTER_GAP + HOME_SIZE + 8.0 + 96.0;
         let viewport = Rect::from_min_max(
             bar.min,
@@ -400,9 +398,9 @@ fn contents_inner(
         theme::spinner(&mut right, SPINNER_SIZE, palette.secondary)
             .on_hover_text("Talking to Spotify…");
     }
-    if let Some(update) = &app.update {
+    if let Some(status) = app.update_status() {
         right.add_space(4.0);
-        update_notice(&mut right, &palette, update, &mut app.actions);
+        update_notice(&mut right, &palette, status, &mut app.actions);
     }
     if let Some((icon, label)) = remote_label {
         right.add_space(4.0);
@@ -523,13 +521,28 @@ fn account_menu(app: &mut App, ui: &mut egui::Ui) {
         });
 }
 
-fn update_notice(
+pub(super) fn update_notice(
     ui: &mut egui::Ui,
     palette: &Palette,
-    update: &crate::updates::Release,
+    status: UpdateStatus,
     actions: &mut Vec<Action>,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(UPDATE_WIDTH, 30.0), Sense::click());
+    let (label, hint, clickable) = match status {
+        UpdateStatus::Manual => ("Update available", "Open the release downloads", true),
+        UpdateStatus::Available => (
+            "Update available",
+            "Download and install when you quit",
+            true,
+        ),
+        UpdateStatus::Downloading => ("Downloading…", "Oxidify is downloading the update", false),
+        UpdateStatus::Ready => ("Update ready", "Quit Oxidify to install the update", false),
+    };
+    let sense = if clickable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(UPDATE_WIDTH, 30.0), sense);
     ui.painter().rect_filled(
         rect,
         CornerRadius::same(14),
@@ -538,17 +551,22 @@ fn update_notice(
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        "Update available",
+        label,
         theme::medium(12.5),
         palette.accent,
     );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Update available")
-    });
-    if response.clicked() {
-        actions.push(Action::OpenUrl(update.url.clone()));
+    if clickable {
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+        if response.clicked() {
+            actions.push(Action::DownloadUpdate);
+        }
+        response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(hint)
+    } else {
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label));
+        response.on_hover_text(hint)
     }
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn source_chip(
@@ -785,41 +803,48 @@ mod tests {
     }
 
     #[test]
-    fn update_notice_opens_the_release_page_only_when_clicked() {
-        let ctx = egui::Context::default();
-        theme::install(&ctx);
-        let release = crate::updates::Release {
-            version: "1.2.3".into(),
-            url: "https://github.com/Master0fFate/oxidify/releases/tag/v1.2.3".into(),
-        };
-        let mut actions = Vec::new();
-        let mut rect = egui::Rect::NOTHING;
-        let mut frame = |events| {
-            let mut output = ctx.run_ui(
-                egui::RawInput {
-                    events,
-                    ..Default::default()
-                },
-                |ui| {
-                    rect = update_notice(ui, &Palette::dark(), &release, &mut actions).rect;
-                },
-            );
-            output.textures_delta.clear();
-            rect.center()
-        };
-        let pos = frame(Vec::new());
-        for pressed in [true, false] {
-            frame(vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ]);
+    fn only_an_available_update_can_be_clicked() {
+        for status in [
+            UpdateStatus::Manual,
+            UpdateStatus::Available,
+            UpdateStatus::Downloading,
+            UpdateStatus::Ready,
+        ] {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            let mut actions = Vec::new();
+            let mut rect = egui::Rect::NOTHING;
+            let mut frame = |events| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        rect = update_notice(ui, &Palette::dark(), status, &mut actions).rect;
+                    },
+                );
+                output.textures_delta.clear();
+                rect.center()
+            };
+            let pos = frame(Vec::new());
+            for pressed in [true, false] {
+                frame(vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+            }
+            if matches!(status, UpdateStatus::Manual | UpdateStatus::Available) {
+                assert!(matches!(actions.as_slice(), [Action::DownloadUpdate]));
+            } else {
+                assert!(actions.is_empty());
+            }
         }
-        assert!(matches!(actions.as_slice(), [Action::OpenUrl(url)] if url == &release.url));
     }
 
     #[test]

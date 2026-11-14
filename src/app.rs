@@ -13,7 +13,7 @@ use crate::api::models::{
 };
 use crate::backend::{
     ApiRequest, ApiResponse, AuthStatus, Backend, Command, Event, LocalPlayback, LyricsRequest,
-    PLAYLIST_PAGE_SIZE, RemoteAction, Waker,
+    PLAYLIST_PAGE_SIZE, RemoteAction, UpdateDownload, Waker,
 };
 use crate::discord::{DiscordPresence, Presence};
 use crate::media::{MediaCommand, MediaState, MediaTrack};
@@ -27,7 +27,9 @@ use crate::settings::{self, PlaybackBackend, SessionState, Settings, ThemeChoice
 use crate::single_instance::ControlCommand;
 use crate::theme::{self, Palette};
 use crate::tray::{TrayCommand, TrayService};
+use crate::updates::{PreparedUpdate, Release};
 use crate::util;
+use tokio::sync::oneshot;
 
 const REMOTE_POLL_ACTIVE: Duration = Duration::from_secs(4);
 const REMOTE_POLL_IDLE: Duration = Duration::from_secs(20);
@@ -59,6 +61,21 @@ const PLAYBACK_HOLD: Duration = Duration::from_secs(6);
 /// waiting for the ordinary poll.
 const REMOTE_RECHECK: Duration = Duration::from_millis(1200);
 const CONTAINS_BATCH: usize = 40;
+
+enum UpdateInstall {
+    Downloading(oneshot::Receiver<UpdateDownload>),
+    Ready(PreparedUpdate),
+    #[cfg(feature = "demo")]
+    Demo(UpdateStatus),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UpdateStatus {
+    Manual,
+    Available,
+    Downloading,
+    Ready,
+}
 
 pub struct RemoteSnapshot {
     pub state: PlaybackState,
@@ -382,9 +399,10 @@ pub struct App {
     resume_track: Option<String>,
     resume_position_ms: u32,
     /// A newer release than this build, once GitHub has said so.
-    pub update: Option<crate::updates::Release>,
+    update: Option<Release>,
+    update_install: Option<UpdateInstall>,
     last_update_check: Option<Instant>,
-    pub update_checking: bool,
+    pub(crate) update_checking: bool,
     /// Free-account (or Premium-required) switch to Alternate already applied.
     free_alternate_applied: bool,
     /// Local engine started once after `/me` selected the effective mode.
@@ -613,6 +631,7 @@ impl App {
             resume_track: session.last_track.clone(),
             resume_position_ms: session.last_position_ms,
             update: None,
+            update_install: None,
             last_update_check: None,
             update_checking: false,
             free_alternate_applied: false,
@@ -1228,7 +1247,7 @@ impl App {
     }
 
     fn check_for_updates(&mut self, manual: bool) {
-        if self.update_checking || self.offline {
+        if !self.can_check_for_updates() {
             return;
         }
         self.update_checking = true;
@@ -1236,12 +1255,15 @@ impl App {
         self.backend.send(Command::CheckForUpdates { manual });
     }
 
-    fn finish_update_check(
-        &mut self,
-        manual: bool,
-        result: Result<Option<crate::updates::Release>, String>,
-    ) {
+    pub(crate) fn can_check_for_updates(&self) -> bool {
+        !self.update_checking && !self.offline && self.update_install.is_none()
+    }
+
+    fn finish_update_check(&mut self, manual: bool, result: Result<Option<Release>, String>) {
         self.update_checking = false;
+        if self.update_install.is_some() {
+            return;
+        }
         match result {
             Ok(Some(notice)) => {
                 if manual || self.update.as_ref() != Some(&notice) {
@@ -1259,6 +1281,65 @@ impl App {
                 self.toast_error(format!("Couldn't check for updates: {error}"))
             }
             Err(error) => log::debug!("could not check for updates: {error}"),
+        }
+    }
+
+    pub(crate) fn update_status(&self) -> Option<UpdateStatus> {
+        let release = self.update.as_ref()?;
+        Some(match &self.update_install {
+            Some(UpdateInstall::Downloading(_)) => UpdateStatus::Downloading,
+            Some(UpdateInstall::Ready(_)) => UpdateStatus::Ready,
+            #[cfg(feature = "demo")]
+            Some(UpdateInstall::Demo(status)) => *status,
+            None if release.asset.is_some() => UpdateStatus::Available,
+            None => UpdateStatus::Manual,
+        })
+    }
+
+    #[cfg(feature = "demo")]
+    pub(crate) fn show_demo_update(&mut self, status: UpdateStatus) {
+        self.update = Some(Release {
+            version: "1.0.0".into(),
+            url: "https://github.com/Master0fFate/oxidify/releases/latest".into(),
+            asset: Some(crate::updates::Asset::demo()),
+        });
+        self.update_install = Some(UpdateInstall::Demo(status));
+    }
+
+    fn download_update(&mut self, ctx: &egui::Context) {
+        let Some(release) = self.update.as_ref() else {
+            return;
+        };
+        if release.asset.is_none() {
+            ctx.open_url(egui::OpenUrl::new_tab(release.url.clone()));
+        } else if !self.offline && self.update_install.is_none() {
+            let (finished, download) = oneshot::channel();
+            self.backend.send(Command::DownloadUpdate {
+                release: Box::new(release.clone()),
+                finished,
+            });
+            self.update_install = Some(UpdateInstall::Downloading(download));
+        }
+    }
+
+    fn finish_update_download(&mut self) {
+        let Some(UpdateInstall::Downloading(download)) = self.update_install.as_mut() else {
+            return;
+        };
+        match download.try_recv() {
+            Ok(Ok(prepared)) => {
+                self.update_install = Some(UpdateInstall::Ready(prepared));
+                self.toast("Update ready. Quit Oxidify to install it.");
+            }
+            Ok(Err(error)) => {
+                self.update_install = None;
+                self.toast_error(format!("Couldn't download the update: {error}"));
+            }
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.update_install = None;
+                self.toast_error("Couldn't download the update. Try again.");
+            }
+            Err(oneshot::error::TryRecvError::Empty) => {}
         }
     }
 
@@ -5793,6 +5874,7 @@ impl App {
                 }
             }
             Action::CheckForUpdates => self.check_for_updates(true),
+            Action::DownloadUpdate => self.download_update(ctx),
             Action::SettingsChanged => {
                 self.settings_dirty = true;
                 ctx.set_theme(match self.settings.theme {
@@ -6219,6 +6301,7 @@ impl App {
     pub fn pump(&mut self, ctx: &egui::Context) {
         self.handle_control_commands();
         self.handle_events(ctx);
+        self.finish_update_download();
         self.handle_media_commands();
         self.handle_tray();
         self.tick(ctx);
@@ -6447,9 +6530,14 @@ impl App {
     }
 
     /// Final teardown at real quit.
-    pub fn shutdown(&mut self) {
+    pub fn shutdown(&mut self) -> Option<PreparedUpdate> {
         self.save_state();
         self.backend.shutdown();
+        self.finish_update_download();
+        match self.update_install.take() {
+            Some(UpdateInstall::Ready(prepared)) => Some(prepared),
+            _ => None,
+        }
     }
 }
 
@@ -7610,11 +7698,13 @@ mod tests {
         let release = crate::updates::Release {
             version: "1.2.3".into(),
             url: "https://github.com/Master0fFate/oxidify/releases/tag/v1.2.3".into(),
+            asset: None,
         };
         app.update_checking = true;
         app.finish_update_check(false, Ok(Some(release.clone())));
         assert!(!app.update_checking);
         assert_eq!(app.update, Some(release.clone()));
+        assert_eq!(app.update_status(), Some(UpdateStatus::Manual));
         assert_eq!(app.toasts.len(), 1);
         app.finish_update_check(false, Ok(Some(release.clone())));
         assert_eq!(app.toasts.len(), 1);
@@ -7637,6 +7727,70 @@ mod tests {
         app.offline = true;
         app.check_for_updates(true);
         assert!(!app.update_checking);
+        let root = app.dirs.state.parent().unwrap().to_path_buf();
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_update_download_keeps_its_release_and_can_be_retried_after_failure() {
+        let mut app = test_app();
+        let release = Release {
+            version: "1.2.3".into(),
+            url: "https://github.com/Master0fFate/oxidify/releases/tag/v1.2.3".into(),
+            asset: Some(crate::updates::Asset::demo()),
+        };
+        app.finish_update_check(true, Ok(Some(release.clone())));
+        assert_eq!(app.update_status(), Some(UpdateStatus::Available));
+
+        let (finished, download) = oneshot::channel();
+        app.update_install = Some(UpdateInstall::Downloading(download));
+        assert_eq!(app.update_status(), Some(UpdateStatus::Downloading));
+        assert!(!app.can_check_for_updates());
+        app.finish_update_check(false, Ok(None));
+        app.finish_update_download();
+        assert_eq!(app.update.as_ref(), Some(&release));
+        assert_eq!(app.update_status(), Some(UpdateStatus::Downloading));
+
+        assert!(
+            finished
+                .send(Err("package checksum did not match".into()))
+                .is_ok()
+        );
+        app.finish_update_download();
+        assert_eq!(app.update_status(), Some(UpdateStatus::Available));
+        assert!(app.can_check_for_updates());
+        assert_eq!(
+            app.toasts.last().unwrap().message,
+            "Couldn't download the update: package checksum did not match"
+        );
+
+        let root = app.dirs.state.parent().unwrap().to_path_buf();
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clicking_a_manual_update_opens_its_official_page() {
+        let mut app = test_app();
+        let url = "https://github.com/Master0fFate/oxidify/releases/tag/v1.2.3";
+        app.finish_update_check(
+            false,
+            Ok(Some(Release {
+                version: "1.2.3".into(),
+                url: url.into(),
+                asset: None,
+            })),
+        );
+        let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
+            app.apply(Action::DownloadUpdate, ui.ctx());
+        });
+        output.textures_delta.clear();
+        assert!(output.platform_output.commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::OpenUrl(open) if open.url == url)
+        }));
+        assert!(app.update_install.is_none());
+
         let root = app.dirs.state.parent().unwrap().to_path_buf();
         app.backend.shutdown();
         let _ = std::fs::remove_dir_all(root);

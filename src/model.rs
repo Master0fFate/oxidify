@@ -959,6 +959,7 @@ pub enum Action {
     RetryLyrics,
     ToggleDevicesPopup,
     CheckForUpdates,
+    DownloadUpdate,
     SettingsChanged,
     RestartEngine,
     EnablePlayback,

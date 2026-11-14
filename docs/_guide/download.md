@@ -11,6 +11,24 @@ The current version is **v{{ v }}**. Every file below, with its SHA-256, is
 listed in [checksums.txt]({{ base }}/checksums.txt); all versions live on
 the [releases page](https://github.com/Master0fFate/oxidify/releases).
 
+## Update from Oxidify
+
+Click **Update available** in the top bar. On supported installs, Oxidify
+downloads and checks the package in the background. When it shows
+**Update ready**, quit the app to install it. Use **Quit** in the tray menu,
+or the app's normal quit shortcut. Closing a window to the tray leaves
+Oxidify running. Open Oxidify again to use the new version.
+
+If your copy still opens GitHub when you click **Update available**, install
+the latest package once to get the in-app updater.
+
+In-app updates work with the Windows installer, direct macOS installs in
+Applications that Oxidify can replace, and official Linux archives kept in
+their original extracted folder under your home directory. On Linux you can
+link to the executable from your PATH to keep the archive layout intact.
+For package-manager installs, use your package manager. For a portable or
+other manual install, **Update available** opens the release page.
+
 ## macOS
 
 One download for both Apple Silicon and Intel:
@@ -58,8 +76,9 @@ choose More info, then Run anyway.
 - [oxidify-v{{ v }}-x86_64-unknown-linux-gnu.tar.gz]({{ base }}/oxidify-v{{ v }}-x86_64-unknown-linux-gnu.tar.gz)
 - [oxidify-v{{ v }}-aarch64-unknown-linux-gnu.tar.gz]({{ base }}/oxidify-v{{ v }}-aarch64-unknown-linux-gnu.tar.gz)
 
-Unpack, put `oxidify` on your PATH, and copy the desktop entry and icon
-from the bundled `packaging/` directory if you want it in your launcher.
+Unpack under your home directory and link to `oxidify` from a directory on
+your PATH. To add it to your launcher, copy the desktop entry and icon from
+the bundled `packaging/` directory.
 Runtime needs are the ordinary desktop libraries: ALSA, PulseAudio or
 PipeWire, and Wayland or X11.
 

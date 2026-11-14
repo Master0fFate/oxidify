@@ -150,6 +150,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
                 theme::regular(11.5),
                 palette.dim,
             );
+            if let Some(status) = app.update_status() {
+                let mut update_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(rect.shrink(12.0))
+                        .layout(Layout::right_to_left(Align::Min)),
+                );
+                super::topbar::update_notice(&mut update_ui, &palette, status, &mut app.actions);
+            }
         });
 }
 

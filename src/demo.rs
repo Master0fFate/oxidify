@@ -746,12 +746,9 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                 app.dialog = Some(Dialog::Jump);
                 app.jump.query = "night".into();
             }
-            "update" => {
-                app.update = Some(crate::updates::Release {
-                    version: "1.0.0".into(),
-                    url: "https://github.com/Master0fFate/oxidify/releases/latest".into(),
-                });
-            }
+            "update" => app.show_demo_update(crate::app::UpdateStatus::Available),
+            "update-downloading" => app.show_demo_update(crate::app::UpdateStatus::Downloading),
+            "update-ready" => app.show_demo_update(crate::app::UpdateStatus::Ready),
             "create" => {
                 app.dialog = Some(Dialog::CreatePlaylist {
                     name: "Autumn drives".into(),
@@ -1040,6 +1037,11 @@ mod tests {
         };
         app.user = None;
         frame(&ctx, &mut app);
+        #[cfg(feature = "demo")]
+        for fixture in ["update", "update-downloading", "update-ready"] {
+            apply_flags(&mut app, None, Some(fixture));
+            frame(&ctx, &mut app);
+        }
         app.backend.shutdown();
         let _ = std::fs::remove_dir_all(root);
     }
