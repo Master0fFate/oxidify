@@ -145,7 +145,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn contents(app: &mut App, ui: &mut egui::Ui) {
-    let palette = app.palette;
     let bar = ui.max_rect();
     let sidebar_hidden = !app.settings.sidebar_visible;
     let spinner = app
@@ -170,7 +169,61 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     let nav_width = topbar_nav_width(sidebar_hidden);
     let caption = super::caption_width(ui.ctx());
     let right_reserved =
-        topbar_right_reserved(spinner, app.update.is_some(), remote_label.is_some()) + caption;
+        topbar_right_reserved(spinner, app.update.is_some(), remote_label.is_some());
+    let min_width = nav_width + right_reserved + 2.0 * CLUSTER_GAP + HOME_SIZE + 8.0 + 96.0;
+    if bar.width() - caption < min_width {
+        let right_reserved = right_reserved
+            + 20.0
+                * (spinner as u8 + app.update.is_some() as u8 + remote_label.is_some() as u8)
+                    as f32;
+        let min_width = nav_width + right_reserved + 2.0 * CLUSTER_GAP + HOME_SIZE + 8.0 + 96.0;
+        let viewport = Rect::from_min_max(
+            bar.min,
+            pos2((bar.right() - caption).max(bar.left()), bar.bottom()),
+        );
+        let mut scroll_ui = ui.new_child(UiBuilder::new().max_rect(viewport));
+        scroll_ui.set_clip_rect(ui.clip_rect().intersect(viewport));
+        egui::ScrollArea::horizontal()
+            .id_salt("global-nav-scroll")
+            .show(&mut scroll_ui, |ui| {
+                ui.set_min_width(min_width);
+                ui.set_max_width(min_width);
+                contents_inner(
+                    app,
+                    ui,
+                    sidebar_hidden,
+                    spinner,
+                    remote_label,
+                    (nav_width, right_reserved),
+                    0.0,
+                );
+                ui.allocate_space(vec2(min_width, bar.height()));
+            });
+    } else {
+        contents_inner(
+            app,
+            ui,
+            sidebar_hidden,
+            spinner,
+            remote_label,
+            (nav_width, right_reserved),
+            caption,
+        );
+    }
+}
+
+fn contents_inner(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    sidebar_hidden: bool,
+    spinner: bool,
+    remote_label: Option<(Icon, String)>,
+    (nav_width, right_reserved): (f32, f32),
+    caption: f32,
+) {
+    let palette = app.palette;
+    let bar = ui.max_rect();
+    let right_reserved = right_reserved + caption;
     let room = bar.width() - nav_width - right_reserved - 2.0 * CLUSTER_GAP;
     let search_width = topbar_search_width(room);
     let cluster_width = HOME_SIZE + 8.0 + search_width;

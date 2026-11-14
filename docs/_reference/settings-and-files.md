@@ -157,6 +157,11 @@ and `--demo-show` adds surfaces on top of it: a comma separated list of
 `shortcuts`, `jump`, `create`, `light`, `focus`, `login`, `winamp`,
 `playlist`, and `eq`.
 
+`--demo-show stress --demo-page playlist:pl1` adds a demo-only data switch:
+Demo, Worst case, Empty, One, and 1,000 rows. The stress cases use long titles,
+mixed scripts, missing artwork, and varied durations without fetching artwork.
+The switch is absent from normal builds and does not write settings.
+
 `--demo-shot <PATH>` writes the window to a PNG and exits, which is how the
 screenshots in these pages are made:
 

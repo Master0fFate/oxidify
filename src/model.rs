@@ -823,10 +823,22 @@ pub struct Toast {
     pub created: Instant,
 }
 
+#[cfg(feature = "demo")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DemoFixture {
+    Demo,
+    Worst,
+    Empty,
+    One,
+    Large,
+}
+
 /// What views ask the app to do. Collected while drawing, applied after, so
 /// a view can iterate over app data without fighting the borrow checker.
 #[derive(Clone, Debug)]
 pub enum Action {
+    #[cfg(feature = "demo")]
+    DemoFixture(DemoFixture),
     Open(Page),
     OpenUri(String),
     Back,

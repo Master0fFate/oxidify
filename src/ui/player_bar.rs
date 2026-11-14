@@ -59,7 +59,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     .max_rect(right_band)
                     .layout(Layout::right_to_left(Align::Center)),
             );
-            extras(app, &mut right_ui, now.as_ref());
+            if side >= 2.0 * (18.0 + theme::ICON_BUTTON_PAD) + 14.0 {
+                extras(app, &mut right_ui, now.as_ref());
+            }
         });
 }
 
@@ -79,6 +81,9 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
     let band = (title_height + 2.0 + names_height).ceil();
     let Some(now) = now else {
         super::widgets::paint_cover(ui, &palette, None, cover_rect, 6.0, Icon::Music);
+        if region.width() < 154.0 {
+            return;
+        }
         let text_left = cover_rect.right() + 12.0;
         let text_rect = Rect::from_min_size(
             pos2(text_left, cy - band / 2.0),
@@ -182,6 +187,10 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
         } else if let Some(id) = &now.show_id {
             app.actions.push(Action::Open(Page::Show(id.clone())));
         }
+    }
+    if region.width() < 154.0 {
+        cover_response.on_hover_text(&now.title);
+        return;
     }
     let heart_width = if now.is_episode { 0.0 } else { 42.0 };
     let text_left = cover_rect.right() + 12.0;
@@ -632,6 +641,9 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
             egui::Sense::hover(),
         )
         .on_hover_text("This device's volume can't be changed from Oxidify");
+    }
+    if ui.available_width() < button + 4.0 {
+        return;
     }
     ui.add_space(4.0);
     let remote = now.is_some_and(|now| !now.local);

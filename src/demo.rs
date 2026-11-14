@@ -601,6 +601,120 @@ fn sample_lyrics() -> crate::lyrics::Lyrics {
     }
 }
 
+#[cfg(feature = "demo")]
+pub fn set_fixture(app: &mut App, fixture: DemoFixture) {
+    if app.demo_fixture == Some(fixture) {
+        return;
+    }
+    app.demo_fixture = Some(fixture);
+    let normal = fixture == DemoFixture::Demo;
+    if let Some(user) = &mut app.user {
+        user.images = if normal { image(1) } else { Vec::new() };
+    }
+    let count = match fixture {
+        DemoFixture::Demo => 40,
+        DemoFixture::Worst => 40,
+        DemoFixture::Empty => 0,
+        DemoFixture::One => 1,
+        DemoFixture::Large => 1_000,
+    };
+    app.track_cache.retain(|id, _| !id.starts_with("stress"));
+    let mut tracks: Vec<Track> = (0..count).map(|index| {
+        let mut track = track(index);
+        if !normal {
+            track.id = Some(format!("stress{index}"));
+            track.uri = format!("spotify:track:stress{index}");
+            let names = [
+                ("Symphony No. 9 in D Minor, Op. 125: IV. Presto – Allegro assai (Live at the Royal Albert Hall)", "Aleksandra Wiśniewska-Kowalczyk"),
+                ("J", "Jo"),
+                ("Một ngày mùa đông", "Nguyễn Thị Minh"),
+                ("夜に駆ける", "宇多田ヒカル"),
+                ("أغنية المساء", "فيروز"),
+                ("Starlight", "🎹✨"),
+            ];
+            let (name, artist) = names[index % names.len()];
+            track.name = name.into();
+            track.artists = vec![ArtistRef { id: None, name: artist.into(), uri: None }];
+            if index == 6 { track.artists.clear(); }
+            if index % 6 == 2 { track.album = None; }
+            if let Some(album) = &mut track.album { album.images.clear(); }
+            track.duration_ms = match index % 6 { 0 => 0, 1 => 14_400_000, _ => track.duration_ms };
+        }
+        track
+    }).collect();
+    let playing = tracks.first().cloned().unwrap_or_else(|| {
+        let mut track = track(0);
+        track.id = Some("stress-empty".into());
+        track.uri = "spotify:track:stress-empty".into();
+        track.album = None;
+        track
+    });
+    if tracks.is_empty()
+        && let Some(id) = &playing.id
+    {
+        app.track_cache.insert(id.clone(), playing.clone());
+    }
+    for track in &tracks {
+        if let Some(id) = &track.id {
+            app.track_cache.insert(id.clone(), track.clone());
+        }
+    }
+    if let Some(remote) = &mut app.remote {
+        remote.state.item = Some(PlayableItem::Track(playing.clone()));
+    }
+    if let Some(queue) = app.queue.get_mut() {
+        queue.currently_playing = Some(PlayableItem::Track(playing));
+    }
+    let mut playlist = playlist(1);
+    playlist.tracks = Some(TrackCount {
+        total: count as u32,
+    });
+    if !normal {
+        playlist.name = "A very long playlist for Aleksandra Wiśniewska-Kowalczyk".into();
+        playlist.owner.display_name = Some("Aleksandra Wiśniewska-Kowalczyk".into());
+        playlist.images.clear();
+    }
+    if let Some(playlists) = app.library.playlists.get_mut() {
+        for (index, entry) in playlists.iter_mut().enumerate() {
+            if normal {
+                *entry = self::playlist(index);
+            } else {
+                entry.images.clear();
+            }
+        }
+        if let Some(entry) = playlists.get_mut(1) {
+            *entry = playlist.clone();
+        }
+    }
+    if let Some(page) = app.playlist_pages.get_mut("pl1") {
+        page.playlist = Loadable::Loaded(playlist);
+        page.items.reset();
+        page.items.absorb(
+            0,
+            self::page(
+                tracks
+                    .drain(..)
+                    .enumerate()
+                    .map(|(index, track)| PlaylistItem {
+                        added_at: Some(format!(
+                            "2026-0{}-{:02}T10:00:00Z",
+                            1 + index % 8,
+                            1 + index % 27
+                        )),
+                        is_local: false,
+                        added_by: Some(crate::api::models::UserRef {
+                            id: Some(if index % 3 == 1 { "kasia" } else { "sam" }.into()),
+                        }),
+                        item: Some(PlayableItem::Track(track)),
+                        track: None,
+                    })
+                    .collect(),
+            ),
+        );
+        page.table_rows = None;
+    }
+}
+
 /// Applies `--demo-page` and `--demo-show`.
 #[cfg(feature = "demo")]
 pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
@@ -612,6 +726,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
     }
     for surface in show.unwrap_or("").split(',').map(str::trim) {
         match surface {
+            "stress" => set_fixture(app, DemoFixture::Worst),
             "queue" => app.show_queue_panel = true,
             "now-playing" => app.show_now_playing_panel = true,
             "collapsed" => app.settings.sidebar_collapsed = true,

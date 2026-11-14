@@ -41,6 +41,11 @@ accept remote volume changes, volume and mute are disabled. Use that device's
 own controls instead; keyboard and media-control volume commands are ignored
 for the same device.
 
+In narrow windows or at high zoom, the player bar hides track text and
+secondary controls before they overlap playback controls. Hover the cover to
+read a hidden title. The top navigation scrolls horizontally when it cannot fit;
+window controls stay fixed.
+
 Local Spotify playback keeps sample-rate conversion continuous between audio
 packets when the output uses a different rate, such as 48 kHz on Windows.
 

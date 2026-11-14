@@ -45,7 +45,8 @@ getting started, everyday use, and how it connects to Spotify.
 - **The layout you know.** One bar across the top holds navigation, Home,
   search, and your account; Your Library, the page, and an optional side
   panel sit beneath it as separate rounded panels, with the player bar
-  along the bottom.
+  along the bottom. At high zoom in narrow windows, navigation scrolls
+  horizontally and player controls compact rather than overlap.
 - **Opens at once.** The playlist list, Liked Songs, and every playlist
   you have opened before are kept on disk and show the moment the app
   starts; Spotify's answer replaces them only where something changed.
@@ -458,8 +459,10 @@ feature and start it with sample data:
 cargo run --features demo -- --demo --demo-page playlist:pl1 --demo-show queue
 ```
 
-Demo mode never writes settings. `--demo-shot <PATH>` writes the window to a
-PNG and exits, which is how the screenshot above is made.
+Demo mode never writes settings. Add `--demo-show stress` on `playlist:pl1`
+to switch between ordinary, worst-case, empty, single-track, and 1,000-row data.
+The stress cases need no artwork downloads. `--demo-shot <PATH>` writes the
+window to a PNG and exits, which is how the screenshot above is made.
 
 ## Contributing
 

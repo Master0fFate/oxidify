@@ -193,6 +193,8 @@ pub struct App {
     control_devices_stale: bool,
     /// Sample data is loaded and nothing is asked of Spotify.
     pub offline: bool,
+    #[cfg(feature = "demo")]
+    pub demo_fixture: Option<crate::model::DemoFixture>,
     pub palette: Palette,
     applied_dark: Option<bool>,
     applied_accent: Option<crate::settings::Accent>,
@@ -482,6 +484,8 @@ impl App {
             control_devices: None,
             control_devices_stale: true,
             offline: false,
+            #[cfg(feature = "demo")]
+            demo_fixture: None,
             palette: Palette::dark().with_accent(accent),
             applied_dark: None,
             applied_accent: None,
@@ -5289,6 +5293,8 @@ impl App {
 
     fn apply(&mut self, action: Action, ctx: &egui::Context) {
         match action {
+            #[cfg(feature = "demo")]
+            Action::DemoFixture(fixture) => crate::demo::set_fixture(self, fixture),
             Action::Open(page) => self.open(page),
             Action::OpenUri(uri) => {
                 if let Some(page) = Page::from_uri(&uri) {

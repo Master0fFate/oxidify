@@ -1025,14 +1025,15 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                     None,
                 ));
             }
+            let song_label = if count == 1 { "song" } else { "songs" };
             let count_text = if page.items.is_complete() {
                 format!(
-                    "{} songs, {}",
+                    "{} {song_label}, {}",
                     util::format_count(count as u64),
                     util::format_total_ms(total_ms)
                 )
             } else {
-                format!("{} songs", util::format_count(count as u64))
+                format!("{} {song_label}", util::format_count(count as u64))
             };
             byline.push((count_text, None));
             hero(

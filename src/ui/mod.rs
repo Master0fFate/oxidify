@@ -125,6 +125,33 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         lyrics::side_panel(app, ui);
     }
     central(app, ui);
+    #[cfg(feature = "demo")]
+    if let Some(selected) = app.demo_fixture {
+        egui::Area::new(egui::Id::new("demo-fixture"))
+            .anchor(
+                Align2::CENTER_BOTTOM,
+                vec2(0.0, -theme::PLAYER_BAR_HEIGHT - 8.0),
+            )
+            .fade_in(false)
+            .show(ctx, |ui| {
+                Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width((ctx.content_rect().width() - 32.0).max(0.0));
+                    ui.horizontal_wrapped(|ui| {
+                        for (fixture, label) in [
+                            (crate::model::DemoFixture::Demo, "Demo"),
+                            (crate::model::DemoFixture::Worst, "Worst case"),
+                            (crate::model::DemoFixture::Empty, "Empty"),
+                            (crate::model::DemoFixture::One, "One"),
+                            (crate::model::DemoFixture::Large, "1,000 rows"),
+                        ] {
+                            if ui.selectable_label(selected == fixture, label).clicked() {
+                                app.actions.push(Action::DemoFixture(fixture));
+                            }
+                        }
+                    });
+                });
+            });
+    }
     devices::popup(app, ctx);
     dialogs::show(app, ctx);
     widgets::drag_ghost(ctx, &app.palette);
