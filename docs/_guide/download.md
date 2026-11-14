@@ -26,6 +26,8 @@ In-app updates work with the Windows installer, direct macOS installs in
 Applications that Oxidify can replace, and official Linux archives kept in
 their original extracted folder under your home directory. On Linux you can
 link to the executable from your PATH to keep the archive layout intact.
+On Linux and macOS, Oxidify checks that the new copy can run on your system
+before it replaces your current one.
 For package-manager installs, use your package manager. For a portable or
 other manual install, **Update available** opens the release page.
 

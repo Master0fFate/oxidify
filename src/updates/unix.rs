@@ -3,6 +3,8 @@ use std::fs::{self, Metadata};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use tempfile::{Builder, TempDir};
@@ -98,15 +100,56 @@ fn sibling_stage(destination: &Path) -> Result<TempDir> {
         .context("could not create a staging directory next to Oxidify")
 }
 
+fn check_candidate(binary: &Path, version: &str) -> Result<()> {
+    use std::io::{Read, Seek};
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
+    let mut output = tempfile::tempfile().context("could not capture update version")?;
+    // The asset has already passed its release hash check. Let the real
+    // dynamic loader check its runtime dependencies before we replace the app.
+    let mut child = Command::new(binary)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(output.try_clone()?)
+        .spawn()
+        .context("the new Oxidify could not run on this computer")?;
+    let deadline = Instant::now() + TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                result.context("could not check the update")?;
+                anyhow::bail!("the new Oxidify did not respond to its version check");
+            }
+        }
+    };
+    ensure!(
+        status.success(),
+        "the new Oxidify could not run on this computer"
+    );
+    output.rewind()?;
+    let mut reported = String::new();
+    output.take(128).read_to_string(&mut reported)?;
+    ensure!(
+        reported.trim_end() == format!("oxidify {version}"),
+        "the new Oxidify reported an unexpected version"
+    );
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
+    use super::*;
     use std::ffi::OsStr;
     use std::fs::{File, Permissions};
     use std::io::{self, Read, Seek};
     use std::os::unix::fs::PermissionsExt;
-    use std::process::{Command, Stdio};
-
-    use super::*;
 
     const STAGED_BINARY: &str = "oxidify";
     const MAX_BINARY_BYTES: u64 = 256 * 1024 * 1024;
@@ -184,6 +227,7 @@ mod linux {
         let path = stage.path().join(STAGED_BINARY);
         let member = format!("oxidify-v{version}-{triple}/{STAGED_BINARY}");
         extract_binary(package, &member, &path, machine, binary.metadata()?.mode())?;
+        check_candidate(&path, version)?;
         Ok(PlatformUpdate {
             stage,
             destination: binary.clone(),
@@ -375,7 +419,6 @@ mod linux {
 #[cfg(target_os = "macos")]
 mod macos {
     use std::io;
-    use std::process::{Command, Stdio};
 
     use serde::Deserialize;
 
@@ -496,7 +539,9 @@ mod macos {
         );
         let expected = FileIdentity::read(&binary)?;
         let stage = sibling_stage(bundle)?;
-        stage_bundle(package, version, &stage.path().join(APP))?;
+        let staged = stage.path().join(APP);
+        stage_bundle(package, version, &staged)?;
+        check_candidate(&staged.join(EXECUTABLE), version)?;
         Ok(PlatformUpdate {
             stage,
             destination: bundle.clone(),
@@ -613,4 +658,19 @@ mod macos {
         assert_eq!(fs::read(before.join("new")).unwrap(), b"new");
         assert_eq!(fs::read(after.join("old")).unwrap(), b"old");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn candidate_must_run_and_report_the_expected_version() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("oxidify");
+    fs::write(&binary, b"#!/bin/sh\nprintf 'oxidify 1.2.3\\n'\n").unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(check_candidate(&binary, "1.2.3").is_ok());
+    assert!(check_candidate(&binary, "2.0.0").is_err());
+    fs::write(&binary, b"#!/bin/sh\nexit 1\n").unwrap();
+    assert!(check_candidate(&binary, "1.2.3").is_err());
 }
